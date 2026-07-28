@@ -5,6 +5,36 @@ that were previously duplicated across ``mesh_controller.py``,
 ``topology_template_service.py``, ``model_gpkg_loader_service.py``,
 and ``gpkg_layer_styles_service.py``.
 
+## Naming Convention for Loss Coefficients
+
+The drainage module uses multiple naming conventions for head loss coefficients
+to support different domain standards while maintaining compatibility:
+
+### Field Names in GPKG Schema (Python/C++ interface layer):
+- **`inlet_loss_k`** / **`outlet_loss_k`**: Primary field names
+  - Used at node level (swe2d_drainage_nodes) to override per-link values
+  - Used at link level (swe2d_drainage_links) as per-link fallback values
+  - Used at structure level (swe2d_structures) for culvert losses
+- **`entrance_loss_k`** / **`exit_loss_k`**: FHWA HDS-5 aliases (backward compatibility)
+  - Synonyms for inlet_loss_k / outlet_loss_k
+  - Kept for compatibility with FHWA HDS-5 culvert design tools
+  - Mapped to primary fields in pipe_network_service.py
+
+### Internal Representation (C++ kernel layer):
+- **`face_k_in`** / **`face_k_out`**: Kernel array names (cpp/src/pipe1d.cuh)
+  - C++ kernel uses these names for face-based loss coefficients
+  - Python packer maps inlet_loss_k → face_k_in, outlet_loss_k → face_k_out
+
+### Usage Hierarchy:
+1. Node-level overrides (`node_inlet_loss_k`, `node_outlet_loss_k`) take precedence
+2. Link-level values (`link_inlet_loss_k`, `link_outlet_loss_k`) as fallback
+3. Default values (0.5 for inlet, 1.0 for outlet) if not specified
+
+### Redundancy Policy:
+- `entrance_loss_k` and `exit_loss_k` are kept as aliases for backward compatibility
+- Schema includes both sets to support existing datasets and FHWA tools
+- Runtime code normalizes to `inlet_loss_k`/`outlet_loss_k` before packing
+
 Usage::
 
     from swe2d.workbench.services.schema_definitions import (
@@ -121,7 +151,7 @@ LAYER_SCHEMAS: dict[str, dict] = {
         "geom_col": "geom",
         "fields": [
             ("source_id", _INT),
-            ("q_cms", _DBL),
+            ("src_value", _DBL),
             ("hydrograph", _STR(1024)),
             ("hydrograph_id", _STR(64)),
             ("priority", _INT),
@@ -207,6 +237,37 @@ LAYER_SCHEMAS: dict[str, dict] = {
             ("enable_overflow", _INT),
             ("overflow_elevation", _DBL),
             ("max_overflow_rate", _DBL),
+            # ── Inlet box storage-cell geometry (separate from inlet opening
+            # dimensions in swe2d_drainage_inlets).  When set, these override
+            # the volume-equivalent cell derived from inlet_diameter.
+            ("inlet_box_length", _DBL),
+            ("inlet_box_width", _DBL),
+            # ── Entrance/exit loss coefficients ─────────────────────────
+            # Head loss at the pipe-storage interface for manhole/inlet
+            # cells.  These override per-link loss coefficients.
+            ("inlet_loss_k", _DBL),
+            ("outlet_loss_k", _DBL),
+            # ── Outfall BC configuration (SPEC §2.8) ─────────────────────
+            # Mode is a string keyword: "free" | "normal_depth" |
+            # "fixed_wse" | "rating_curve" | "tabular".  The Python
+            # loader maps these to the int32 OUTFALL_* codes defined in
+            # cpp/src/swe2d_xsect_constants.h.  Rating and tabular
+            # curves are stored as comma-separated strings here for
+            # schema simplicity; a separate 1:N relation table is the
+            # preferred long-term design.
+            ("outfall_mode", _STR(32)),
+            ("outfall_fixed_wse", _DBL),
+            ("outfall_rating_wse", _STR(2048)),
+            ("outfall_rating_q", _STR(2048)),
+            ("outfall_tabular_time", _STR(2048)),
+            ("outfall_tabular_wse", _STR(2048)),
+            # ── Junction surcharge overflow (SPEC §2.10) ────────────────
+            # Only used when node_type == "junction"; ignored otherwise.
+            # overflow_coeff ≈ 1.7 for a sharp-edged circular opening
+            # but is operator-tunable per node.
+            ("junction_overflow_diam", _DBL),
+            ("junction_overflow_coeff", _DBL),
+            ("junction_max_overflow_rate", _DBL),
         ],
     },
     "swe2d_drainage_links": {

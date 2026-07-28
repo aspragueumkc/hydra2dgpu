@@ -51,9 +51,9 @@ class TestLineResultsPlotSmoke(unittest.TestCase):
         if not line_ids:
             self.skipTest("No line IDs")
         lid = line_ids[0][0] if isinstance(line_ids[0], tuple) else line_ids[0]
-        ts = self.data.load_timeseries(self.runs[0], lid, "flow_cms")
+        ts = self.data.load_timeseries(self.runs[0], lid, "flow")
         self.assertIsInstance(ts, dict)
-        for key in ("t_s", "depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms"):
+        for key in ("t_s", "depth", "velocity", "wse", "bed", "flow"):
             self.assertIn(key, ts, f"Missing key: {key}")
             self.assertGreater(len(ts[key]), 0, f"Empty array for {key}")
 
@@ -62,7 +62,7 @@ class TestLineResultsPlotSmoke(unittest.TestCase):
         if not line_ids:
             self.skipTest("No line IDs")
         lid = line_ids[0][0] if isinstance(line_ids[0], tuple) else line_ids[0]
-        ts = self.data.load_timeseries(self.runs[0], lid, "flow_cms")
+        ts = self.data.load_timeseries(self.runs[0], lid, "flow")
         if not ts:
             self.skipTest("No timeseries data")
 
@@ -72,7 +72,7 @@ class TestLineResultsPlotSmoke(unittest.TestCase):
 
         fig, ax = plt.subplots(figsize=(8, 4))
         t_hr = ts["t_s"] / 3600.0
-        ax.plot(t_hr, ts["flow_cms"], "b-", linewidth=1)
+        ax.plot(t_hr, ts["flow"], "b-", linewidth=1)
         ax.set_xlabel("Time (hours)")
         ax.set_ylabel("Flow (m³/s)")
         ax.set_title(f"Line {lid} — {self.runs[0].run_id}")

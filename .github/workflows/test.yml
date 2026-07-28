@@ -30,15 +30,10 @@ jobs:
         # pdoc for optional doc build verification
         pip install pdoc>=14.0
 
-    - name: Mock GUI tests (no QGIS)
+    - name: HYDRA fast-fail (mock env)
       run: |
         PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
-          python3 -m unittest -v \
-          tests.test_workbench_gui \
-          tests.test_swe2d_results_queries \
-          tests.test_swe2d_velocity_layer \
-          tests.test_bridge_stacked_mesh \
-          tests.test_bridge_stacked_runtime
+          mamba run -n qgis_stable bash tools/fast_fail.sh
 
     - name: Python security audit (Bandit)
       run: |
@@ -67,6 +62,11 @@ jobs:
           --error-exitcode=0 \
           --quiet \
           cpp/src/ || echo "Cppcheck warnings (non-fatal)"
+
+    - name: Shellcheck tools/fast_fail.sh
+      run: |
+        sudo apt-get install -y shellcheck
+        shellcheck tools/fast_fail.sh
 
   # ── Build + unit tests (requires hydra_swe2d native module) ───────────
   build-and-cpu-tests:
@@ -109,7 +109,7 @@ jobs:
   # ── Optional: headless QGIS smoke test (QGIS must be available) ──────
   qgis-smoke-test:
     runs-on: ubuntu-latest
-    if: false  # disabled by default — enable when QGIS CI runner is set up
+    continue-on-error: true  # non-blocking: requires QGIS CI runner setup
     steps:
     - uses: actions/checkout@v4
 
@@ -118,6 +118,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y qgis python3-qgis xvfb
 
+    - name: Start Xvfb
+      run: |
+        export DISPLAY=":99"
+        Xvfb "$DISPLAY" -screen 0 1280x1024x24 &
+        echo "DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
+
     - name: Run headless QGIS smoke test
       run: |
         bash tests/run_headless_qgis_tests.sh --qgis
+
+    - name: HYDRA fast-fail (QGIS + MCP walk)
+      run: |
+        PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
+          HYDRA_MCP_INTEGRATION=1 \
+          mamba run -n qgis_stable bash tools/fast_fail.sh
+
+    - name: Run behavioral MCP GUI tests
+      run: |
+        PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
+          python3 -m unittest -v tests.test_gui_behavioral_mcp

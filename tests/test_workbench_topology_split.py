@@ -11,12 +11,12 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-# ── Save real PyQt5 BEFORE qgis mocks replace it ───────────────────────
-from PyQt5.QtWidgets import QApplication as _REAL_QAPP
+# ── Save real QApplication BEFORE qgis mocks replace it ──────────────
+from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP
 from tests.mocks.qgis_env import install_qgis_mocks
 install_qgis_mocks()
 
-from PyQt5.QtWidgets import (
+from qgis.PyQt.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QComboBox,

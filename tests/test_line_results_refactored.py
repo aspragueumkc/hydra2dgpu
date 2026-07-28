@@ -13,7 +13,7 @@ from swe2d.results.export_service import export_table_to_csv
 class TestExtractProfileArrays(unittest.TestCase):
     """profile_service.extract_profile_arrays converts record dicts to arrays."""
 
-    EMPTY_KEYS = {"station_m", "wse_m", "bed_m", "depth_m", "wet"}
+    EMPTY_KEYS = {"station", "wse", "bed", "depth", "wet"}
 
     def test_empty_records_returns_all_keys_as_empty_arrays(self):
         result = extract_profile_arrays([])
@@ -23,51 +23,51 @@ class TestExtractProfileArrays(unittest.TestCase):
 
     def test_single_record_returns_correct_values(self):
         records = [
-            {"station_m": 0.0, "wse_m": 5.0, "bed_m": 4.0,
-             "depth_m": 1.0, "wet": 1},
+            {"station": 0.0, "wse": 5.0, "bed": 4.0,
+             "depth": 1.0, "wet": 1},
         ]
         result = extract_profile_arrays(records)
-        self.assertEqual(1, len(result["station_m"]))
-        self.assertAlmostEqual(0.0, result["station_m"][0])
-        self.assertAlmostEqual(5.0, result["wse_m"][0])
-        self.assertAlmostEqual(4.0, result["bed_m"][0])
-        self.assertAlmostEqual(1.0, result["depth_m"][0])
+        self.assertEqual(1, len(result["station"]))
+        self.assertAlmostEqual(0.0, result["station"][0])
+        self.assertAlmostEqual(5.0, result["wse"][0])
+        self.assertAlmostEqual(4.0, result["bed"][0])
+        self.assertAlmostEqual(1.0, result["depth"][0])
         self.assertEqual(1.0, result["wet"][0])
 
-    def test_sorts_by_station_m(self):
+    def test_sorts_by_station(self):
         records = [
-            {"station_m": 3.0, "wse_m": 7.0, "bed_m": 4.0, "depth_m": 3.0,
+            {"station": 3.0, "wse": 7.0, "bed": 4.0, "depth": 3.0,
              "wet": 1},
-            {"station_m": 1.0, "wse_m": 5.0, "bed_m": 4.0, "depth_m": 1.0,
+            {"station": 1.0, "wse": 5.0, "bed": 4.0, "depth": 1.0,
              "wet": 1},
-            {"station_m": 2.0, "wse_m": 6.0, "bed_m": 4.0, "depth_m": 2.0,
+            {"station": 2.0, "wse": 6.0, "bed": 4.0, "depth": 2.0,
              "wet": 1},
         ]
         result = extract_profile_arrays(records)
         np.testing.assert_array_almost_equal(
-            result["station_m"], [1.0, 2.0, 3.0],
+            result["station"], [1.0, 2.0, 3.0],
         )
         np.testing.assert_array_almost_equal(
-            result["wse_m"], [5.0, 6.0, 7.0],
+            result["wse"], [5.0, 6.0, 7.0],
         )
 
     def test_missing_metric_keys_become_nan(self):
-        records = [{"station_m": 0.0}]
+        records = [{"station": 0.0}]
         result = extract_profile_arrays(records)
-        self.assertTrue(np.isnan(result["wse_m"][0]))
-        self.assertTrue(np.isnan(result["bed_m"][0]))
-        self.assertTrue(np.isnan(result["depth_m"][0]))
+        self.assertTrue(np.isnan(result["wse"][0]))
+        self.assertTrue(np.isnan(result["bed"][0]))
+        self.assertTrue(np.isnan(result["depth"][0]))
         self.assertTrue(np.isnan(result["wet"][0]))
 
     def test_additional_keys_preserved(self):
         records = [
-            {"station_m": 0.0, "wse_m": 5.0, "bed_m": 4.0, "depth_m": 1.0,
-             "wet": 1, "velocity_ms": 0.5, "fr": 0.1,
+            {"station": 0.0, "wse": 5.0, "bed": 4.0, "depth": 1.0,
+             "wet": 1, "velocity": 0.5, "fr": 0.1,
              "flow_qn": 2.0},
         ]
         result = extract_profile_arrays(records)
-        self.assertIn("velocity_ms", result)
-        self.assertAlmostEqual(0.5, result["velocity_ms"][0])
+        self.assertIn("velocity", result)
+        self.assertAlmostEqual(0.5, result["velocity"][0])
         self.assertIn("fr", result)
         self.assertAlmostEqual(0.1, result["fr"][0])
         self.assertIn("flow_qn", result)
@@ -75,7 +75,7 @@ class TestExtractProfileArrays(unittest.TestCase):
 
     def test_all_values_are_ndarray(self):
         records = [
-            {"station_m": 0.0, "wse_m": 5.0, "bed_m": 4.0, "depth_m": 1.0,
+            {"station": 0.0, "wse": 5.0, "bed": 4.0, "depth": 1.0,
              "wet": 1},
         ]
         result = extract_profile_arrays(records)
@@ -84,7 +84,7 @@ class TestExtractProfileArrays(unittest.TestCase):
 
     def test_wet_field_promoted_to_float(self):
         records = [
-            {"station_m": 0.0, "wse_m": 5.0, "bed_m": 4.0, "depth_m": 1.0,
+            {"station": 0.0, "wse": 5.0, "bed": 4.0, "depth": 1.0,
              "wet": True},
         ]
         result = extract_profile_arrays(records)
@@ -93,14 +93,14 @@ class TestExtractProfileArrays(unittest.TestCase):
 
     def test_unsorted_flag_skips_sort(self):
         records = [
-            {"station_m": 2.0, "wse_m": 6.0, "bed_m": 4.0, "depth_m": 2.0,
+            {"station": 2.0, "wse": 6.0, "bed": 4.0, "depth": 2.0,
              "wet": 1},
-            {"station_m": 1.0, "wse_m": 5.0, "bed_m": 4.0, "depth_m": 1.0,
+            {"station": 1.0, "wse": 5.0, "bed": 4.0, "depth": 1.0,
              "wet": 1},
         ]
         result = extract_profile_arrays(records, sort_by_station=False)
         np.testing.assert_array_almost_equal(
-            result["station_m"], [2.0, 1.0],
+            result["station"], [2.0, 1.0],
         )
 
 

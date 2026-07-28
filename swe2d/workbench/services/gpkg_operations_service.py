@@ -23,6 +23,7 @@ __all__ = [
     "list_run_ids_from_tables",
     "list_tables",
     "rename_table",
+    "resolve_gpkg_table_name",
 ]
 
 
@@ -44,6 +45,43 @@ def _user_table_names(cur: sqlite3.Cursor) -> List[str]:
         if name and not name.startswith("sqlite_") and not name.startswith("gpkg_") and not name.startswith("rtree_"):
             names.append(name)
     return names
+
+
+def resolve_gpkg_table_name(gpkg_path: str, layer_name: str) -> str:
+    """Return the actual GPKG table_name for a given identifier/layer name.
+
+    QGIS layer names (from ``layername=`` URI param) are often lowercased or
+    otherwise normalised, while the actual GPKG ``table_name`` in
+    ``gpkg_contents`` uses the real casing (e.g. ``SWE2D_BC_Lines``).  This
+    function queries ``gpkg_contents`` and falls back to the supplied name.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(gpkg_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT table_name FROM gpkg_contents WHERE identifier=?",
+            (layer_name,),
+        )
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
+        cur.execute(
+            "SELECT table_name FROM gpkg_contents WHERE LOWER(identifier)=?",
+            (layer_name.lower(),),
+        )
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return layer_name
 
 
 def list_run_ids_from_tables(tables: List[str]) -> List[str]:

@@ -137,25 +137,52 @@ def si_m_per_model_from_wkt(wkt: str) -> float:
 
     Handles both WKT2 (``LENGTHUNIT``) and WKT1 (``UNIT``) formats.
     Returns 1.0 if no linear unit is found (e.g. geographic CRS).
+
+    Note: a CRS WKT may contain multiple ``LENGTHUNIT`` (or ``UNIT``)
+    entries — the ellipsoid axis (typically "metre", factor 1) plus the
+    axis used by the projected CRS (e.g. "US survey foot",
+    factor 0.304800609601219).  The axis belonging to the projected
+    CS is the one we want.  We pick the LAST ``LENGTHUNIT`` whose
+    enclosing ``AXIS[...]`` scope is the projection's CS, falling
+    back to the last non-angular ``UNIT`` for WKT1.
     """
     import re
     try:
-        # WKT2 format: CS[...LENGTHUNIT["name", factor]...]
-        lu_match = re.search(r"LENGTHUNIT\[\"[^\"]*\",\s*([0-9.eE+-]+)", wkt)
-        if lu_match:
-            return float(lu_match.group(1))
+        # WKT2: prefer the LENGTHUNIT inside the projection's CS[...].
+        # A reliable signal is the last AXIS[...] block of a projected CRS,
+        # whose LENGTHUNIT is the projection's linear unit.
+        cs_match = re.search(r"CS\[Cartesian,\s*\d+\][^\]]*", wkt)
+        if cs_match:
+            cs_block = cs_match.group(0)
+            lu_matches = list(re.finditer(
+                r"LENGTHUNIT\[\"([^\"]*)\",\s*([0-9.eE+-]+)\]",
+                cs_block,
+            ))
+            if lu_matches:
+                # Last LENGTHUNIT in the CS scope is the projection's axis.
+                name, factor = lu_matches[-1].group(1), float(lu_matches[-1].group(2))
+                if name.lower() not in ("degree", "radian", "grad"):
+                    return factor
+
+        # WKT2 fallback: any LENGTHUNIT, picking the last one (skip angular).
+        lu_matches = list(re.finditer(
+            r"LENGTHUNIT\[\"([^\"]*)\",\s*([0-9.eE+-]+)\]",
+            wkt,
+        ))
+        if lu_matches:
+            for m in reversed(lu_matches):
+                name, factor = m.group(1), float(m.group(2))
+                if name.lower() not in ("degree", "radian", "grad"):
+                    return factor
 
         # WKT1 format: PROJCS["...", ... UNIT["name", factor, ...] ...]
         pj = wkt.find("PROJCS[")
         if pj < 0:
             pj = wkt.find("PROJCRS[")
         if pj >= 0:
-            # The last UNIT entry in a projected CRS is the linear unit.
-            # Parse backward through the WKT to find it.
             tail = wkt[pj:]
             units = list(re.finditer(r"UNIT\[\"[^\"]*\",\s*([0-9.eE+-]+)", tail))
             if units:
-                # Skip angular units ("degree", "radian", "grad")
                 for m in reversed(units):
                     unit_name_start = m.start() + len("UNIT[\"")
                     unit_name_end = tail.find("\"", unit_name_start)

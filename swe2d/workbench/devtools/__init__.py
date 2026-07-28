@@ -14,11 +14,6 @@ The package is purely additive — it imports nothing from the rest of the
 workbench at module load, so production users pay zero cost.
 """
 
-from swe2d.workbench.devtools.widget_walker import (
-    WidgetNode,
-    walk_widget_tree,
-    find_node_by_object_name,
-)
 from swe2d.workbench.devtools.ast_patterns import (
     ViewFileInventory,
     scan_view_file,
@@ -28,22 +23,23 @@ from swe2d.workbench.devtools.ast_patterns import (
     find_add_param_row,
     find_add_row_label,
 )
+from swe2d.workbench.devtools.patch_builder import (
+    Edit,
+    PatchResult,
+    build_rename_patch,
+    write_patch_file,
+    apply_edit_to_source,
+    rename,
+    relabel,
+)
 from swe2d.workbench.devtools.validation import (
     validate_object_name_unique,
     validate_patch_compiles,
     enumerate_all_object_names,
 )
-from swe2d.workbench.devtools.patch_builder import (
-    build_rename_patch,
-    write_patch_file,
-    apply_edit_to_source,
-)
+
 
 __all__ = [
-    # widget_walker
-    "WidgetNode",
-    "walk_widget_tree",
-    "find_node_by_object_name",
     # ast_patterns
     "ViewFileInventory",
     "scan_view_file",
@@ -57,7 +53,11 @@ __all__ = [
     "validate_patch_compiles",
     "enumerate_all_object_names",
     # patch_builder
+    "Edit",
+    "PatchResult",
     "build_rename_patch",
     "write_patch_file",
     "apply_edit_to_source",
+    "rename",
+    "relabel",
 ]

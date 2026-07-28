@@ -595,7 +595,7 @@ def _install_dummy_module(mod_name: str, public_symbols: list = None):
 def _install_pyqt5_mocks():
     """Ensure PyQt5 modules are importable (use real ones or mock)."""
     try:
-        import PyQt5  # noqa: F401
+        __import__("PyQt5")
     except ImportError:
         # Create minimal mock PyQt5
         for _mod in ("PyQt5", "PyQt5.QtCore", "PyQt5.QtWidgets", "PyQt5.QtGui", "PyQt5.uic"):

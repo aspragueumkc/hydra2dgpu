@@ -1,207 +1,31 @@
 # SWE2D Studio UI Component Guide
 
-Developer guide for adding docks, tabs, signal connections, and feature
-toggles using the Studio UI component API.
-
----
-
-## 1. Adding a new left-pane tab
-
-Two approaches:
-
-**Module-level registration** — tab is registered at import time and
-picked up automatically by `_compose_left_pane()`:
-
-```python
-# In swe2d/workbench/studio_dialog.py or a separate module:
-from swe2d.workbench.studio_component import register_studio_tab
-
-def _build_my_tab_page(dialog):
-    page = QWidget()
-    layout = QVBoxLayout(page)
-    layout.addWidget(QLabel("My tab content"))
-    return page
-
-register_studio_tab("My Tab", _build_my_tab_page)
-```
-
-**Instance-level registration** — tab is added during `_build_ui()`:
-
-```python
-def _build_my_tab_page(self):
-    page = QWidget()
-    page.setObjectName("my_tab_page")
-    # ... populate from .ui or programmatically ...
-    return page
-
-# In _build_ui() or _compose_left_pane():
-self._register_left_tab("My Tab", self._build_my_tab_page)
-```
-
-Tabs are iterated in `_compose_left_pane()`:
-```python
-for name, builder in get_studio_tab_builders().items():
-    self._left_tabs.addTab(builder(self), name)
-```
-
----
-
-## 2. Adding a new dockable panel
-
-Define a `populate` callback, then call `_build_component()`:
-
-```python
-def _populate_my_panel(self, dock: QDockWidget) -> None:
-    inner = QWidget()
-    layout = QVBoxLayout(inner)
-    layout.addWidget(QLabel("Hello from My Panel"))
-    dock.setWidget(inner)
-
-# Single call in _build_ui():
-self._build_component(
-    name="my_panel",
-    title="My Panel",
-    area=Qt.RightDockWidgetArea,
-    tab_with="inspector",   # optional — tabs inside inspector dock
-    populate=self._populate_my_panel,
-)
-```
-
-`_build_component()` creates the QDockWidget,
-calls `populate()`, builds a `StudioComponent`, and registers it via
-`_register_component()`.
-
----
-
-## 3. Connecting a signal safely
-
-Use `safe_connect` to prevent duplicate connections on rebuild, and
-`connect_lambda` for weak-reference lambda safety:
-
-```python
-from swe2d.workbench.signal_helpers import safe_connect, connect_lambda
-
-# Idempotent — disconnects first if already connected:
-safe_connect(self.run_btn.clicked, self._on_run_clicked)
-
-# Weak-ref lambda — no crash if `self` is GC'd before signal fires:
-connect_lambda(action.triggered, self, "_studio_select_tab", "mesh")
-
-# Equivalent manual version (used internally by connect_lambda):
-import weakref
-_ref = weakref.ref(self)
-action.triggered.connect(lambda: (
-    _ref() and _ref()._studio_select_tab("mesh")
-))
-```
-
----
-
-## 4. Cleaning up on dialog close
-
-The `closeEvent` handler iterates all registered
-components and destroys them:
-
-```python
-def closeEvent(self, event):
-    self._save_studio_layout_state()
-    fut = getattr(self, "_mesh_future", None)
-    if fut is not None:
-        fut.cancel()
-    for name in list(self._studio_components.keys()):
-        self._destroy_component(name)
-    super().closeEvent(event)
-```
-
-`_destroy_component()` calls `safe_teardown()`,
-closes the dock, and schedules deletion. You don't need to write
-any additional cleanup for registered components — the framework
-handles it.
-
-For ad-hoc signal cleanup, use `safe_disconnect()` and `safe_teardown()`:
-
-```python
-from swe2d.workbench.signal_helpers import safe_disconnect, safe_teardown
-
-safe_disconnect(self.run_btn.clicked, self._on_run_clicked)
-safe_teardown(widget)
-widget.deleteLater()
-```
-
----
-
-## 5. Adding a feature toggle
-
-Three files must be updated together:
-
-### 5a. Register the flag key in `__init__`:
-
-```python
-self._studio_feature_flags = {
-    "my_feature": True,
-}
-```
-
-### 5b. Add keyword entries:
-
-```python
-def _studio_feature_keywords(self):
-    return {
-        "my_feature": ("myfeat", "special", "thing"),
-        # ...
-    }
-```
-
-Widgets whose `objectName`, `text`, `title`, or `toolTip` contain any
-keyword will be hidden when the flag is disabled.
-
-### 5c. Add menu/toolbar toggle in `_install_studio_host_controls()`:
-
-```python
-my_act = menu.addAction("Enable My Feature")
-my_act.setCheckable(True)
-my_act.setChecked(True)
-my_act.toggled.connect(
-    lambda checked: dlg._studio_set_feature_enabled("my_feature", checked)
-)
-```
-
-### 5d. Toggle the flag at runtime:
-
-```python
-self._studio_set_feature_enabled("my_feature", False)
-```
-
-This calls `_studio_apply_feature_filters()` which iterates all
-left-pane widgets and tabs, hides any whose text matches disabled
-feature keywords, and adjusts tab bar visibility.
-
----
-
-## Canvas overlay
-
-The high-perf overlay path uses `SWE2DHighPerfCanvasOverlayItem`
-(`swe2d/results/high_perf_viewer.py`), a `QgsMapCanvasItem` subclass:
-
-```python
-from swe2d.results.high_perf_viewer import SWE2DHighPerfCanvasOverlayItem
-
-item = SWE2DHighPerfCanvasOverlayItem(canvas)
-item.setImage(image)    # QImage with rendered frame
-item.setExtent(xmin, xmax, ymin, ymax)
-item.setOpacity(0.65)
-item.setVisible(True)
-canvas.refresh()
-```
-
-Used in the studio dialog for simulation frame display.
+> **Removed 2026-07-26.** This guide described helper methods that never
+> shipped: `register_studio_tab`, `get_studio_tab_builders`,
+> `_register_left_tab`, `_build_studio_component_docks`,
+> `_extract_registered_docks`, `_save_studio_layout_state`,
+> `_destroy_component`, `_compose_left_pane`, `_studio_components`
+> registry, `_studio_apply_feature_filters`, `_studio_feature_flags`,
+> `_wrap_left_tab_page`, `_register_detachable_tab_widget`, and
+> `_install_studio_host_controls`. None of these resolve in the current
+> codebase.
+>
+> For the actual Studio API:
+>
+> - **[Studio GUI API](STUDIO_GUI_API.md)** — public protocols and types (canonical reference)
+> - **Code:** `swe2d/workbench/workbench_dialog_builder.py:248` (`WorkbenchDialogBuilder._build_component`), `swe2d/workbench/views/studio_component_view.py:29` (`StudioComponent`)
+> - **Real feature toggles:** `SWE2DWorkbenchStudioDialog._studio_set_feature_enabled` (`studio_dialog.py:1617`) and `_studio_feature_keywords` (`studio_dialog.py:1636`)
+> - **Canvas overlay:** `swe2d/results/high_perf_viewer.py` (`SWE2DHighPerfCanvasOverlayItem`) is real and is the only piece of the original guide that still applies
+>
+> This stub is preserved so existing links from `docs/INDEX.md` and the
+> changelog stay resolvable. Refer to `STUDIO_GUI_API.md` and the source.
 
 ---
 
 ## Related Documentation
 
 - **[Documentation Index](INDEX.md)** — All guides by audience
-- **[Studio GUI API](STUDIO_GUI_API.md)** — Public protocols and types
+- **[Studio GUI API](STUDIO_GUI_API.md)** — Public protocols and types (canonical)
 - **[Developer Guide](DEVELOPER_GUIDE.md)** — Architecture, MVP layers
 - **[User Guide](USER_GUIDE.md)** — Studio UI walkthrough
 - **[Repository Knowledge Graph](../graphify-out/wiki/index.md)** — Workbench module connections

@@ -1,43 +1,53 @@
 [build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.9", "pybind11>=2.13", "numpy"]
+build-backend = "scikit_build_core.build"
 
 [project]
-name = "hydra2dgpu"
-version = "1.2.0"
+name = "hydra-swe2d"
+version = "1.3.0"
 description = "HYDRA2DGPU — GPU-accelerated 2D hydraulic solver for QGIS"
 requires-python = ">=3.12"
 dependencies = [
-    "numpy",
+    "numpy==2.4.6",
     "gmsh>=4.12",
 ]
 
 [project.optional-dependencies]
 dev = [
     "vulture>=2.14",
+    # GUI testing — qtbot.waitSignal / addWidget for live viewer tests
+    "pytest-qt>=4.0",
+    # Phase 6: build the wheel locally for smoke testing
+    "build>=1.0",
 ]
+
+[tool.pytest.ini_options]
+# pytest-qt: use PyQt5 (project standard) instead of PySide6 (pytest-qt default)
+qt_api = "pyqt5"
+
+[tool.scikit-build]
+# Phase 6: wheel build config for scikit-build-core. Tells it where
+# the CMake project is and how to build. The C++ extension is the
+# primary deliverable; the wheel contains the compiled .so.
+build-dir = "_skbuild"
+cmake.build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+# Phase 6: pass our existing CMake options through to the build.
+BACKWATER_USE_CUDA = "ON"
+
+[tool.scikit-build.wheel]
+# Bundle the user-facing Python package (swe2d/) alongside the compiled
+# hydra_swe2d/ C++ extension. Without this, scikit-build-core only packages
+# what CMakeLists.txt's install(TARGETS ...) rules emit, which excludes
+# swe2d/ entirely. The QGIS plugin imports `swe2d.*` on initGui(), so
+# `swe2d/` MUST be in the wheel for the plugin to start.
+packages = ["swe2d"]
 
 [project.scripts]
 swe2d-cli = "swe2d.cli.__main__:main"
 
-[tool.setuptools.packages.find]
-include = ["swe2d*"]
-
-[tool.vulture]
-paths = ["swe2d", "tests", "tools", "tests/vulture_whitelist.py"]
-exclude = ["build", "docs", "reference", "QML", "cpp", "graphify-out", "typings"]
-min_confidence = 80
-ignore_names = [
-    "setUp",
-    "setUpClass",
-    "tearDown",
-    "tearDownClass",
-    "fixture_*",
-    "mutate_state",
-    "use_native_source_injection",
-    "uniform_enabled",
-    "timestep_s",
-    "snapshot_data",
-    "standard_tests",
-]
-ignore_decorators = ["pytest.fixture"]
+[project.urls]
+Homepage  = "https://github.com/aspragueumkc/hydra2dgpu"
+Repository = "https://github.com/aspragueumkc/hydra2dgpu"
+Issues    = "https://github.com/aspragueumkc/hydra2dgpu/issues"

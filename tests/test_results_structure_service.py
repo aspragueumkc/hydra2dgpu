@@ -344,7 +344,7 @@ class TestResolveStructureProfileOverlays(unittest.TestCase):
         overlays = result["run1"]
         self.assertGreater(len(overlays), 0)
         overlay = overlays[0]
-        expected_keys = {"run_id", "run_label", "object_id", "flow_cms", "station_m", "elev_m", "placement"}
+        expected_keys = {"run_id", "run_label", "object_id", "flow", "station", "elev_m", "placement"}
         self.assertSetEqual(set(overlay.keys()), expected_keys)
 
     def test_returns_empty_for_empty_run_ids(self):
@@ -478,8 +478,8 @@ class TestLoadStructureOverlayData(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["object_id"], "s1")
-        self.assertEqual(result[0]["flow_cms"], 5.0)
-        self.assertTrue(np.isnan(result[0]["station_m"]))
+        self.assertEqual(result[0]["flow"], 5.0)
+        self.assertTrue(np.isnan(result[0]["station"]))
         self.assertTrue(np.isnan(result[0]["elev_m"]))
         self.assertEqual(result[0]["placement"], "unplaced")
 
@@ -523,7 +523,7 @@ class TestLoadStructureOverlayData(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["object_id"], "s1")
-        self.assertEqual(result[0]["flow_cms"], 5.0)
+        self.assertEqual(result[0]["flow"], 5.0)
 
     @patch("swe2d.results.structure_service.load_structure_records")
     @patch("swe2d.results.structure_service._load_profile_line_geom")

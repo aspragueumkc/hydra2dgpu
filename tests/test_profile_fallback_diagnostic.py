@@ -74,10 +74,10 @@ class TestProfileFallbackToGpkg(unittest.TestCase):
 
             # GPKG path works
             result = load_baked_line_profile(gpkg, run_id, line_id, 10.0)
-            self.assertIn("station_m", result)
-            self.assertEqual(result["station_m"].size, n_sta)
-            self.assertIn("wse_m", result)
-            self.assertIn("bed_m", result)
+            self.assertIn("station", result)
+            self.assertEqual(result["station"].size, n_sta)
+            self.assertIn("wse", result)
+            self.assertIn("bed", result)
 
         finally:
             os.unlink(gpkg)

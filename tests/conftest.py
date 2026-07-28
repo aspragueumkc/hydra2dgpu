@@ -20,12 +20,29 @@ import os
 import sys
 import pytest
 
-# Ensure repo root and build dir are on sys.path for all discovery modes
+# Ensure repo root and build dir are on sys.path for all discovery modes.
+#
+# Build directory selection:
+#   - ``HYDRA_BUILD_DIR`` env var, if set, overrides the default.
+#     Use this to point a worktree's tests at a sibling checkout's build
+#     (e.g. ``HYDRA_BUILD_DIR=/path/to/main-repo/build pytest …``) instead
+#     of rebuilding the worktree.
+#   - Otherwise the default ``<repo_root>/build`` is used.
+#
+# When the env var is set, the build dir is inserted at position 0 so it
+# takes precedence over per-test-file sys.path manipulations that hardcode
+# ``<repo_root>/build``.
+_HYDRA_BUILD_DIR = os.environ.get("HYDRA_BUILD_DIR") or ""
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_BUILD_DIR = os.path.join(_REPO_ROOT, "build")
-for _p in (_REPO_ROOT, _BUILD_DIR):
-    if _p not in sys.path and os.path.isdir(_p):
+_DEFAULT_BUILD_DIR = os.path.join(_REPO_ROOT, "build")
+
+for _p in (_REPO_ROOT, _HYDRA_BUILD_DIR or _DEFAULT_BUILD_DIR):
+    if _p and _p not in sys.path and os.path.isdir(_p):
         sys.path.insert(0, _p)
+# If HYDRA_BUILD_DIR was set, also prepend it explicitly so per-test
+# sys.path.insert(... "build") inserts don't mask it later.
+if _HYDRA_BUILD_DIR and os.path.isdir(_HYDRA_BUILD_DIR):
+    sys.path.insert(0, _HYDRA_BUILD_DIR)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

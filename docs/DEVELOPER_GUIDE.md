@@ -1,7 +1,7 @@
 # HYDRA 2D GPU — Developer Guide
 
 **Document version**: 2.0  
-**Last updated**: 2026-06-14
+**Last updated**: 2026-07-26
 
 ---
 
@@ -14,6 +14,9 @@
 5. [Test Suite Guide](#5-test-suite-guide)
 6. [Test Coverage Gaps](#6-test-coverage-gaps)
 7. [Common Development Workflows](#7-common-development-workflows)
+8. [Studio UI API Reference](#8-studio-ui-api-reference)
+9. [Repository Knowledge Graph](#9-repository-knowledge-graph)
+10. [MCP Server](#10-mcp-server)
 
 ---
 
@@ -868,13 +871,31 @@ class TestFeature(unittest.TestCase):
 
 | Gap | Impact |
 |---|---|
-| **No CI test execution** | `.github/workflows/` is empty. Tests must be run manually. |
-| **No coverage measurement** | No `.coveragerc`, no `pytest-cov`, no per-line coverage data. |
-| **No pytest configuration** | `conftest.py` is empty. No fixtures, no markers, no plugins. |
+| **CI test execution** | `.github/workflows/test.yml` runs the fast-fail set (Gates 1-3) in `mock-tests` and all 4 gates (with `HYDRA_MCP_INTEGRATION=1`) in `qgis-smoke-test`. The `qgis-smoke-test` is `continue-on-error: true` because QGIS isn't always available. |
+| **No coverage measurement** | Covered by `tools/fast_fail.sh` instead. See §5.9 below. |
+| **No pytest configuration** | `conftest.py` is empty. No fixtures, no markers, no plugins. (Pytest is not used in CI.) |
 | **No test dependency specification** | `requirements.txt` has only runtime deps. |
-| **No mocking strategy** | QGIS-dependent code cannot be unit-tested. |
+| **No mocking strategy** | QGIS-dependent code cannot be unit-tested; `tests/mocks/qgis_env.py` provides a synthetic fallback (with limitations — see audit warnings). |
 | **Duplicate mesh helpers** | Every test file reinvents `_make_rect_mesh`. |
 | **No tox.ini** | No multi-python-version test matrix. |
+
+### 5.9 Fast-fail discipline (token-efficient)
+
+The **fast-fail set** (`tools/fast_fail.sh`) is the project's coverage surrogate. It catches the 12 LLM failure modes catalogued in `docs/audit/2026-07-26-test-infrastructure-audit.md` §4. Coverage % is a poor proxy for "catches LLM failure modes" — see the audit's §6 for the rationale.
+
+The fast-fail set has 4 stages:
+1. **collect-only** — every test must import cleanly (catches worktree-merge drift, deleted-source references)
+2. **self-tests** — `tests/test_self/` flags LLM-spec drift, test theatre, stale skip markers
+3. **wired-in** — Qt shim regression + CLI/GUI parity (real Qt required)
+4. **mcp-walk** — integration test of the MCP bridge (real QGIS + MCP required)
+
+Run:
+```bash
+mamba run -n qgis_stable bash tools/fast_fail.sh                       # ~20s, gates 1-3
+HYDRA_MCP_INTEGRATION=1 mamba run -n qgis_stable bash tools/fast_fail.sh  # ~60s, all 4 gates
+```
+
+See `docs/specs/2026-07-26-test-discipline-design.md` for the design spec.
 
 ### 6.5 Recommended Test Targets (Priority Order)
 
@@ -982,165 +1003,227 @@ After editing a `.ui` file, verify all widgets have Python bindings:
 python3 tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing
 ```
 
+### 7.8 Drainage Module Development
+
+The drainage module uses a unified face mesh for coupling between the 1D pipe network and 2D surface solver. This section covers GPU-specific patterns for drainage development.
+
+#### Face Class Dispatch
+
+The GPU solver uses integer class codes for face flux computation:
+
+| Class | Name | Direction | Kernel |
+|-------|------|-----------|---------|
+| 0 | PIPE_INTERIOR | Bidirectional | `swe2d_pipe1d_face_flux_interior_kernel` |
+| 1 | PIPE_UPSTREAM | Forward → Backward | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 2 | PIPE_DOWNSTREAM | Forward → Backward | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 3 | STORAGE_PIPE | Bidirectional | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 4 | SURFACE_2D_INLET | Surface → Pipe | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 5 | SURFACE_2D_JUNCTION_OVERFLOW | Pipe → Surface | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 6 | SURFACE_2D_PIPE_END | Bidirectional | `swe2d_pipe1d_face_flux_boundary_kernel` |
+| 7 | SURFACE_2D_OUTFALL | Pipe → Surface | `swe2d_pipe1d_face_flux_boundary_kernel` |
+
+**Dispatch logic** (in `pipe1d.cu` unified face kernel):
+```cpp
+switch (face_class) {
+    case 0: // Interior
+        flux = godunov_flux(A_L, Q_L, A_R, Q_R, d_slope_A, d_slope_Q);
+        break;
+    case 3: // Storage → pipe (manhole overflow)
+        flux = storage_pipe_flux(A, Q, h, cell_surface_area, max_depth);
+        break;
+    case 4: // Inlet capture
+        flux = inlet_capture_flux(h_2d, inlet_geometry);
+        break;
+    // ... other cases
+}
+```
+
+#### Adding a New Face Class
+
+To add a new face class (e.g., a new hydraulic structure):
+
+1. **Add class code** to `pipe1d.cuh` enum (unused codes: 8+)
+2. **Implement flux function** in `pipe1d.cu`
+3. **Add dispatch case** in unified face kernel
+4. **Wire mesh builder** to assign class codes
+5. **Add test** in `test_pipe1d_solver.py`
+
+**Example** (adding a "WEIR_OVERFLOW" class):
+
+```cpp
+// pipe1d.cuh
+enum FaceClass {
+    // ... existing classes 0-7
+    WEIR_OVERFLOW = 8,  // New class
+};
+
+// pipe1d.cu
+__device__ double weir_overflow_flux(...) {
+    // Implement weir overflow equation
+    return Q_weir;
+}
+
+// In unified face kernel:
+case 8: // WEIR_OVERFLOW
+    flux = weir_overflow_flux(A, Q, h, weir_params);
+    break;
+```
+
+#### GPU Array Lifecycle
+
+**Allocation** (in `swe2d_pipe1d_build_unified_mesh`):
+```cpp
+// Per-cell state (always allocated)
+cudaMalloc(&d->d_A, n_cells_all * sizeof(double));
+cudaMalloc(&d->d_Q, n_cells_all * sizeof(double));
+// ... geometry arrays
+
+// MUSCL reconstruction (allocated if recon_method == 1)
+if (recon_method == 1) {
+    cudaMalloc(&d->d_slope_A, n_pipe_cells * sizeof(double));
+    cudaMalloc(&d->d_slope_Q, n_pipe_cells * sizeof(double));
+}
+```
+
+**Deallocation** (in `Pipe1DDeviceState::destroy`):
+```cpp
+cudaFree(d->d_A);
+cudaFree(d->d_Q);
+// ... other arrays
+cudaFree(d->d_slope_A);  // Safe to free even if nullptr
+```
+
+**Best practices**:
+- Always check for nullptr before cudaFree
+- Use structured binding (RAII) when possible
+- Log allocation size for debugging OOM
+
+#### Test Patterns
+
+**Minimal drainage network test**:
+```python
+def _mesh(dev, n_links=1):
+    """Build minimal 2-node, 1-link mesh for testing."""
+    _MOD.swe2d_build_unified_mesh(
+        dev_ptr=dev,
+        n_links=n_links,
+        link_from=np.array([0], dtype=np.int32),
+        link_to=np.array([1], dtype=np.int32),
+        L=np.array([10.0], dtype=np.float64),
+        D=np.array([1.0], dtype=np.float64),
+        n_mann=np.array([0.013], dtype=np.float64),
+        # ... required parameters
+    )
+```
+
+**Test structure** (see `test_pipe1d_solver.py`):
+```python
+@unittest.skipUnless(_gpu, "CUDA GPU not available")
+class TestDrainageFeature(unittest.TestCase):
+    def setUp(self):
+        self.b = _backend()  # Creates 2D surface mesh
+        self.dev = int(_MOD.swe2d_get_coupling_dev_ptr())
+        
+    def test_feature_behavior(self):
+        """Test specific drainage feature."""
+        # 1. Build mesh
+        nc = _mesh(self.dev)
+        # 2. Initialize state
+        _MOD.swe2d_pipe1d_upload_cell_h(self.dev, np.full(nc, 0.5))
+        _MOD.swe2d_pipe1d_init_cell_area(self.dev, 1.0e-10)
+        # 3. Run solver
+        for _ in range(10):
+            _MOD.swe2d_pipe1d_step(self.dev, 0.05, 'rk2', ...)
+        # 4. Verify results
+        st = _MOD.swe2d_pipe1d_readback_cell_state(self.dev, nc)
+        self.assertTrue(np.all(np.isfinite(st['cell_A'])))
+        self.b.destroy()
+```
+
+**Mass conservation test pattern**:
+```python
+def test_coupled_mass_conservation(self):
+    """Verify mass is conserved across 2D-1D coupling."""
+    # Measure initial mass
+    initial_2d = np.sum(h * cell_area)
+    initial_1d = np.sum(A * length)
+    
+    # Run simulation
+    for _ in range(100):
+        controller.apply_native_device_sources(t, dt)
+        backend.step(dt)
+    
+    # Measure final mass
+    final_2d = np.sum(h * cell_area)
+    final_1d = np.sum(A * length)
+    
+    # Verify conservation (account for sources)
+    expected_change = source_integral * dt
+    actual_change = (final_2d + final_1d) - (initial_2d + initial_1d)
+    self.assertAlmostEqual(actual_change, expected_change, places=6)
+```
+
+#### Debugging GPU Drainage
+
+**Enable verbose logging**:
+```python
+import logging
+logging.getLogger("swe2d.runtime.coupling").setLevel(logging.DEBUG)
+```
+
+**Common issues and fixes**:
+
+| Issue | Symptom | Fix |
+|-------|----------|-----|
+| NaN values | Simulation blows up | Check CFL, verify geometry (non-zero width/height), check loss coefficients |
+| No coupling | 1D and 2D don't exchange | Verify inlet/pipe-end cell indices, check face class assignment |
+| Mass not conserved | Unexpected mass loss/gain | Verify flux matching at faces, check source term integration |
+| Wrong depths | Readback depth doesn't match | Check invert elevations, verify `cell_height` vs `cell_h` (cross-section vs flow depth) |
+
+**CUDA debugging**:
+```bash
+# Synchronous kernel launches for better error messages
+export CUDA_LAUNCH_BLOCKING=1
+
+# Check for GPU memory leaks
+cuda-memcheck --leak-check full python3 -m pytest tests/test_pipe1d_solver.py
+
+# Profile GPU usage
+nvprof --print-gpu-trace python3 -m pytest tests/test_pipe1d_solver.py::TestLakeAtRest
+```
+
+**Inspection tools**:
+```python
+# Read back intermediate state
+state = _MOD.swe2d_pipe1d_readback_cell_state(dev, n_cells)
+print(f"Max depth: {np.max(state['cell_h'])}")
+print(f"Max flow: {np.max(np.abs(state['cell_Q']))}")
+print(f"Cell classes: {np.unique(state['cell_class'])}")
+```
+
 ---
 
 ## 8. Studio UI API Reference
 
-### 8.1 Overview
-
-The Studio UI provides a **component-based API** for adding, removing, and
-managing dock widgets and left-pane tabs.  All docks go through a registry
-that ensures they survive the host-window teardown process automatically.
-
-**Key files:**
-
-| File | Role |
-|------|------|
-| `swe2d/workbench/studio_component.py` | `StudioComponent` dataclass + tab registry |
-| `swe2d/workbench/studio_dialog.py` | `SWE2DWorkbenchStudioDialog` — the UI host; contains inlined dock extraction methods |
-
-
-### 8.2 `StudioComponent` Dataclass
-
-```python
-@dataclass
-class StudioComponent:
-    name: str                          # Unique key (e.g. "results")
-    dock: QDockWidget                  # The staging dock widget
-    area: Qt.DockWidgetArea            # Left, Right, Bottom, Top
-    title: str = ""                    # Title bar text (defaults to name.title())
-    object_name: str = ""              # Qt objectName (defaults to "SWE2DStudio{Name}Dock")
-    tab_with: Optional[str] = None     # Tabify with another component name
-    collapsible: bool = True           # Allow user to close/hide
-    populate: Optional[Callable] = None # Callback to fill dock with widgets
-```
-
-### 8.3 Adding a New Dock (Recommended Pattern)
-
-Use ``_build_component()`` — a single call handles creation + population +
-registration:
-
-```python
-def _populate_my_dock(self, dock: QDockWidget) -> None:
-    """Fill the dock with widgets."""
-    content = QtWidgets.QWidget()
-    layout = QtWidgets.QVBoxLayout(content)
-    layout.addWidget(QtWidgets.QLabel("My panel content"))
-    dock.setWidget(content)
-
-# In _build_ui():
-self._build_component(
-    name="my_panel",
-    title="My Panel",
-    area=QtCore.Qt.RightDockWidgetArea,
-    tab_with="inspector",          # optional: tab with CFD Inspector
-    populate=self._populate_my_dock,
-)
-```
-
-That's it.  No edits to the extraction pipeline.  No double-extraction bugs.
-The dock automatically survives into QGIS.
-
-### 8.4 Adding a Dock Manually (Two-Step Pattern)
-
-If you need more control over the dock before registering:
-
-```python
-# Step 1: Create the dock
-self._studio_my_dock = QtWidgets.QDockWidget("My Dock", self._studio_main_window)
-self._studio_my_dock.setObjectName("SWE2DStudioMyDock")
-self._studio_my_dock.setFeatures(...)
-# ... populate ...
-self._studio_main_window.addDockWidget(area, self._studio_my_dock)
-
-# Step 2: Register it
-self._register_component(StudioComponent(
-    name="my_panel",
-    dock=self._studio_my_dock,
-    area=area,
-    tab_with="inspector",
-))
-```
-
-### 8.5 Removing a Dock at Runtime
-
-```python
-self._destroy_component("my_panel")
-```
-
-This disconnects signals, removes the dock from the staging window, and
-schedules Qt cleanup.
-
-### 8.6 Adding a Left-Pane Tab
-
-```python
-def _build_my_tab_page(self) -> QtWidgets.QWidget:
-    page = QtWidgets.QWidget()
-    layout = QtWidgets.QVBoxLayout(page)
-    layout.addWidget(QtWidgets.QLabel("My tab content"))
-    return page
-
-# In _compose_left_pane():
-self._register_left_tab("My Tab", self._build_my_tab_page)
-```
-
-The tab is automatically added to ``self._left_tabs`` during composition.
-The tab order follows registration order.
-
-### 8.7 Migration Guide (Old → New API)
-
-| Old Pattern | New API |
-|-------------|---------|
-| ``self._studio_docks["x"] = dock`` | ``self._register_component(StudioComponent(...))`` |
-| Manual ``getattr`` in ``_build_studio_component_docks`` | Registry auto-iteration |
-| Manual ``_mkdock`` + ``_attach_host_dock_widget`` per dock | Handled by ``_build_component()`` |
-| Manual ``tabifyDockWidget`` per dock | Handled by ``tab_with`` parameter |
-| ``self._left_tabs.addTab(self._wrap_left_tab_page(...), "Label")`` | ``self._register_left_tab("Label", builder)`` |
-
-### 8.8 Architecture Diagram
-
-```
-SWE2DWorkbenchStudioDialog._build_ui()
-    │
-    ├── self._build_component("setup",   ...)  ──→  _register_component()
-    ├── self._build_component("inspector",...)  ──→  _register_component()
-    ├── self._build_component("results", ...)  ──→  _register_component()
-    │
-    └── _build_studio_component_docks()
-            │
-            ├── _extract_registered_docks()     # Iterates _studio_components
-            ├── _mkdock() per component         # Creates QGIS host docks
-            ├── _attach_host_dock_widget()      # Adds to QGIS window
-            └── _tabify_registered_docks()      # Handles tab_with links
-```
-
-### 8.9 Best Practices
-
-1. **Always use ``_build_component()``** for new docks — it's one call with
-   no risk of forgetting to populate or register.
-
-2. **Use the ``populate`` callback pattern** — keeps dock construction in a
-   focused method rather than inline in ``_build_ui()``.
-
-3. **Set ``tab_with`` for related panels** — the results dock is tabbed with
-   the inspector by default.  New analysis panels should follow the same
-   pattern so QGIS doesn't fill with floating docks.
-
-4. **Name docks consistently** — use ``SWE2DStudio{Name}Dock`` for the staging
-   dock and ``SWE2DStudio{Name}HostDock`` for the extracted host dock.
-   The ``StudioComponent`` dataclass auto-generates these defaults.
-
-5. **Use ``destroy_component()`` for cleanup** — never call ``dock.close()``
-   or ``dock.deleteLater()`` directly.  Always go through the registry so
-   the ``_studio_docks`` fallback dict stays in sync.
-
-6. **Left-pane tabs go through ``_register_left_tab()``** — this ensures
-   the tab is properly wrapped with ``_wrap_left_tab_page()`` and registered
-   with ``_register_detachable_tab_widget()``.
-
-7. **Signal safety** — before destroying any widget, call
-   ``widget.blockSignals(True)``.  The ``_destroy_component()`` method does
-   this automatically.
+> **Removed 2026-07-26.** This section described a `StudioComponent`
+> registry and helper methods (`_build_component`, `_register_component`,
+> `_destroy_component`, `_register_left_tab`, `_build_studio_component_docks`,
+> `_extract_registered_docks`, `SWE2DStudio{Name}Dock` / `{Name}HostDock`
+> naming) that **never shipped**. The methods shown here either don't exist
+> at the documented path (`swe2d/workbench/studio_component.py`) or don't
+> exist at all.
+>
+> The actual Studio API lives at:
+>
+> - **[Studio GUI API](STUDIO_GUI_API.md)** — public protocols and types (canonical reference)
+> - **Code:** `swe2d/workbench/workbench_dialog_builder.py:248` (`WorkbenchDialogBuilder._build_component`), `swe2d/workbench/views/studio_component_view.py:29` (`StudioComponent`)
+>
+> Real feature-toggle methods live on `SWE2DWorkbenchStudioDialog`:
+> `_studio_set_feature_enabled` (line 1617) and `_studio_feature_keywords`
+> (line 1636). For anything else, see `STUDIO_GUI_API.md` and read the
+> source.
+>
+> Section preserved as an anchor only.
 
 ---
 
@@ -1213,6 +1296,99 @@ graphify explain "KernelGraphCache"
 ```
 
 See `graphify-out/wiki/index.md` for the full community listing.
+
+---
+
+## 10. MCP Server
+
+HYDRA includes an [MCP](https://modelcontextprotocol.io/) server under
+`tools/hydra_mcp/` that exposes the solver's modeling and live-GUI
+capabilities to AI agents. The server is a thin adapter layer: it does not
+re-implement modeling logic; every tool delegates to the same core modules
+used by the CLI and the Studio workbench.
+
+### 10.1 Layout
+
+| File | Responsibility |
+|------|----------------|
+| `server.py` | FastMCP stdio server; registers all 39 tools. |
+| `tools_modeling.py` | Tier A Phase 0 read-only tools (`model_inspect`, `run_list`, `results_query`). |
+| `tools_modeling_phase1.py` | Tier A Phase 1 modeling tools (mesh, terrain, BCs, runs, results). |
+| `tools_gui.py` | Tier B/C live GUI tools (`gui_launch`, `gui_widget_tree`, `gui_get_value`, `gui_click`, …). |
+| `qgis_bridge.py` | In-process bridge that runs **inside QGIS**; owns a `QLocalServer` and executes handlers on the Qt GUI thread. |
+| `bridge_client.py` | `QLocalSocket` client used by `tools_gui.py`; token auth and length-prefixed JSON-RPC framing. |
+| `widget_screenshot.py` | QBuffer-based widget screenshot helper. |
+| `tools_design.py` | Tier C design tools (source-editing proposals; `design_apply_patch` is disabled by default). |
+
+### 10.2 Running the server locally
+
+Launch the server from the **same Python environment that QGIS uses** — the
+one that has `qgis`, `osgeo`, and the HYDRA plugin on `sys.path`:
+
+```bash
+PYTHONPATH="/path/to/qgis/share/python:$PWD" \
+  /path/to/qgis-env/bin/python tools/hydra_mcp/server.py
+```
+
+Smoke-test the stdio transport with a JSON-RPC exchange:
+
+```bash
+python tools/hydra_mcp/server.py <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+EOF
+```
+
+The response should list 39 tools. If the server is launched from a different
+environment, expect failures importing `osgeo` or loading the native
+`cpython-312` solver extensions.
+
+### 10.3 Live GUI bridge
+
+The live GUI tools need a bridge running **inside** the QGIS process:
+
+- **At QGIS launch:** `HYDRA_MCP_BRIDGE=1 qgis`
+- **Python Console (already-running QGIS):**
+  ```python
+  from tools.hydra_mcp.qgis_bridge import bootstrap_bridge_if_needed
+  bootstrap_bridge_if_needed()
+  ```
+- **Workbench menu:** **HYDRA2DGPU → Start Hydra MCP Bridge** / **Restart Hydra MCP Bridge**.
+
+When the bridge starts it prints and logs:
+
+```text
+HYDRA_MCP_BRIDGE_READY <socket_name> <token_path>
+```
+
+The token file (mode `0600`) lives under `$XDG_RUNTIME_DIR` or `/tmp`. MCP
+tools auto-discover the newest token, or you can pass `token_path` explicitly.
+
+The bridge is **single-flight** (one request at a time) and **same-machine
+only** (`QLocalSocket`). It is opt-in: unsetting `HYDRA_MCP_BRIDGE` and not
+starting the bridge leaves normal plugin use unaffected.
+
+### 10.4 Adding a tool
+
+1. Implement the capability in the appropriate core module (do not re-implement
+   modeling logic in the MCP package).
+2. Add a thin wrapper in the relevant `tools_*.py` file.
+3. Register it in `server.py` with `@mcp.tool()`.
+4. Return structured results: `{"ok": true, ...}` on success or
+   `{"ok": false, "error": ...}` on failure. Never return raw tracebacks.
+
+### 10.5 Testing
+
+- Headless modeling tools can be exercised directly or through the server stdio
+  interface.
+- GUI bridge tests require a QGIS event loop. Use `QT_QPA_PLATFORM=offscreen`
+  or `xvfb-run` for headless CI runs.
+- See `tests/test_workbench_gui.py` and the GPU validation suite referenced in
+  `AGENTS.md` for existing patterns.
+
+For the full tool list and roadmap, see `tools/hydra_mcp/README.md` and
+`docs/HYDRA_MCP_SERVER_PLAN.md`.
 
 ---
 

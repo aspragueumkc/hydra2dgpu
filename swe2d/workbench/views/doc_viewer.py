@@ -89,22 +89,70 @@ AVAILABLE_DOCS: List[DocEntry] = [
 
 # ── File I/O ─────────────────────────────────────────────────────────────
 
-def _resolve_guide_path(filename: str) -> str:
-    """Find ``filename`` in ``docs/`` relative to plugin root."""
-    from hydra2dgpu import PLUGIN_ROOT
-    c = os.path.join(PLUGIN_ROOT, "docs", filename)
-    if os.path.exists(c):
-        return c
-    raise FileNotFoundError(f"Cannot find '{filename}' — tried: {c}")
+# Public repo URL for the "guide not bundled" fallback. Mirror
+# metadata.txt::homepage; trailing slash for direct concat.
+_DOC_REPO_BASE = "https://github.com/aspragueumkc/hydra2dgpu/blob/main/docs"
+
+
+def _resolve_guide_path(filename: str) -> Optional[str]:
+    """Find ``filename`` in the docs tree, or None if it's not bundled.
+
+    Two candidate locations:
+      1. Dev layout: PLUGIN_ROOT/../docs/<filename>  (repo's docs/ dir)
+      2. Production layout: PLUGIN_ROOT/docs/<filename>  (zipped with the plugin)
+    """
+    # The plugin folder is uppercase HYDRA2DGPU in production zip install
+    # (matches metadata.txt::name=) and lowercase hydra2dgpu in dev symlink.
+    # Try both — aliasing in sys.modules would shadow the `hydra_swe2d` C ext.
+    try:
+        from HYDRA2DGPU import PLUGIN_ROOT
+    except ImportError:
+        from hydra2dgpu import PLUGIN_ROOT
+    candidates = [
+        os.path.normpath(os.path.join(PLUGIN_ROOT, "..", "docs", filename)),
+        os.path.normpath(os.path.join(PLUGIN_ROOT, "docs", filename)),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 
 def _resolve_doc_path(filename: str) -> str:
-    """Resolve a guide filename to its absolute path under docs/."""
-    return _resolve_guide_path(filename)
+    """Resolve a guide filename to its absolute path under docs/.
+
+    Raises FileNotFoundError if not bundled — used by callers that want
+    to know definitively whether a file is local (e.g., the C++ API tab).
+    """
+    p = _resolve_guide_path(filename)
+    if p is None:
+        raise FileNotFoundError(
+            f"Cannot find '{filename}' — not bundled with this install"
+        )
+    return p
 
 
 def _load_markdown(filename: str) -> str:
-    """Read and return the raw markdown content of a guide file."""
-    with open(_resolve_doc_path(filename), encoding="utf-8") as fh:
+    """Read and return the raw markdown content of a guide file.
+
+    If the guide isn't bundled with the install, return a synthetic
+    "see public repo" message so the workbench tab still renders
+    something useful instead of crashing.
+    """
+    p = _resolve_guide_path(filename)
+    if p is None:
+        title = next(
+            (d.title for d in AVAILABLE_DOCS if d.filename == filename),
+            filename,
+        )
+        url = f"{_DOC_REPO_BASE}/{filename}"
+        return (
+            f"# {title}\n\n"
+            f"**This guide isn't bundled with this installation.**\n\n"
+            f"Read the full version in the public repository:\n\n"
+            f"<{url}>\n"
+        )
+    with open(p, encoding="utf-8") as fh:
         return fh.read()
 
 
@@ -510,9 +558,15 @@ class DocHubWidget(QWidget):
         # External docs (e.g. C++ API Doxygen) — open in browser
         if not entry.filename:
             import webbrowser
-            from hydra2dgpu import PLUGIN_ROOT
+            # Plugin folder is uppercase HYDRA2DGPU in production zip install,
+            # lowercase hydra2dgpu in dev symlink — try both. Aliasing in
+            # sys.modules would shadow the hydra_swe2d C extension.
             try:
-                doxy_dir = os.path.join(PLUGIN_ROOT, "docs", "cpp", "api")
+                from HYDRA2DGPU import PLUGIN_ROOT
+            except ImportError:
+                from hydra2dgpu import PLUGIN_ROOT
+            try:
+                doxy_dir = os.path.normpath(os.path.join(PLUGIN_ROOT, "..", "docs", "cpp", "api"))
                 doxy_path = os.path.join(doxy_dir, "index.html")
                 if os.path.exists(doxy_path):
                     webbrowser.open(f"file://{doxy_path}")

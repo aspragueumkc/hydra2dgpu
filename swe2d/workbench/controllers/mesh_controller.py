@@ -157,6 +157,7 @@ class MeshController:
         except RuntimeError:
             pass
         try:
+            view._update_mesh_canvas_layer()
             view._refresh_plot()
         except RuntimeError:
             pass
@@ -640,16 +641,8 @@ class MeshController:
                 )
                 return
 
-            import os as _os
-            from qgis.core import QgsEditFormConfig as _Cfg
             from swe2d.workbench.services.gpkg_layer_styles_service import (
                 apply_qml_style_from_gpkg as _apply_style,
-            )
-
-            # Absolute path to the bundled form init file
-            _form_init_path = _os.path.join(
-                _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))),
-                "QML", "form_init.py",
             )
 
             # Build layer tree groups matching the reference project
@@ -704,17 +697,6 @@ class MeshController:
                 else:
                     _root.addLayer(lyr)
                 _apply_style(lyr, gpkg_path)
-                # Wire form init for layers with ID-based dropdowns
-                _fn = {
-                    "swe2d_rain_gages": "rain_gages_form_init",
-                    "swe2d_bc_lines": "bc_lines_form_init",
-                    "swe2d_internal_flow_sources": "internal_flow_form_init",
-                }.get(name)
-                if _fn is not None and _os.path.exists(_form_init_path):
-                    cfg = lyr.editFormConfig()
-                    cfg.setInitFunction(_fn)
-                    cfg.setInitFilePath(_form_init_path)
-                    cfg.setInitCodeSource(_Cfg.CodeSourceFile)
 
             self._view._layer_controller.refresh_layer_combos()
             view._model_gpkg_path = str(gpkg_path)

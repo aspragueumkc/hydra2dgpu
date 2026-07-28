@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for swe2d.results.high_perf_viewer — renderer overlay field rendering.
 
-Requires real PyQt5 (QImage/QPainter) for rendering tests.  When QGIS mocks
-are installed before real PyQt5 imports, ``qgis.PyQt`` delegates to real Qt
-classes so these tests can run headlessly.
+Requires real Qt (QImage/QPainter) for rendering tests.  When QGIS mocks
+are installed before real ``qgis.PyQt`` imports, ``qgis.PyQt`` delegates
+to real Qt classes so these tests can run headlessly.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ for _p in (_REPO_ROOT, _BUILD_DIR):
 # ---------------------------------------------------------------------------
 # Headless Qt + mock QGIS bootstrap — same pattern as test_swe2d_overlay_and_autoload
 # ---------------------------------------------------------------------------
-from PyQt5.QtGui import QImage as _RealQImage, QPainter as _RealQPainter
-from PyQt5.QtWidgets import QApplication as _QApp
+from qgis.PyQt.QtGui import QImage as _RealQImage, QPainter as _RealQPainter
+from qgis.PyQt.QtWidgets import QApplication as _QApp
 
 _test_app = _QApp.instance()
 if _test_app is None:
@@ -67,7 +67,7 @@ def _make_timesteps(
 
 
 # =========================================================================
-# Renderer tests — require real PyQt5
+# Renderer tests — require real Qt
 # =========================================================================
 
 class TestRenderOverlayFields(unittest.TestCase):
@@ -80,7 +80,7 @@ class TestRenderOverlayFields(unittest.TestCase):
         _il.invalidate_caches()
         if not _HAS_REAL_QT:
             raise unittest.SkipTest(
-                "Real PyQt5 QImage/QPainter unavailable — skipping rendering tests"
+                "Real Qt QImage/QPainter unavailable — skipping rendering tests"
             )
         _test_app  # ensure QApplication exists
 

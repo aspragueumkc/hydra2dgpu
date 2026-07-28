@@ -23,7 +23,7 @@ _TIME_UNIT = "hr"  # time is always displayed in hours
 
 def _unit_labels(length_unit: str = "") -> dict:
     """Return model-unit-aware label strings.  Empty string → fall back to swe2d.units."""
-    lu = str(length_unit or _u.length_unit_name() or "m").strip().lower()
+    lu = str(length_unit or _u.length_unit_name()).strip().lower()
     if lu == "ft":
         return {"len": "ft", "flow": "ft³/s", "vel": "ft/s"}
     return {"len": "m", "flow": "m³/s", "vel": "m/s"}
@@ -33,13 +33,13 @@ def _label_for_var(var_key: str, length_unit: str = "") -> str:
     """Build a (unit-aware) display label for a known TS / profile variable key."""
     u = _unit_labels(length_unit)
     table = {
-        "flow_cms":      f"Flow ({u['flow']})",
-        "depth_m":       f"Depth ({u['len']})",
-        "wse_m":         f"WSE ({u['len']})",
-        "velocity_ms":   f"Velocity ({u['vel']})",
-        "station_m":     f"Station ({u['len']})",
-        "bed_m":         f"Bed ({u['len']})",
-        "egl_m":         f"EGL Error ({u['len']})",
+        "flow":      f"Flow ({u['flow']})",
+        "depth":       f"Depth ({u['len']})",
+        "wse":         f"WSE ({u['len']})",
+        "velocity":   f"Velocity ({u['vel']})",
+        "station":     f"Station ({u['len']})",
+        "bed":         f"Bed ({u['len']})",
+        "egl":         f"EGL Error ({u['len']})",
         "fr":            "Froude number",
         "flow_qn":       f"Normal flow ({u['flow']})",
     }
@@ -51,10 +51,10 @@ def _ts_var_labels(length_unit: str = "") -> List[Tuple[str, str]]:
     """ts var labels."""
     u = _unit_labels(length_unit)
     return [
-        (f"Flow ({u['flow']})",          "flow_cms"),
-        (f"Depth ({u['len']})",          "depth_m"),
-        (f"WSE ({u['len']})",            "wse_m"),
-        (f"Velocity ({u['vel']})",       "velocity_ms"),
+        (f"Flow ({u['flow']})",          "flow"),
+        (f"Depth ({u['len']})",          "depth"),
+        (f"WSE ({u['len']})",            "wse"),
+        (f"Velocity ({u['vel']})",       "velocity"),
     ]
 
 
@@ -63,9 +63,9 @@ def _profile_var_labels(length_unit: str = "") -> List[Tuple[str, str]]:
     u = _unit_labels(length_unit)
     return [
         ("WSE + Bed",                    "wse_bed"),
-        (f"Depth ({u['len']})",          "depth_m"),
-        (f"Velocity ({u['vel']})",       "velocity_ms"),
-        (f"EGLError ({u['len']})",       "egl_m"),
+        (f"Depth ({u['len']})",          "depth"),
+        (f"Velocity ({u['vel']})",       "velocity"),
+        (f"EGLError ({u['len']})",       "egl"),
     ]
 
 
@@ -74,19 +74,15 @@ def _profile_fill_labels(length_unit: str = "") -> List[Tuple[str, str]]:
     u = _unit_labels(length_unit)
     return [
         ("None",                         "none"),
-        (f"Depth ({u['len']})",          "depth_m"),
-        (f"Velocity ({u['vel']})",       "velocity_ms"),
-        (f"Flow ({u['flow']})",          "flow_cms"),
+        (f"Depth ({u['len']})",          "depth"),
+        (f"Velocity ({u['vel']})",       "velocity"),
+        (f"Flow ({u['flow']})",          "flow"),
     ]
 
 
-# Keep the static _TS_VARIABLES / _PROFILE_VARIABLES / _PROFILE_FILL_OPTIONS symbols
-# for any existing imports, but prefer the unit-aware builders above.  These assume
-# SI ("m") as a static fallback for imports that happen before the unit system
-# is configured.
-_TS_VARIABLES: List[Tuple[str, str]] = _ts_var_labels()
-_PROFILE_VARIABLES: List[Tuple[str, str]] = _profile_var_labels()
-_PROFILE_FILL_OPTIONS: List[Tuple[str, str]] = _profile_fill_labels()
+# Dynamic unit-aware labels: prefer the per-call builder functions above.
+# No module-level constants — they would lock to SI if imported before
+# swe2d.units.configure() is called from the CRS handler.
 
 _PROFILE_CMAP_OPTIONS: List[Tuple[str, str]] = [
     ("Viridis", "viridis"),
@@ -192,7 +188,7 @@ def render_timeseries_on_figure(
 
     fig.clear()
     ax = fig.add_subplot(111)
-    var_key = getattr(result_data, "ts_var_key", "flow_cms")
+    var_key = getattr(result_data, "ts_var_key", "flow")
     var_label = _label_for_var(var_key, length_unit)
     render_timeseries(
         ax=ax,

@@ -1,0 +1,67 @@
+# .publicsync-ignore — paths that stay in private and never sync to public
+#
+# Format: rsync --exclude-from syntax. One pattern per line. Trailing slashes
+# match directories only; bare names match anywhere in the tree.
+#
+# Add a path here when:
+#   - it's tracked in private (visible in `git status` / git history), AND
+#   - it should NOT appear in the public repo (sanitized mirror)
+#
+# Anything that should NEVER appear in either repo (build artifacts, etc.)
+# belongs in .gitignore instead.
+
+# Agent infrastructure
+.opencode/
+.agents/
+.vscode/
+.kimi-code/
+.superpowers/
+
+# Agent plan / spec docs (superpowers workflow artifacts)
+docs/superpowers/
+docs/plans/
+docs/specs/
+docs/audits/
+docs/audit/
+docs/audits/2026-07-25/
+
+# Private session captures and debug dumps
+docs/session/
+docs/session/**
+docs/notes/
+docs/research/
+session-ses_*.md
+pipe1d_debug-*.md
+gui_regresions_from_cli-first_refactor.md
+mcp_run_test.json
+pipe_1d_test.json
+diagnostic_dump_*.py
+1000
+10000
+a.out
+report_output/
+
+# Generated SWMM result reports (carry private absolute paths)
+tests/swmm_validation/
+
+# Local databases and caches
+user-history.db
+symbology-style.db
+tests/artifacts/
+tests/results/
+
+# Personal reference material
+reference/
+docs/_legacy_guides/
+
+# CMake in-source build leftovers that were tracked historically
+build_debug/
+
+# Agent memory index
+.memory/
+
+# Internal / private documentation that documents machine-specific paths
+docs/HANDOFF_DEV_ENV_INFRASTRUCTURE.md
+docs/RUN_SPEC_SCHEMA.md
+docs/2026-07-25_STUDIO_GUI_FIRST_PASS_REVIEW.md
+docs/images/

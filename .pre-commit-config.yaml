@@ -1,0 +1,18 @@
+# .pre-commit-config.yaml — HYDRA fast-fail hook
+#
+# Invokes tools/fast_fail.sh on every commit. Gate 3 (wired-in tests
+# for Qt shim + CLI/GUI parity) requires the qgis_stable mamba env,
+# so the hook wraps the script in `mamba run -n qgis_stable`.
+# To run Gate 4 (MCP walk) manually before PR:
+#   HYDRA_MCP_INTEGRATION=1 mamba run -n qgis_stable bash tools/fast_fail.sh
+#
+# Spec: docs/specs/2026-07-26-test-discipline-design.md §3.5
+repos:
+  - repo: local
+    hooks:
+      - id: fast-fail
+        name: HYDRA fast-fail
+        entry: mamba run -n qgis_stable bash tools/fast_fail.sh
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -1,3 +1,4 @@
+import unittest
 """Tests for swe2d.boundary_and_forcing.native_bc_forcing.BoundaryHydrographConfigurator.
 
 Extracted from swe2d.runtime.native_bc_forcing. The configurator is pure logic;
@@ -110,3 +111,20 @@ def test_configurator_builds_progressive_data_when_requested():
     assert payload["progressive_data"] is not None
     assert payload["progressive_data"]["n_groups"] == 1
     assert payload["progressive_data"]["n_edges_total"] == 2
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

@@ -11,43 +11,48 @@ from qgis.PyQt import QtCore, QtWidgets
 
 
 class SaveConfigDialog(QtWidgets.QDialog):
-    """Dialog shown after GPKG is selected — collects config name and save options.
+    """Dialog shown after GPKG is selected — collects the new table name and save options.
 
     Parameters
     ----------
     gpkg_path : str
         Path to the GPKG file already selected by the user.
-    existing_config_ids : list of str
-        Config IDs already present in the GPKG (so the user can see
-        what exists and avoid accidental overwrites).
+    existing_table_names : list of str
+        swe2d_* table names already present in the GPKG (so the user can
+        see what exists and avoid accidental overwrites of a whole table).
     widget_state : dict
         The collected widget state to save.
     mesh_name : str
         Name of the associated mesh.
     run_duration_s : float
         Simulation run duration in seconds.
+    default_table_name : str
+        Default value pre-filled in the table-name input.
     save_callback : callable
-        Called with (gpkg_path, config_id, widget_state, description, run_duration_s)
-        when the user confirms the save.
+        Called with
+        ``(gpkg_path, table_name, config_id, widget_state, description, run_duration_s)``
+        when the user confirms the GPKG save. ``config_id`` is derived
+        from the table name (one row per table).
     json_save_callback : callable
-        Called with (json_path, widget_state) when the user saves as JSON.
+        Called with ``(json_path, widget_state)`` when the user saves as JSON.
     parent : QWidget, optional
     """
 
     def __init__(
         self,
         gpkg_path: str,
-        existing_config_ids: List[str],
+        existing_table_names: List[str],
         widget_state: Dict,
         mesh_name: str,
         run_duration_s: float,
-        save_callback: Callable,
+        default_table_name: str = "",
+        save_callback: Callable = None,
         json_save_callback: Optional[Callable] = None,
         parent=None,
     ):
         super().__init__(parent)
         self._gpkg_path = gpkg_path
-        self._existing_ids = list(existing_config_ids)
+        self._existing_tables = list(existing_table_names)
         self._widget_state = widget_state
         self._mesh_name = mesh_name
         self._run_duration_s = run_duration_s
@@ -56,7 +61,7 @@ class SaveConfigDialog(QtWidgets.QDialog):
         self._overwrite_warned = False
 
         self.setWindowTitle("Save Simulation Configuration")
-        self.setMinimumSize(520, 320)
+        self.setMinimumSize(520, 360)
         self.setModal(True)
 
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -65,30 +70,36 @@ class SaveConfigDialog(QtWidgets.QDialog):
         main_layout.addWidget(QtWidgets.QLabel(f"Saving to: {self._gpkg_path}"))
         main_layout.addWidget(QtWidgets.QLabel(f"Mesh: {self._mesh_name}"))
 
-        # ── Existing configs warning ────────────────────────────────────
-        if self._existing_ids:
-            first_five = ", ".join(self._existing_ids[:5])
-            extra = f" ... (+{len(self._existing_ids)-5} more)" if len(self._existing_ids) > 5 else ""
+        # ── Existing tables warning ─────────────────────────────────────
+        if self._existing_tables:
+            first_five = ", ".join(self._existing_tables[:5])
+            extra = f" ... (+{len(self._existing_tables)-5} more)" if len(self._existing_tables) > 5 else ""
             existing_label = QtWidgets.QLabel(
-                f"Existing configs in this GPKG: {first_five}{extra})"
+                f"Existing simulation tables in this GPKG: {first_five}{extra}"
             )
             existing_label.setStyleSheet("color: #888; font-size: 11px;")
             main_layout.addWidget(existing_label)
 
-        # ── Config ID input ─────────────────────────────────────────────
-        config_id_layout = QtWidgets.QHBoxLayout()
-        config_id_layout.addWidget(QtWidgets.QLabel("Configuration name:"))
-        self._config_id_edit = QtWidgets.QLineEdit()
-        self._config_id_edit.setPlaceholderText(
-            "e.g. my_config or swe2d_20250714T120000"
-        )
-        self._config_id_edit.textChanged.connect(self._on_name_changed)
-        config_id_layout.addWidget(self._config_id_edit, 1)
-        main_layout.addLayout(config_id_layout)
+        # ── Table name input (the new GPKG table to add) ───────────────
+        table_layout = QtWidgets.QHBoxLayout()
+        table_layout.addWidget(QtWidgets.QLabel("New GeoPackage table:"))
+        self._table_edit = QtWidgets.QLineEdit()
+        self._table_edit.setPlaceholderText("e.g. swe2d_sim_mymesh_20250726T120000")
+        self._table_edit.setText(str(default_table_name or ""))
+        self._table_edit.textChanged.connect(self._on_name_changed)
+        table_layout.addWidget(self._table_edit, 1)
+        main_layout.addLayout(table_layout)
 
-        # Overwrite warning label (hidden initially)
+        self._invalid_warning = QtWidgets.QLabel(
+            "⚠️  Table name must start with a letter or underscore and contain only "
+            "letters, digits, and underscores."
+        )
+        self._invalid_warning.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self._invalid_warning.setVisible(False)
+        main_layout.addWidget(self._invalid_warning)
+
         self._overwrite_warning = QtWidgets.QLabel(
-            "⚠️  A config with this name already exists — saving will overwrite it."
+            "⚠️  A table with this name already exists — saving will overwrite that table."
         )
         self._overwrite_warning.setStyleSheet("color: #c0392b; font-weight: bold;")
         self._overwrite_warning.setVisible(False)
@@ -148,9 +159,11 @@ class SaveConfigDialog(QtWidgets.QDialog):
 
     def _on_name_changed(self, text: str) -> None:
         name = text.strip()
-        exists = name in self._existing_ids
-        self._overwrite_warning.setVisible(exists)
-        self._save_btn.setEnabled(bool(name))
+        valid = bool(name) and _is_valid_table_name(name)
+        exists = name in self._existing_tables
+        self._invalid_warning.setVisible(bool(name) and not valid)
+        self._overwrite_warning.setVisible(exists and valid)
+        self._save_btn.setEnabled(valid)
 
     def _on_json_browse(self) -> None:
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -165,10 +178,11 @@ class SaveConfigDialog(QtWidgets.QDialog):
             self._json_path_edit.setText(path)
 
     def _on_save(self) -> None:
-        config_id = self._config_id_edit.text().strip()
-        if not config_id:
+        table_name = self._table_edit.text().strip()
+        if not _is_valid_table_name(table_name):
             return
         description = self._desc_edit.text().strip()
+        config_id = table_name  # one row per table; PK = table name keeps it 1:1
 
         if self._format_json.isChecked():
             json_path = self._json_path_edit.text().strip()
@@ -209,11 +223,22 @@ class SaveConfigDialog(QtWidgets.QDialog):
                 )
         else:
             # GPKG save — pass to caller
-            self._save_callback(
-                self._gpkg_path,
-                config_id,
-                self._widget_state,
-                description,
-                self._run_duration_s,
-            )
+            if self._save_callback is not None:
+                self._save_callback(
+                    self._gpkg_path,
+                    table_name,
+                    config_id,
+                    self._widget_state,
+                    description,
+                    self._run_duration_s,
+                )
             self.accept()
+
+
+def _is_valid_table_name(name: str) -> bool:
+    """Return True if *name* is a safe SQLite identifier for a new GPKG table."""
+    if not name or len(name) > 64:
+        return False
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in name)

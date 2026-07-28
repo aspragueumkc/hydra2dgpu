@@ -3,11 +3,7 @@
 import unittest
 import numpy as np
 
-from swe2d.workbench.services.mesh_service import assign_node_z_from_terrain
-from swe2d.services.line_sampling_service import (
-    build_line_sampling_map_numpy,
-    sample_line_metrics,
-)
+from swe2d.core.mesh_service import assign_node_z_from_terrain
 
 
 # ---------------------------------------------------------------------------
@@ -87,173 +83,13 @@ class TestAssignNodeZFromTerrain(unittest.TestCase):
         np.testing.assert_allclose(result, expected)
 
 
-# ---------------------------------------------------------------------------
-# build_line_sampling_map
-# ---------------------------------------------------------------------------
-
-
-class TestBuildLineSamplingMap(unittest.TestCase):
-    def _simple_mesh(self):
-        node_coords = np.array([
-            [0.0, 0.0],
-            [2.0, 0.0],
-            [2.0, 1.0],
-            [0.0, 1.0],
-        ], dtype=np.float64)
-        cell_nodes = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
-        return node_coords, cell_nodes
-
-    def test_horizontal_line_through_center(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        self.assertIn("cell_idx", result)
-        self.assertIn("weights", result)
-        self.assertIn("normal_x", result)
-        self.assertIn("normal_y", result)
-        self.assertIn("profile_station_m", result)
-        self.assertIn("profile_cell_idx", result)
-        self.assertIn("profile_cell_w", result)
-        self.assertGreater(len(result["cell_idx"]), 0)
-
-    def test_line_outside_mesh_returns_default(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[10.0, 10.0], [20.0, 20.0]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        self.assertEqual(len(result["cell_idx"]), 0)
-
-    def test_normal_points_left_of_line(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        # normal convention: nx = dy/mag, ny = -dx/mag
-        # for (dx=1, dy=0): nx=0, ny=-1
-        self.assertAlmostEqual(result["normal_x"], 0.0, places=10)
-        self.assertAlmostEqual(result["normal_y"], -1.0, places=10)
-
-    def test_weights_sum_to_one(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[0.5, 0.25], [1.5, 0.75]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        w = result["weights"]
-        if w.size > 0:
-            self.assertAlmostEqual(float(np.sum(w)), 1.0, places=5)
-
-    def test_profile_arrays_match_stations(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[0.25, 0.5], [1.75, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        n_sta = len(result["profile_station_m"])
-        self.assertEqual(result["profile_cell_idx"].shape[0], n_sta)
-        self.assertEqual(result["profile_cell_w"].shape[0], n_sta)
-
-    def test_empty_line_returns_default(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.empty((0, 2), dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        self.assertEqual(len(result["cell_idx"]), 0)
-
-    def test_single_point_line_returns_default(self):
-        nc, cn = self._simple_mesh()
-        line_xy = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map_numpy(nc, cn, line_xy)
-        self.assertEqual(len(result["cell_idx"]), 0)
-
-
-# ---------------------------------------------------------------------------
-# sample_line_metrics
-# ---------------------------------------------------------------------------
-
-
-class TestSampleLineMetrics(unittest.TestCase):
-    def _simple_mesh(self):
-        node_coords = np.array([
-            [0.0, 0.0],
-            [2.0, 0.0],
-            [2.0, 1.0],
-            [0.0, 1.0],
-        ], dtype=np.float64)
-        cell_nodes = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
-        return node_coords, cell_nodes
-
-    def _uniform_solution(self):
-        nc, cn = self._simple_mesh()
-        h = np.array([1.0, 1.0], dtype=np.float64)
-        hu = np.array([0.5, 0.5], dtype=np.float64)
-        hv = np.array([0.0, 0.0], dtype=np.float64)
-        bed = np.array([5.0, 5.0], dtype=np.float64)
-        return nc, cn, h, hu, hv, bed
-
-    def test_returns_dict_with_expected_keys(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = sample_line_metrics(
-            h, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        expected_keys = {
-            "station_m", "depth_m", "velocity_ms", "wse_m",
-            "bed_m", "froude", "wet", "flow_qn",
-        }
-        self.assertTrue(expected_keys.issubset(set(result.keys())))
-
-    def test_uniform_depth_and_wse(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = sample_line_metrics(
-            h, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        np.testing.assert_allclose(result["depth_m"], 1.0, atol=1e-6)
-        np.testing.assert_allclose(result["bed_m"], 5.0, atol=1e-6)
-        np.testing.assert_allclose(result["wse_m"], 6.0, atol=1e-6)
-
-    def test_all_dry_returns_zero_velocity(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        h_dry = np.array([1e-8, 1e-8], dtype=np.float64)
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = sample_line_metrics(
-            h_dry, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        self.assertTrue(np.all(result["wet"] == 0))
-        np.testing.assert_allclose(result["velocity_ms"], 0.0, atol=1e-12)
-
-    def test_known_froude_for_uniform_flow(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        # h=1, hu=0.5 => u=0.5, Fr = u/sqrt(g*h) = 0.5/sqrt(9.81)
-        expected_fr = 0.5 / np.sqrt(9.81 * 1.0)
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = sample_line_metrics(
-            h, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        self.assertTrue(np.all(np.isfinite(result["froude"])))
-        mean_fr = float(np.mean(result["froude"][np.isfinite(result["froude"])]))
-        self.assertAlmostEqual(mean_fr, expected_fr, places=4)
-
-    def test_flow_qn_sign_matches_normal_direction(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        # flow is positive x direction, line from (0,0) to (1,0) gives
-        # normal (nx=0, ny=-1). qn = h * (u dot n) = 1 * (0.5*0 + 0*-1) = 0
-        line_xy = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-        result = sample_line_metrics(
-            h, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        self.assertTrue(np.all(np.isfinite(result["flow_qn"])))
-
-    def test_all_dry_produces_nan_wse(self):
-        nc, cn, h, hu, hv, bed = self._uniform_solution()
-        h_dry = np.array([1e-8, 1e-8], dtype=np.float64)
-        line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = sample_line_metrics(
-            h_dry, hu, hv, bed, nc, cn, line_xy,
-            h_min=0.01, timestep_s=0.0, gravity=9.81,
-        )
-        self.assertTrue(np.all(result["wet"] == 0))
-        self.assertTrue(np.all(np.isnan(result["depth_m"])))
-        self.assertTrue(np.all(np.isnan(result["wse_m"])))
+# NOTE: TestBuildLineSamplingMap and TestSampleLineMetrics classes were
+# removed in Task 8 of the canonical sample-line sampling plan. They
+# targeted ``build_line_sampling_map_numpy`` and ``sample_line_metrics``,
+# both of which were legacy duplicate builders superseded by
+# ``build_canonical_line_sampling_map``. Equivalent coverage lives in
+# ``tests/test_sample_line_canonical.py`` and
+# ``tests/test_swe2d_gpu_line_flow_reference.py``.
 
 
 if __name__ == "__main__":

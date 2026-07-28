@@ -1,3 +1,4 @@
+import unittest
 import tempfile
 import time
 import numpy as np
@@ -6,7 +7,7 @@ from qgis.PyQt.QtWidgets import QApplication
 def test_persistence_worker_finishes_without_error():
     app = QApplication.instance() or QApplication([])
     from swe2d.workbench.workers.persistence_worker import PersistenceWorker
-    from swe2d.workbench.workers.simulation_worker import ComputeResult
+    from swe2d.core.executor import ComputeResult
 
     with tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False) as f:
         path = f.name
@@ -36,6 +37,12 @@ def test_persistence_worker_finishes_without_error():
         max_tracking=None,
         snapshot_timesteps=[(1.0, np.array([1.0]), np.array([0.0]), np.array([0.0]))],
         coupling_snapshots={},
+        save_line_results=True,
+        save_coupling_results=True,
+        save_mesh_results=True,
+        save_run_log=True,
+        save_max_only=False,
+        h_min=0.001,
         precomputed_line_results=None,
     )
 
@@ -66,3 +73,20 @@ def test_persistence_worker_finishes_without_error():
     app.processEvents()
     assert len(finished) == 1
     assert finished[0]["ok"] is True
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

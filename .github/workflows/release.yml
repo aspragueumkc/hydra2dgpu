@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Git tag to attach the release to (e.g. v1.2.0). Required for manual dispatch."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read        # gh CLI needs to read other workflow runs on dispatch
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    needs: build_wheels
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync version from pyproject.toml
+        run: python tools/sync_version.py
+
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          path: artifacts
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Build QGIS plugin zip
+        run: python tools/package_plugin.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+          files: |
+            artifacts/**/*.whl
+            dist/HYDRA2DGPU.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

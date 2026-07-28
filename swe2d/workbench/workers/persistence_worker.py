@@ -5,8 +5,8 @@ from typing import Any
 
 from qgis.PyQt.QtCore import QThread, pyqtSignal
 
+from swe2d.core.executor import ComputeResult
 from swe2d.runtime.run_finalizer import SWE2DRunFinalizer
-from swe2d.workbench.workers.simulation_worker import ComputeResult
 
 
 class PersistenceWorker(QThread):
@@ -55,6 +55,7 @@ class PersistenceWorker(QThread):
                 snapshot_timesteps=self._result.snapshot_timesteps,
                 coupling_snapshots=self._result.coupling_snapshots,
                 precomputed_line_results=self._result.precomputed_line_results,
+                pipe_cell_items=getattr(self._result, "pipe_cell_items", None),
             )
             for msg in finalizer.drain_log_messages():
                 self.log_message.emit(msg)

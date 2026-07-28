@@ -1,4 +1,9 @@
-"""Per audit: these symbols should be gone after Phase 6."""
+import unittest
+"""Per audit: these symbols should be gone after Phase 6.
+
+Phase 3.6: the 8 dead ``swe2d.core.gpkg_io`` functions (which are
+re-exported from ``swe2d.cli.gpkg_adapter``) are pinned here as dead.
+"""
 import importlib
 import pytest
 
@@ -25,6 +30,27 @@ _DEAD = [
      "compute_pipe_manning_capacity_full"),
     ("swe2d.extensions.extension_models", "circular_section_from_depth"),
     ("swe2d.extensions.extension_models", "convert_cell_flows_to_depth_rates"),
+    # Phase 3.6: 7 dead gpkg_io functions re-exported from cli.gpkg_adapter.
+    # (build_thiessen_rain_cn_forcing_from_gpkg is NOT dead — it's the
+    # CLI builder's GPKG-loading shim that delegates to
+    # build_thiessen_rain_cn_forcing_qgis.  builder.build_run_context calls
+    # it for every spec that has a hyetograph block.)
+    ("swe2d.cli.gpkg_adapter", "query_sample_lines_from_qgis"),
+    ("swe2d.cli.gpkg_adapter", "query_bc_arrays"),
+    ("swe2d.cli.gpkg_adapter", "build_pipe_network_config_from_gpkg"),
+    ("swe2d.cli.gpkg_adapter", "build_initial_state_from_json"),
+    ("swe2d.cli.gpkg_adapter", "read_drainage_config_from_gpkg"),
+    ("swe2d.cli.gpkg_adapter", "load_and_configure_hydrographs"),
+    ("swe2d.cli.gpkg_adapter", "load_hydrograph_edge_data"),
+    # Also pinned from the source module so the test catches both
+    # the re-export and the underlying definition.
+    ("swe2d.core.gpkg_io", "query_sample_lines_from_qgis"),
+    ("swe2d.core.gpkg_io", "query_bc_arrays"),
+    ("swe2d.core.gpkg_io", "build_pipe_network_config_from_gpkg"),
+    ("swe2d.core.gpkg_io", "build_initial_state_from_json"),
+    ("swe2d.core.gpkg_io", "read_drainage_config_from_gpkg"),
+    ("swe2d.core.gpkg_io", "load_and_configure_hydrographs"),
+    ("swe2d.core.gpkg_io", "load_hydrograph_edge_data"),
 ]
 
 
@@ -42,3 +68,20 @@ def test_dead_symbol_removed(module_name, symbol):
             assert not hasattr(cls, attr_name), (
                 f"{module_name}.{symbol} still exists"
             )
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

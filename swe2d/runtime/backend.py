@@ -119,6 +119,15 @@ _swe2d_load_error: Optional[str] = None
 _swe2d_last_load_error: Optional[str] = None
 
 
+def _load_cuda_dll_path_from_env() -> Optional[str]:
+    """Load CUDA DLL path from environment variable.
+    
+    Checks HYDRA_CUDA_DLL_PATH environment variable.
+    Returns None if not set.
+    """
+    return os.environ.get("HYDRA_CUDA_DLL_PATH")
+
+
 def _load_swe2d_module():
     """Load and return the hydra_swe2d native module.
 
@@ -147,19 +156,14 @@ def _load_swe2d_module():
     # ── Windows: add plugin root to DLL search path ──────────────────────
     # This lets Python find cudart64_12.dll bundled alongside the .pyd files
     # without requiring a system-wide CUDA installation or manual PATH juggling.
-    # Also check QSettings for a user-specified custom CUDA DLL path.
+    # Check HYDRA_CUDA_DLL_PATH environment variable for custom CUDA DLL path.
     if sys.platform == "win32":
         _custom_dll_dir = None
-        try:
-            from qgis.PyQt.QtCore import QSettings
-            _s = QSettings("HYDRA2DGPU", "HYDRA2DGPU")
-            _custom = _s.value("cuda_dll_path", "")
-            if _custom and os.path.isdir(_custom):
-                _custom_dll_dir = _custom
-            elif _custom and os.path.isfile(_custom):
-                _custom_dll_dir = os.path.dirname(_custom)
-        except Exception:
-            logger.warning("Unexpected error silently caught", exc_info=True)
+        _custom = _load_cuda_dll_path_from_env()
+        if _custom and os.path.isdir(_custom):
+            _custom_dll_dir = _custom
+        elif _custom and os.path.isfile(_custom):
+            _custom_dll_dir = os.path.dirname(_custom)
 
         _dll_dirs_to_add = []
         if _custom_dll_dir:
@@ -866,7 +870,7 @@ class SWE2DBackend:
         if not self.has_line_sampling:
             raise RuntimeError("swe2d_gpu_configure_line_sampling not available in native module.")
         import logging as _lg
-        _lg.warning("[LINE_DIAG] configure_line_sampling: n_lines=%d total_stations=%d",
+        _lg.debug("[LINE_DIAG] configure_line_sampling: n_lines=%d total_stations=%d",
                      len(station_offsets) - 1, len(station_m))
         self._mod.swe2d_gpu_configure_line_sampling(
             self._solver_h,
@@ -893,10 +897,10 @@ class SWE2DBackend:
         raw = self._mod.swe2d_gpu_read_line_metrics(self._solver_h)
         if not raw or "profiles" not in raw:
             import logging as _lg
-            _lg.warning("[LINE_DIAG] read_line_metrics: raw=%s keys=%s", type(raw), list(raw.keys()) if isinstance(raw, dict) else "N/A")
+            _lg.debug("[LINE_DIAG] read_line_metrics: raw=%s keys=%s", type(raw), list(raw.keys()) if isinstance(raw, dict) else "N/A")
             return None
         import logging as _lg
-        _lg.warning("[LINE_DIAG] read_line_metrics: count=%d n_lines=%d total_stations=%d t_s_shape=%s",
+        _lg.debug("[LINE_DIAG] read_line_metrics: count=%d n_lines=%d total_stations=%d t_s_shape=%s",
                      raw.get("t_s", np.array([])).shape[0] if hasattr(raw.get("t_s", np.array([])), "shape") else 0,
                      raw.get("n_lines", 0), raw.get("total_stations", 0),
                      raw.get("t_s", np.array([])).shape if hasattr(raw.get("t_s", np.array([])), "shape") else "?")
@@ -1308,6 +1312,12 @@ class SWE2DBackend:
             raise ValueError("h/hu/hv lengths must all equal n_cells")
         self._mod.swe2d_set_state(self._solver_h, h_arr, hu_arr, hv_arr)
 
+    def get_solver_dev_ptr(self) -> int:
+        """Return solver device state pointer as int, or 0 if not initialized."""
+        if self._solver_h is None:
+            return 0
+        return int(self._mod.swe2d_get_solver_dev_ptr(self._solver_h))
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
     def sync_device(self) -> None:
@@ -1357,6 +1367,11 @@ class SWE2DBackend:
     def n_cells(self) -> int:
         """Number of cells in the mesh."""
         return self._n_cells
+
+    @property
+    def h_min(self) -> float:
+        """Minimum water depth (model units) used by the solver."""
+        return float(self._h_min)
 
     def cell_areas(self) -> np.ndarray:
         """Return cached per-cell planform areas [L^2] from the input mesh."""

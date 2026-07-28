@@ -136,6 +136,7 @@ class SWE2DRunFinalizer:
         snapshot_timesteps: Any = None,
         coupling_snapshots: Any = None,
         precomputed_line_results: Any = None,
+        pipe_cell_items: Any = None,
     ) -> Dict[str, Any]:
         """Compute mass-balance summary, persist results to GeoPackage, and refresh UI.
 
@@ -256,9 +257,9 @@ class SWE2DRunFinalizer:
                     if "t_s" in ld:
                         ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
                         ts_by_line[lid]["t_s"] = list(ld["t_s"])
-                        for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
-                                      ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
-                                      ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
+                        for k, pk in (("depth", "ts_depth"), ("velocity", "ts_velocity"),
+                                      ("wse", "ts_wse"), ("bed", "ts_bed"),
+                                      ("flow", "ts_flow"), ("wet_frac", "ts_wet_frac"),
                                       ("fr", "ts_fr")):
                             if pk in ld:
                                 ts_by_line[lid][k] = list(ld[pk])
@@ -266,8 +267,8 @@ class SWE2DRunFinalizer:
                         pd = prof_by_line[lid]
                         pd["line_name"] = ld.get("line_name", f"line_{lid}")
                         pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
-                        for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
-                                      ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
+                        for k, pk in (("depth", "prof_depth"), ("velocity", "prof_velocity"),
+                                      ("wse", "prof_wse"), ("bed", "prof_bed"),
                                       ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
                                       ("wet", "prof_wet")):
                             if pk in ld:
@@ -280,16 +281,16 @@ class SWE2DRunFinalizer:
                         "line_id": lid,
                         "line_name": ld.get("line_name", f"line_{lid}"),
                         "times": times_arr,
-                        "depth_m": np.array(ld.get("depth_m", []), dtype=np.float64),
-                        "velocity_ms": np.array(ld.get("velocity_ms", []), dtype=np.float64),
-                        "wse_m": np.array(ld.get("wse_m", []), dtype=np.float64),
-                        "bed_m": np.array(ld.get("bed_m", []), dtype=np.float64),
-                        "flow_cms": np.array(ld.get("flow_cms", []), dtype=np.float64),
+                        "depth": np.array(ld.get("depth", []), dtype=np.float64),
+                        "velocity": np.array(ld.get("velocity", []), dtype=np.float64),
+                        "wse": np.array(ld.get("wse", []), dtype=np.float64),
+                        "bed": np.array(ld.get("bed", []), dtype=np.float64),
+                        "flow": np.array(ld.get("flow", []), dtype=np.float64),
                         "wet_frac": np.array(ld.get("wet_frac", []), dtype=np.float64),
                         "fr": np.array(ld.get("fr", []), dtype=np.float64),
                     })
                 for lid, pd in prof_by_line.items():
-                    depth_arr = pd.get("depth_m")
+                    depth_arr = pd.get("depth")
                     if depth_arr is None or not hasattr(depth_arr, "shape") or depth_arr.ndim != 2:
                         continue
                     n_ts, n_sta = depth_arr.shape
@@ -303,7 +304,7 @@ class SWE2DRunFinalizer:
                         "station_m": station_arr,
                         "times": times_arr,
                     }
-                    for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+                    for k in ("depth", "velocity", "wse", "bed", "flow_qn", "fr", "wet"):
                         arr = pd.get(k)
                         if arr is not None and hasattr(arr, "shape") and arr.ndim == 2 and arr.shape == (n_ts, n_sta):
                             prof_item[k] = arr
@@ -325,7 +326,8 @@ class SWE2DRunFinalizer:
                         "values": np.array(cd.get("values", []), dtype=np.float64),
                     })
 
-            pipe_cell_items = _results_data.build_pipe_cell_items() if _results_data and hasattr(_results_data, "build_pipe_cell_items") else None
+            pipe_cell_items = pipe_cell_items if pipe_cell_items is not None else (
+                _results_data.build_pipe_cell_items() if _results_data and hasattr(_results_data, "build_pipe_cell_items") else None)
             overlay_field_items = _results_data.build_overlay_field_items() if _results_data and hasattr(_results_data, "build_overlay_field_items") else None
             try:
                 persist_all_baked_results(

@@ -120,10 +120,10 @@ def build_model_tab_page(dialog):
 def wire_run_dock_signals(dialog) -> None:
     """Wire the Run dock buttons to controller handlers.
 
-    The Run dock only owns execution-surface buttons now (Run / Cancel /
-    Snapshot / Batch). Output-config widgets (Preview / Load / Save /
-    Browse GPKG) moved to the Simulation tab's Output page — see
-    :func:`wire_run_tab_signals`.
+    The Run dock owns execution-surface buttons (Run / Cancel / Snapshot /
+    Batch) plus the Phase 6 GPU Direct Viewer button. Output-config
+    widgets (Preview / Load / Save / Browse GPKG) moved to the
+    Simulation tab's Output page — see :func:`wire_run_tab_signals`.
     """
     from swe2d.workbench.signal_helpers import safe_disconnect
     d = dialog._run_dock
@@ -135,6 +135,11 @@ def wire_run_dock_signals(dialog) -> None:
     d.snapshot_btn.clicked.connect(dialog._controller.on_snapshot)
     safe_disconnect(d.batch_btn.clicked, dialog._controller.open_batch_simulation_dialog)
     d.batch_btn.clicked.connect(dialog._controller.open_batch_simulation_dialog)
+    # Phase 6: GPU Direct Viewer button — owned by the workbench, not
+    # the run dock.  The dock emits a signal; the workbench listens +
+    # opens the dialog.
+    safe_disconnect(d.gpu_viewer_requested, dialog._open_gpu_direct_viewer)
+    d.gpu_viewer_requested.connect(dialog._open_gpu_direct_viewer)
 
 
 def wire_model_tab_layers_signals(dialog) -> None:

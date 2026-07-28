@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 
 def test_distribute_total_flow_to_unit_q_logic_computes_invariants():
-    from swe2d.workbench.services.runtime_source_application_service import (
+    from swe2d.core.runtime_source_application_service import (
         _distribute_total_flow_to_unit_q_logic,
     )
 
@@ -14,9 +14,9 @@ def test_distribute_total_flow_to_unit_q_logic_computes_invariants():
     node_z = np.array([0.0, 0.0])
 
     with patch(
-        "swe2d.workbench.services.runtime_source_application_service.distribute_total_flow_to_unit_q"
+        "swe2d.core.runtime_source_application_service.distribute_total_flow_to_unit_q"
     ) as mock_logic, patch(
-        "swe2d.workbench.services.runtime_source_application_service._bc_side_classification"
+        "swe2d.core.runtime_source_application_service._bc_side_classification"
     ) as mock_classify:
         expected_return = np.array([3.0])
         mock_logic.return_value = expected_return
@@ -52,7 +52,7 @@ def test_distribute_total_flow_to_unit_q_logic_computes_invariants():
 
 
 def test_distribute_total_flow_to_unit_q_logic_uses_precomputed_invariants():
-    from swe2d.workbench.services.runtime_source_application_service import (
+    from swe2d.core.runtime_source_application_service import (
         _distribute_total_flow_to_unit_q_logic,
     )
 
@@ -66,9 +66,9 @@ def test_distribute_total_flow_to_unit_q_logic_uses_precomputed_invariants():
     edge_z = np.array([0.5])
 
     with patch(
-        "swe2d.workbench.services.runtime_source_application_service.distribute_total_flow_to_unit_q"
+        "swe2d.core.runtime_source_application_service.distribute_total_flow_to_unit_q"
     ) as mock_logic, patch(
-        "swe2d.workbench.services.runtime_source_application_service._bc_side_classification"
+        "swe2d.core.runtime_source_application_service._bc_side_classification"
     ) as mock_classify:
         expected_return = np.array([7.0])
         mock_logic.return_value = expected_return
@@ -99,3 +99,20 @@ def test_distribute_total_flow_to_unit_q_logic_uses_precomputed_invariants():
         assert kwargs["_edge_len"] is edge_len
         assert kwargs["_edge_z"] is edge_z
         assert result is expected_return
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

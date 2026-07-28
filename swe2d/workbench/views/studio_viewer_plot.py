@@ -219,6 +219,8 @@ class PlotViewWidget(QtWidgets.QWidget):
         mesh_data: Optional[Dict[str, np.ndarray]] = None,
         result_data: Any = None,
         h_min: float = 1.0e-6,
+        model_gpkg_path: str = "",
+        length_unit: str = "",
     ) -> None:
         """Set mesh data, result data, and h_min for the current mode."""
         if mesh_data is not None:

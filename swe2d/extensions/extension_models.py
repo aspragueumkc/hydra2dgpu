@@ -13,6 +13,8 @@ from enum import IntEnum
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from swe2d.units import SI_GRAVITY
+
 
 class SpatialDiscretization(IntEnum):
     """Spatial reconstruction scheme for the finite-volume Godunov solver."""
@@ -111,6 +113,7 @@ class DrainageNode:
     y: float
     invert_elev: float
     max_depth: float
+    surface_area: float = 50.0  # Default surface area for node storage [m²]
     crest_elev: Optional[float] = None
     rim_elev: Optional[float] = None
     node_type: str = "junction"  # junction, outfall, storage, inlet, pipe_end
@@ -128,6 +131,17 @@ class DrainageNode:
     enable_overflow: bool = False
     overflow_elevation: Optional[float] = None
     max_overflow_rate: Optional[float] = None
+    # ── Inlet box storage-cell geometry (separate from inlet opening dims).
+    # When set, these override the volume-equivalent cell derived from
+    # inlet_diameter in the unified pipe1d mesh builder.
+    inlet_box_length: Optional[float] = None
+    inlet_box_width: Optional[float] = None
+    # ── Loss coefficients (override per-link values) ────────────────
+    # Naming: inlet_loss_k/outlet_loss_k (primary), entrance_loss_k/exit_loss_k (FHWA alias)
+    # These values override per-link loss coefficients at faces connected to this node.
+    # C++ kernel maps these to face_k_in/face_k_out arrays in pipe1d.cuh.
+    inlet_loss_k: Optional[float] = None   # head loss at pipe entrance (from node)
+    outlet_loss_k: Optional[float] = None  # head loss at pipe exit (from node)
 
 
 @dataclass
@@ -151,8 +165,12 @@ class DrainageLink:
     culvert_span: Optional[float] = None       # horizontal dimension (model units)
     inlet_invert_elev: Optional[float] = None  # upstream invert (model units)
     outlet_invert_elev: Optional[float] = None # downstream invert (model units)
-    entrance_loss_k: float = 0.5               # Ke (FHWA entrance loss)
-    exit_loss_k: float = 1.0                   # Kx (FHWA exit loss)
+    # ── Loss coefficients (fallback when node-level not set) ─────────
+    # Naming: entrance_loss_k/exit_loss_k (FHWA HDS-5 standard), aliased to inlet_loss_k/outlet_loss_k
+    # FHWA convention uses "entrance"/"exit" for culverts; Python/C++ interface uses "inlet"/"outlet".
+    # pipe_network_service.py normalizes these to inlet_loss_k/outlet_loss_k before GPU packing.
+    entrance_loss_k: float = 0.5               # Ke (FHWA entrance loss, alias for inlet_loss_k)
+    exit_loss_k: float = 1.0                   # Kx (FHWA exit loss, alias for outlet_loss_k)
     barrel_count: int = 1                      # number of barrels
     cd: float = 0.75                           # orifice discharge coefficient
     max_cell_length: float = 0.0              # max cell length for 1D mesh refinement
@@ -294,9 +312,22 @@ class PipeNetworkConfig:
     pipe_ends: List[PipeEndExchange] = field(default_factory=list)
     use_swmm_reference_mode: bool = False
     target_cuda_port: bool = False
-    gravity: float = 9.81
+    gravity: float = SI_GRAVITY
     swmm_input_path: Optional[str] = None
     pipe_solver_mode: str = "diffusion_wave"  # "diffusion_wave" | "fully_dynamic"
+    # Friction method for the 1D pipe godunov update:
+    #   0 = NONE (plain Manning's)
+    #   1 = SUBSTEPPING (2D-style friction substepping)
+    #   2 = ALPHA_BOOST (FRICTION_STABILITY_ALPHA term in denominator)
+    friction_method: int = 0
+    recon_method: int = 0        # 0=FIRST_ORDER, 1=MUSCL_MINMOD
+    time_integrator: int = 1     # 0=RK1, 1=RK2
+    friction_alpha: float = 0.01  # alpha boost (additive linear-Q damping)
+    # Surcharge method for closed-pipe pressurised flow:
+    #   0 = NONE (A bounded at A_full)
+    #   1 = SLOT (Preissmann slot)
+    #   2 = EXTRAN (reserved)
+    surcharge_method: int = 0
     # Number of 1D network sub-steps taken per 2D coupling call.  Values > 1
     # allow the 1D solver to run at a finer dt than the 2D timestep, improving
     # stability for stiff networks without requiring GPU sub-stepping.

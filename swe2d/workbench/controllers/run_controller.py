@@ -19,9 +19,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import numpy as np
 import threading
 
-from swe2d.workbench.services.mesh_service import apply_cell_permutation
-from swe2d.workbench.workers.simulation_worker import SimulationWorker, SnapshotData, ComputeResult
-from swe2d.workbench.workers.run_context import RunContext
+from swe2d.core.executor import ComputeResult, SnapshotData
+from swe2d.core.mesh_service import apply_cell_permutation
+from swe2d.core.run_context import RunContext
+from swe2d.workbench.workers.simulation_worker import SimulationWorker
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,10 @@ def _capture_inflow_progressive(view) -> bool:
         return False
 
 
-def _capture_edge_groups(view, run_input) -> Dict[int, str]:
+def _capture_edge_groups(view, bc_n0, bc_n1) -> Dict[int, str]:
     """Resolve edge-group labels for BC override flows on the main thread."""
-    bc_n0 = np.asarray(getattr(run_input, "bc_n0", np.empty(0, dtype=np.int32)), dtype=np.int32)
-    bc_n1 = np.asarray(getattr(run_input, "bc_n1", np.empty(0, dtype=np.int32)), dtype=np.int32)
+    bc_n0 = np.asarray(bc_n0, dtype=np.int32)
+    bc_n1 = np.asarray(bc_n1, dtype=np.int32)
     if bc_n0.size == 0 or bc_n1.size == 0:
         return {}
     cached = getattr(view, "_cached_edge_groups", None)
@@ -80,6 +81,17 @@ class RunController:
         self._view = view
         self._simulation_worker = None
         self._current_run_id = ""
+        self._batch_manager = None
+        self._batch_dialog = None
+        self._gpu_viewer_dialogs = []  # phase 6: keep refs alive
+
+    @property
+    def batch_manager(self):
+        """Lazy-initialize the BatchManager singleton."""
+        if self._batch_manager is None:
+            from swe2d.workbench.services.batch_manager import BatchManager
+            self._batch_manager = BatchManager()
+        return self._batch_manager
 
     def on_run(self, request: Optional[Any] = None) -> Any:
         """Start a 2D run on a background worker thread.
@@ -135,7 +147,26 @@ class RunController:
         return None
 
     def _build_run_context(self, request: Optional[Any] = None) -> Optional[RunContext]:
-        """Capture all widget values and arrays into a RunContext."""
+        """Capture all widget values and arrays into a RunContext.
+
+        **Phase 1.B true flip.**  This controller method does two things only:
+
+        1. Call live-QGIS-layer dialog callbacks to compute forcing and
+           initial-condition data (the inline equivalent of the retired
+           ``SWE2DRunDataBuilder`` / ``SWE2DRunOptionsBuilder``).
+        2. Pack those objects together with widget scalars, unit-system
+           info, and per-run callbacks into a single spec dict, then
+           delegate to
+           :func:`swe2d.workbench.adapters.run_context_adapter.build_run_context_from_gui`,
+           which calls the canonical
+           :func:`swe2d.runtime.run_context_builder.build_run_context`
+           exactly once.
+
+        The returned ``RunContext`` is the canonical builder's output with
+        no ``dataclasses.replace`` post-pass — every GUI-supplied object
+        arrives through the spec under its canonical field name, and the
+        builder's ``_override`` helper honors it.
+        """
         view = self._view
         mesh_data = view._mesh_data
         log_fn = view._log
@@ -148,8 +179,6 @@ class RunController:
             _stem = os.path.splitext(os.path.basename(_gpkg))[0] if _gpkg else "mesh"
             mesh_data["mesh_name"] = f"{_stem}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
-        run_data_builder = view._run_data_builder
-        run_options_builder = view._run_options_builder
         parse_time_hours_fn = view._parse_time_hours
         model_gpkg_path = view._model_gpkg_path
         length_unit_name = view._length_unit_name
@@ -160,61 +189,76 @@ class RunController:
         if request is None:
             request = last_run_request
 
-        run_input = run_data_builder.build()
+        # ── 1. Build GUI-only forcing / mesh objects from live layers ────
+        # These are the live-QGIS-layer callbacks formerly wrapped by the
+        # retired SWE2DRunDataBuilder.build().  They turn live QGIS layer
+        # objects into the RunContext-ready initial-condition / BC arrays
+        # the canonical builder cannot reproduce from the GPKG path alone.
+        bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = view._collect_boundary_arrays()
+        side_hydrographs: Dict[Any, Any] = {}  # legacy placeholder — empty for GUI path
+        edge_hydrographs = view._collect_bc_layer_hydrographs(bc_n0, bc_n1)
+        edge_group_overrides = view._collect_bc_layer_edge_groups(bc_n0, bc_n1)
+        h0, hu0, hv0 = view._initial_state(
+            bc_n0=bc_n0, bc_n1=bc_n1, bc_tp=bc_tp,
+        )
+        n_mann_cell = view._build_spatial_manning_array()
+        view._update_unit_system_from_crs()
+
+        run_input: Dict[str, Any] = {
+            "h0": h0,
+            "hu0": hu0,
+            "hv0": hv0,
+            "bc_tp": bc_tp,
+            "bc_vl": bc_vl,
+            "bc_relax": bc_relax,
+            "bc_n0": bc_n0,
+            "bc_n1": bc_n1,
+            "side_hydrographs": side_hydrographs,
+            "edge_hydrographs": edge_hydrographs,
+            "edge_group_overrides": edge_group_overrides,
+            "n_mann_cell": n_mann_cell,
+        }
 
         # Keep per-cell scalar arrays in mesh data so the overlay can render
         # mannings_n / curve_number fields without rebuilding them.
-        mesh_data["n_mann_cell"] = run_input.n_mann_cell
+        mesh_data["n_mann_cell"] = n_mann_cell
         mesh_data["cn_cell"] = view._build_spatial_cn_array()
 
-        run_options = run_options_builder.build(
-            dt=wp["dt_spin"],
-            adaptive_cfl_dt=wp["adaptive_cfl_dt_chk"],
-            initial_dt=wp["initial_dt_spin"],
-            reconstruction_mode=wp["reconstruction_combo"],
-            reconstruction_name=wp["reconstruction_combo_text"],
-            temporal_order_value=wp["temporal_order_combo"],
-            temporal_scheme_name=wp["temporal_order_combo_text"],
-            drainage_gpu_method=wp["drainage_gpu_method"],
-            culvert_solver_mode=wp["culvert_solver_mode"],
-            cuda_graphs_enabled=wp["enable_cuda_graphs_chk"],
-            swe2d_perf_mode=wp["swe2d_perf_mode_chk"],
-            rain_rate_mmhr=wp["rain_rate_spin"],
-            bridge_coupling_mode=wp["bridge_coupling_mode"],
-            culvert_face_flux=wp["culvert_face_flux_chk"],
-        )
+        # ── 2. Build GUI-only forcing / coupling objects from live layers ──
+        # The retired SWE2DRunOptionsBuilder.build() did this; inlined here.
+        # The forcing objects flow through the spec to the canonical builder
+        # so the array path is exercised end-to-end in the GUI too.
+        if int(wp["reconstruction_combo"]) == 8:
+            raise RuntimeError(
+                "FV_MP5 (spatial scheme 8) is currently disabled. "
+                "It is unstable on unstructured triangular meshes. "
+                "Use WENO5 (scheme 7), Barth-Jespersen (scheme 5), or a MUSCL TVD scheme (1–4)."
+            )
+        from swe2d.runtime.backend import swe2d_gpu_available as _gpu_check
+        if not _gpu_check():
+            raise RuntimeError("CUDA GPU is required but unavailable or check failed.")
 
-        run_duration_s = run_options.run_duration_s
-        if request is not None:
-            request_run_duration_text = getattr(request, "run_duration_text", None)
-            if request_run_duration_text is not None and str(request_run_duration_text).strip():
-                try:
-                    run_duration_s = max(0.0, parse_time_hours_fn(str(request_run_duration_text).strip()) * 3600.0)
-                except Exception:
-                    log_fn("[WARNING] Unexpected error silently caught")
+        rain_rate_mmhr = float(wp["rain_rate_spin"])
+        rain_rate_model = view._rain_rate_si_to_model(rain_rate_mmhr / 1000.0 / 3600.0)
+        internal_flow_forcing = view._build_internal_flow_forcing()
+        cell_source_si = view._internal_flow_source_cms_at_time(internal_flow_forcing, 0.0)
+        cell_source_model = view._flow_si_to_model(cell_source_si) if cell_source_si is not None else None
+        thiessen_forcing = view._build_thiessen_rain_cn_forcing()
+        pipe_network_cfg = view._build_pipe_network_config()
+        hydraulic_structures_cfg = view._build_hydraulic_structure_config()
 
-        def _parse_interval_text(text, default_widget_text):
-            if text is not None and str(text).strip():
-                return parse_time_hours_fn(str(text).strip())
-            return parse_time_hours_fn(str(default_widget_text or ""))
+        forcing: Dict[str, Any] = {
+            "internal_flow_forcing": internal_flow_forcing,
+            "cell_source_model": cell_source_model,
+            "thiessen_forcing": thiessen_forcing,
+            "rain_rate_model": rain_rate_model,
+            "pipe_network_cfg": pipe_network_cfg,
+            "hydraulic_structures_cfg": hydraulic_structures_cfg,
+        }
 
-        request_output_interval_text = getattr(request, "output_interval_text", None) if request is not None else None
-
-        _oi_hr = _parse_interval_text(request_output_interval_text, wp["output_interval_edit"])
-        output_interval_s = max(1.0, _oi_hr * 3600.0)
-
-        from swe2d.runtime.coupling import pack_coupling_soa
-        mesh_cell_areas_fn = view._mesh_cell_areas
-        pipe_network_cfg = run_options.pipe_network_cfg
-        hydraulic_structures_cfg = run_options.hydraulic_structures_cfg
-
-        model_options = run_options.model_options
-        if model_options is not None:
-            if pipe_network_cfg is not None:
-                model_options.pipe_network = pipe_network_cfg
-            if hydraulic_structures_cfg is not None:
-                model_options.hydraulic_structures = hydraulic_structures_cfg
-
+        # Bridge stacked plans are controller-owned because they bind
+        # mesh_data + hydraulic_structures_cfg to runtime layout.  Plumb
+        # them through the spec so the canonical builder applies them.
         bridge_stacked_plans: List[Any] = []
         try:
             from swe2d.runtime.bridge_stacked_runtime import build_bridge_stacked_plans_for_runtime
@@ -224,126 +268,99 @@ class RunController:
         except Exception as exc:
             log_fn(f"Bridge stacked-plan mapping warning: {exc}")
 
-        coupling_soa = None
-        if pack_coupling_soa is not None:
-            coupling_soa = pack_coupling_soa(
-                n_cells=int(mesh_cell_areas_fn().shape[0]),
-                pipe_network=pipe_network_cfg,
-                hydraulic_structures=hydraulic_structures_cfg,
-            )
+        # ── 3. Resolve run_duration_s / output_interval_s from request ──
+        from swe2d.workbench.services.text_parser_service import parse_duration_seconds as _parse_dur_s
+        # Use wp["run_time_edit"] with fail-fast access (Rule 7 — no silent
+        # .get() fallback; the widget key must be present, wiring bugs raise).
+        _dur_raw = str(wp["run_time_edit"]).strip()
+        run_duration_s = _parse_dur_s(_dur_raw) if _dur_raw else 0.0
+        if request is not None:
+            request_run_duration_text = getattr(request, "run_duration_text", None)
+            if request_run_duration_text is not None and str(request_run_duration_text).strip():
+                run_duration_s = _parse_dur_s(str(request_run_duration_text).strip())
+
+        # Resolve output_interval_s — prefer request override, else widget.
+        _oi_override = None
+        if request is not None:
+            _oi_override = getattr(request, "output_interval_text", None)
+        if _oi_override is not None and str(_oi_override).strip():
+            _oi_raw = str(_oi_override).strip()
+        else:
+            _oi_raw = str(wp["output_interval_edit"]).strip()
+        _oi_s = _parse_dur_s(_oi_raw) if _oi_raw else 3600.0  # default 1 hour
+        output_interval_s = _oi_s if _oi_s >= 1.0 else 1.0
 
         results_gpkg_path = str(view._current_line_results_storage_path() or "")
-        run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
-        run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
         run_log_start_idx = len(view._runtime_log_lines)
+        mesh_cell_areas_fn = view._mesh_cell_areas
 
-        cancel_event = threading.Event()
+        # ── 4. Pack the spec dict and delegate to the adapter ───────────
+        # The adapter translates this dict into a swe2d-run/2 spec,
+        # forwards GUI-built objects via canonical field names (so the
+        # builder's _override helper honors them), and calls the canonical
+        # builder exactly once.  No replace() post-pass required.
+        widget_state: Dict[str, Any] = dict(wp)
+        # Storage-result checkboxes live on _model_tab_view but are NOT in
+        # collect_run_widget_params() (they ride the versioned
+        # collect_widget_state_for_save() payload).  Mirror them into
+        # widget_state here so the GUI RunContext sees the live checkbox
+        # value — without this the canonical builder falls back to the
+        # _DEFAULTS for save_line_results / save_coupling_results /
+        # save_run_log and the GUI path drifts from the CLI replay path.
+        mtv = view.model_tab
+        for _attr, _key in (
+            ("save_mesh_chk", "save_mesh_chk"),
+            ("save_line_chk", "save_line_chk"),
+            ("save_coupling_chk", "save_coupling_chk"),
+            ("save_log_chk", "save_log_chk"),
+            ("save_max_only_chk", "save_max_only_chk"),
+        ):
+            _chk = getattr(mtv, _attr, None)
+            if _chk is not None:
+                widget_state[_key] = bool(_chk.isChecked())
+        widget_state["run_duration_s"] = run_duration_s
+        widget_state["output_interval_s"] = output_interval_s
+        widget_state["uniform_inflow_enabled"] = view.model_tab.is_uniform_inflow()
+        widget_state["rain_update_interval_s"] = view.model_tab.get_rain_update_interval_s()
+        widget_state["_length_unit_name"] = length_unit_name
+        widget_state["_length_scale_si_to_model"] = float(view._length_scale_si_to_model())
+        widget_state["_rain_mm_to_model_depth"] = float(view._rain_mm_to_model_depth())
 
-        return RunContext(
-            run_id=run_id,
-            run_wallclock_start=run_wallclock_start,
-            run_log_start_idx=run_log_start_idx,
-            results_gpkg_path=results_gpkg_path,
-            model_gpkg_path=str(model_gpkg_path or ""),
-            mesh_name=str(mesh_data.get("mesh_name", "") or ""),
-            mesh_crs_wkt=str(mesh_data.get("crs_wkt", "") or ""),
-            run_duration_s=run_duration_s,
-            output_interval_s=output_interval_s,
-            dt_cfg=run_options.dt_cfg,
-            dt_request=run_options.dt_request,
-            dt_fixed=run_options.dt_fixed,
-            initial_dt=getattr(run_options, "initial_dt", 0.0),
-            adaptive_cfl_dt=run_options.adaptive_cfl_dt,
-            reconstruction_mode=run_options.reconstruction_mode,
-            reconstruction_name=run_options.reconstruction_name,
-            temporal_scheme=run_options.temporal_scheme,
-            temporal_scheme_name=run_options.temporal_scheme_name,
-            solver_backend_mode=str(getattr(run_options, "solver_backend_mode", "gpu")).strip().lower(),
-            coupling_loop_mode=run_options.coupling_loop_mode,
-            drainage_solver_backend_mode=run_options.drainage_solver_backend_mode,
-            drainage_gpu_method_mode=run_options.drainage_gpu_method_mode,
-            culvert_solver_mode=getattr(run_options, "culvert_solver_mode", 0),
-            cuda_graphs_enabled=run_options.cuda_graphs_enabled,
-            bridge_cuda_coupling=bool(getattr(run_options, "bridge_cuda_coupling", False)),
-            bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
-            culvert_face_flux_mode=str(getattr(run_options, "culvert_face_flux_mode", "off")),
-            gravity=wp["gravity"],
-            k_mann=wp["k_mann"],
-            n_mann=wp["n_mann_spin"],
-            cfl=wp["cfl_spin"],
-            h_min=wp["h_min_spin"],
-            max_inv_area=wp["max_inv_area_spin"],
-            cfl_lambda_cap=wp["cfl_lambda_cap_spin"],
-            momentum_cap_min_speed=wp["momentum_cap_min_speed_spin"],
-            momentum_cap_celerity_mult=wp["momentum_cap_celerity_mult_spin"],
-            depth_cap=wp["depth_cap_spin"],
-            max_rel_depth_increase=wp["max_rel_depth_increase_spin"],
-            shallow_damping_depth=wp["shallow_damping_depth_spin"],
-            source_cfl_beta=wp["source_cfl_beta_spin"],
-            source_max_substeps=wp["source_max_substeps_spin"],
-            source_rate_cap=wp["max_source_rate_spin"],
-            source_depth_step_cap=wp["max_source_depth_step_spin"],
-            source_true_subcycling=wp["source_true_subcycling_chk"],
-            source_imex_split=wp["source_imex_split_chk"],
-            gpu_diag_sync_interval_steps=wp["gpu_diag_sync_interval_spin"],
-            tiny_mode=wp["tiny_mode_combo"],
-            tiny_wet_cell_threshold=wp["tiny_wet_cell_threshold_spin"],
-            degen_mode=wp["degen_mode"],
-            front_flux_damping=wp["front_flux_damping_spin"],
-            open_bc_relaxation=wp.get("open_bc_relax_spin", 0.0),
-            active_set_hysteresis=wp["active_set_hysteresis_chk"],
-            use_redistribution=wp["use_redistribution_chk"],
-            inflow_progressive=wp["inflow_progressive_chk"],
-            uniform_inflow_enabled=view.model_tab.is_uniform_inflow(),
-            rain_update_interval_s=view.model_tab.get_rain_update_interval_s(),
-            node_x=run_input.node_x,
-            node_y=run_input.node_y,
-            node_z=run_input.node_z,
-            cell_nodes=run_input.cell_nodes,
-            face_offsets=run_input.face_offsets,
-            face_nodes=run_input.face_nodes,
-            bc_n0=run_input.bc_n0,
-            bc_n1=run_input.bc_n1,
-            bc_tp=run_input.bc_tp,
-            bc_vl=run_input.bc_vl,
-            bc_relax=run_input.bc_relax,
-            side_hydrographs=run_input.side_hydrographs,
-            edge_hydrographs=run_input.edge_hydrographs,
-            edge_group_overrides=run_input.edge_group_overrides,
-            h0=run_input.h0,
-            hu0=run_input.hu0,
-            hv0=run_input.hv0,
-            n_mann_cell=run_input.n_mann_cell,
-            cell_areas=np.asarray(mesh_cell_areas_fn(), dtype=np.float64).ravel(),
-            cell_centroids=view._mesh_cell_centroids(),
-            rain_rate_model=run_options.rain_rate_model,
-            internal_flow_forcing=run_options.internal_flow_forcing,
-            cell_source_model=run_options.cell_source_model,
-            thiessen_forcing=run_options.thiessen_forcing,
-            pipe_network_cfg=pipe_network_cfg,
-            hydraulic_structures_cfg=hydraulic_structures_cfg,
-            bridge_stacked_plans=bridge_stacked_plans,
-            coupling_soa=coupling_soa,
-            save_mesh_results=bool(wp["save_mesh_results_to_gpkg_chk"]),
-            save_line_results=bool(wp["save_line_results_to_gpkg_chk"]),
-            save_coupling_results=bool(wp["save_coupling_results_to_gpkg_chk"]),
-            save_run_log=bool(wp["save_run_log_to_gpkg_chk"]),
-            save_max_only=bool(wp.get("save_max_only_chk", False)),
-            length_unit_name=length_unit_name,
-            length_scale_si_to_model=float(view._length_scale_si_to_model()),
-            rain_mm_to_model_depth=float(view._rain_mm_to_model_depth()),
-            apply_timeseries_bc_values=view._apply_timeseries_bc_values,
-            distribute_total_flow_to_unit_q=view._distribute_total_flow_to_unit_q,
-            apply_external_sources=view._apply_external_sources,
-            build_line_sampling_map=view._build_line_sampling_map,
+        # Phase 3.5: stop embedding view-bound callables in RunContext.
+        # The executor (core/executor.py) re-binds pure versions internally
+        # using RunContext fields (edge_groups, inflow_progressive_enabled,
+        # source_rate_cap, etc.) rather than the dialog methods.  The wiring
+        # controller still wires `dialog._apply_timeseries_bc_values` and
+        # `dialog._distribute_total_flow_to_unit_q` into the backend
+        # initializer (these are needed for the legacy initializer path),
+        # but the spec/RunContext no longer carries them.
+        # No more widget_state["_apply_timeseries_bc"] / _distribute_total_flow
+        # / _apply_external_sources / _build_line_sampling_map here.
+        widget_state["_mesh_cell_areas_fn"] = mesh_cell_areas_fn
+        widget_state["_mesh_cell_min_bed_fn"] = view._mesh_cell_min_bed
+        widget_state["_mesh_cell_centroids_fn"] = view._mesh_cell_centroids
+        widget_state["_internal_flow_cms_fn"] = view._internal_flow_source_cms_at_time
+
+        # GUI-only runtime values: run_log_start_idx (per-run counter),
+        # bridge_stacked_plans (controller-glued mesh + structures),
+        # edge_groups (per-run BC layer grouping).
+        widget_state["_run_log_start_idx"] = run_log_start_idx
+        widget_state["_bridge_stacked_plans"] = bridge_stacked_plans
+        widget_state["_edge_groups"] = _capture_edge_groups(view, bc_n0, bc_n1)
+
+        from swe2d.workbench.adapters.run_context_adapter import build_run_context_from_gui
+        return build_run_context_from_gui(
+            widget_state,
+            mesh_data=mesh_data,
+            forcing=forcing,
+            run_input=run_input,
             sample_map_data=list(view._build_line_sampling_map() or []),
             inflow_progressive_enabled=_capture_inflow_progressive(view),
-            edge_groups=_capture_edge_groups(view, run_input),
-            mesh_cell_areas=mesh_cell_areas_fn,
-            mesh_cell_min_bed=view._mesh_cell_min_bed,
-            mesh_cell_centroids=view._mesh_cell_centroids,
-            internal_flow_source_cms_at_time=view._internal_flow_source_cms_at_time,
-            cancel_event=cancel_event,
+            edge_groups=widget_state["_edge_groups"],
+            results_gpkg_path=results_gpkg_path,
+            model_gpkg_path=str(model_gpkg_path or ""),
+            mesh_crs_wkt=str(mesh_data.get("crs_wkt", "") or ""),
+            parse_time_hours_fn=parse_time_hours_fn,
         )
 
     def _on_worker_mesh_permutation_ready(self, cell_perm, result_holder):
@@ -426,13 +443,20 @@ class RunController:
         try:
             line_ts = getattr(data, "line_ts", None)
             line_profiles = getattr(data, "line_profiles", None)
-            logger.warning("[LINE_DIAG] controller: line_ts=%d keys, line_profiles=%d keys",
+            logger.debug("[LINE_DIAG] controller: line_ts=%d keys, line_profiles=%d keys",
                            len(line_ts) if line_ts else 0, len(line_profiles) if line_profiles else 0)
             if line_ts:
                 rd._live_line_ts = line_ts
             if line_profiles:
                 rd._live_line_profile = line_profiles
-            logger.warning("[LINE_DIAG] controller: rd._live_line_ts=%d keys, rd._live_line_profile=%d keys",
+            # Sync _live_times from the SnapshotData timesteps so the viewer
+            # sees a consistent (t_s, metric) pair.  The worker thread may
+            # update rd._live_times after we read it, so we must capture our
+            # own copy here alongside the line_ts snapshot.
+            ts_list = getattr(data, "timesteps", None)
+            if ts_list and len(ts_list) > 0:
+                rd._live_times = np.array([float(t[0]) for t in ts_list], dtype=np.float64)
+            logger.debug("[LINE_DIAG] controller: rd._live_line_ts=%d keys, rd._live_line_profile=%d keys",
                            len(rd._live_line_ts) if hasattr(rd._live_line_ts, '__len__') else '?',
                            len(rd._live_line_profile) if hasattr(rd._live_line_profile, '__len__') else '?')
         except Exception as exc:
@@ -520,6 +544,7 @@ class RunController:
                 snapshot_timesteps=result.snapshot_timesteps,
                 coupling_snapshots=result.coupling_snapshots,
                 precomputed_line_results=result.precomputed_line_results,
+                pipe_cell_items=getattr(result, "pipe_cell_items", None),
             )
             for msg in finalizer.drain_log_messages():
                 view._log(msg)
@@ -538,7 +563,7 @@ class RunController:
                         # Auto-save simulation config with run
                         try:
                             from swe2d.services.gpkg_persistence_service import persist_simulation_config
-                            from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+                            from swe2d.core.builder import widget_state_to_flat_params
                             widget_state = self.collect_widget_state_for_save()
                             flat_params = widget_state_to_flat_params(widget_state)
                             if result.run_duration_s:
@@ -658,6 +683,97 @@ class RunController:
             self._simulation_worker.request_cancel()
         view._log("Cancellation requested...")
 
+    # ── GPU Direct Viewer (Phase 6) ───────────────────────────────────
+    def open_gpu_direct_viewer(self, mesh_data, parent) -> None:
+        """Open the standalone GPU Direct Viewer dialog.
+
+        Owns the keep-alive list for the dialog so Python's GC doesn't
+        drop it while the user is interacting.  Multiple opens are
+        allowed (each becomes a separate dialog).  Falls back to the
+        install dialog if the hydra-swe2d backend isn't available.
+
+        The dialog is GPU-direct only (no CPU rasterizer fallback —
+        the high-perf canvas overlay covers that case).  When a
+        simulation is currently running, the active ``SimulationWorker``
+        owns the underlying ``SWE2DSolver`` whose device pointer is
+        registered with CUDA-OpenGL interop.  Outside a run, the
+        dialog opens with no live data and shows "waiting for run…".
+
+        Parameters mirror ``GPUViewerDialog.__init__``:
+            mesh_data  dict with cell_x / cell_y arrays (may be empty
+                        for a dialog opened before a simulation loads)
+            parent     Qt widget (typically the workbench dialog)
+        """
+        view = self._view
+        from qgis.PyQt import QtWidgets as _QtWidgets
+        try:
+            from swe2d.workbench.views.gpu_viewer_dialog import (
+                GPUViewerDialog,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "GPU Direct Viewer import failed: %s", exc,
+            )
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "HYDRA2DGPU",
+                f"GPU Direct Viewer import failed: {exc}",
+            )
+            return
+        # Resolve the active solver / worker, if any.  The GL render
+        # path needs a real PySolver to fetch the dev_ptr; without it
+        # the widget stays idle (waiting message).  No CPU fallback
+        # path — that responsibility belongs to the high-perf canvas
+        # overlay.
+        active_solver = None
+        if self._simulation_worker is not None and self._simulation_worker.isRunning():
+            active_solver = self._simulation_worker.get_active_solver()
+            if active_solver is not None:
+                view._log(
+                    "GPU Direct Viewer: using GPU-direct (zero-D2H) path."
+                )
+            else:
+                view._log(
+                    "GPU Direct Viewer: run in progress but solver "
+                    "not yet exposed — waiting."
+                )
+        else:
+            view._log(
+                "GPU Direct Viewer: no active run — dialog will wait."
+            )
+        try:
+            dlg = GPUViewerDialog(
+                mesh_data=mesh_data, parent=parent,
+                # Callable so the widget picks up the solver when a run
+                # starts AFTER the dialog was opened (common workflow).
+                get_solver_fn=lambda: (
+                    self._simulation_worker.get_active_solver()
+                    if self._simulation_worker is not None
+                    and self._simulation_worker.isRunning()
+                    else None
+                ),
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "GPU Direct Viewer init failed: %s", exc,
+            )
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "HYDRA2DGPU",
+                f"GPU Direct Viewer init failed: {exc}",
+            )
+            return
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        # Keep alive — drop on close.
+        self._gpu_viewer_dialogs.append(dlg)
+        dlg.destroyed.connect(
+            lambda _ref=dlg: self._gpu_viewer_dialogs.remove(_ref)
+            if _ref in self._gpu_viewer_dialogs else None
+        )
+        view._log("GPU Direct Viewer opened.")
+
     # ── Batch simulation dialog ──────────────────────────────────────
     def open_batch_simulation_dialog(self) -> None:
         """Open the batch simulation dialog for parameter sweeps."""
@@ -665,6 +781,13 @@ class RunController:
         from swe2d.workbench.dialogs.batch_simulation_dialog import BatchSimulationDialog
 
         view = self._view
+
+        # Reuse existing dialog if it exists
+        if self._batch_dialog is not None:
+            self._batch_dialog.show()
+            self._batch_dialog.raise_()
+            self._batch_dialog.activateWindow()
+            return
 
         base_params = {
             "mesh": "",
@@ -675,17 +798,17 @@ class RunController:
             },
         }
 
-        # Auto-populate mesh GPKG path from the current model if available
         gpkg = getattr(view, "_model_gpkg_path", "")
         if not gpkg or not _os.path.isfile(gpkg):
             gpkg = view.get_results_gpkg_path()
 
-        dlg = BatchSimulationDialog(
+        self._batch_dialog = BatchSimulationDialog(
             parent=view,
             base_params=base_params,
             mesh_gpkg=gpkg,
+            batch_manager=self.batch_manager,
         )
-        dlg.exec()
+        self._batch_dialog.show()
 
     # ── Snapshot orchestration ─────────────────────────────────────────
     def on_snapshot(self) -> None:
@@ -835,15 +958,17 @@ class RunController:
         The payload format matches the ``swe2d-replay/1`` schema understood by
         ``build_run_context_from_dict``.  The ``params`` block is populated
         from the versioned ``widget_state`` so the builder can read actual
-        values (not just defaults).  Units are computed from the mesh CRS.
+        values (not just defaults).  The ``units`` block is intentionally left
+        empty so the CLI derives unit conversions from the mesh CRS.
         """
-        from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+        from swe2d.core.builder import widget_state_to_flat_params
         flat_params = widget_state_to_flat_params(
             widget_state,
             mesh_gpkg=mesh_gpkg_path,
             mesh_name=mesh_name,
         )
-        units_block = flat_params.pop("_units_block", None)
+        # Discard any computed units block; CLI derives conversions from CRS.
+        flat_params.pop("_units_block", None)
         # Always include run_duration_s (not all widgets capture it)
         if run_duration_s:
             flat_params["run_duration_s"] = run_duration_s
@@ -865,10 +990,31 @@ class RunController:
             "params": flat_params,
             "data_sources": widget_state.get("_data_sources", {}),
             "results": {},
-            "units": units_block or {},
+            "units": {},
             "widget_state": widget_state,
-            "run_duration_s": run_duration_s,
+            "run_duration_s": run_duration_s or flat_params.get("run_duration_s", 0.0),
         }
+
+    def build_replay_payload(
+        self,
+        widget_state: dict,
+        mesh_name: str,
+        run_duration_s: float,
+        mesh_gpkg_path: str = "",
+        run_id: str = "",
+    ) -> dict:
+        """Public wrapper for ``_build_replay_payload``.
+
+        Allows child dialogs (e.g. Batch Simulation) to build the same
+        ``swe2d-replay/1`` JSON payload used by the main JSON export.
+        """
+        return self._build_replay_payload(
+            widget_state=widget_state,
+            mesh_name=mesh_name,
+            run_duration_s=run_duration_s,
+            mesh_gpkg_path=mesh_gpkg_path,
+            run_id=run_id,
+        )
 
     # ── Load run settings from results GeoPackage ─────────────────────
     def on_load_simulation_config(self) -> None:
@@ -952,6 +1098,7 @@ class RunController:
                 view._result_data = None
                 view.show_mesh_tab()
                 try:
+                    view._update_mesh_canvas_layer()
                     view._refresh_plot()
                 except RuntimeError:
                     pass
@@ -1004,15 +1151,21 @@ class RunController:
         except Exception:
             run_dur = 0.0
 
-        # Query existing config IDs so the dialog can warn about overwrites
+        # Query existing tables so the dialog can warn about overwriting a whole table
         try:
-            existing_configs = load_simulation_configs(db_path, log_fn=None)
-            existing_ids = [c["config_id"] for c in existing_configs]
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(db_path) as _c:
+                _cur = _c.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'swe2d_%'"
+                )
+                existing_tables = [str(r[0]) for r in _cur.fetchall()]
         except Exception:
-            existing_ids = []
+            existing_tables = []
 
-        def do_persist(gpkg, cfg_id, ws, desc, dur):
-            from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+        default_table = f"swe2d_sim_{mesh_name or 'config'}_{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}"
+
+        def do_persist(gpkg, tbl, cfg_id, ws, desc, dur):
+            from swe2d.core.builder import widget_state_to_flat_params
             flat_params = widget_state_to_flat_params(ws)
             if dur:
                 flat_params["run_duration_s"] = dur
@@ -1025,8 +1178,9 @@ class RunController:
                 params=flat_params,
                 description=desc,
                 log_fn=view._log,
+                table_name=tbl,
             )
-            view._log(f"Configuration saved as '{cfg_id}' to {gpkg}")
+            view._log(f"Configuration saved as table '{tbl}' in {gpkg}")
 
         def do_json_export(json_path, ws):
             import json
@@ -1047,10 +1201,11 @@ class RunController:
         from swe2d.workbench.dialogs.save_config_dialog import SaveConfigDialog
         dlg = SaveConfigDialog(
             gpkg_path=db_path,
-            existing_config_ids=existing_ids,
+            existing_table_names=existing_tables,
             widget_state=widget_state,
             mesh_name=mesh_name,
             run_duration_s=run_dur,
+            default_table_name=default_table,
             save_callback=do_persist,
             json_save_callback=do_json_export,
             parent=view,

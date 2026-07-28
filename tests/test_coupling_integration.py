@@ -19,7 +19,7 @@ from swe2d.extensions.extension_models import (
 from swe2d.extensions.structures import SWE2DStructureModule
 
 try:
-    from swe2d.workbench.services import constants_service as _wb_constants
+    from swe2d.core import constants_service as _wb_constants
     _HAVE_CONSTANTS = True
 except Exception:
     _wb_constants = None
@@ -261,17 +261,17 @@ class TestPipeCellMetrics(unittest.TestCase):
         """Drainage cell depth is 0.0 at t=0 (no spurious priming)."""
         from unittest.mock import patch, MagicMock
         import numpy as np
-        from swe2d.workbench.services.non_gui_runtime_service import _sample_coupling_object_metrics
+        from swe2d.core.non_gui_runtime_service import _sample_coupling_object_metrics
 
         cc = MagicMock()
         cc.readback_coupling_state.return_value = {
-            "node_depth": np.zeros(2),
-            "link_flow": np.zeros(1),
-            "struct_flow": np.empty(0),
-            "cell_velocity": np.zeros(3),
             "cell_depth": np.zeros(3),
-            "cell_flow": np.zeros(3),
-            "cell_head": np.zeros(3),
+            "link_q": np.zeros(1),
+            "struct_q": np.empty(0),
+            "cell_q": np.zeros(3),
+            "cell_h": np.zeros(3),
+            "cell_Q": np.zeros(3),
+            "cell_y": np.zeros(3),
             "cell_owner_link": np.array([0, 0, 0]),
         }
         cfg = MagicMock()
@@ -347,24 +347,35 @@ class TestPipeCellMetrics(unittest.TestCase):
 
         state = cc.readback_coupling_state()
 
-        self.assertEqual(int(state["node_depth"].size), 2)
+        self.assertGreater(int(state["cell_depth"].size), 0)
         np.testing.assert_array_equal(
-            state["node_depth"], np.zeros(2),
-            err_msg=f"t=0 node_depth should be zero, got {state['node_depth']}",
+            state["cell_depth"], np.zeros_like(state["cell_depth"]),
+            err_msg=f"t=0 cell_depth should be zero, got {state['cell_depth']}",
         )
 
-        if state["cell_flow"].size > 0:
+        if state["cell_Q"].size > 0:
             np.testing.assert_array_equal(
-                state["cell_flow"], np.zeros_like(state["cell_flow"]),
-                err_msg=f"t=0 cell_flow should be zero, got {state['cell_flow']}",
+                state["cell_Q"], np.zeros_like(state["cell_Q"]),
+                err_msg=f"t=0 cell_Q should be zero, got {state['cell_Q']}",
+            )
+            # t=0 cell_h is the geometric floor depth (h_min·shape_factor)
+            # per the init_cell_area(h_min) call — that's the smallest
+            # non-zero depth the pipe solver will allow (the weir/orifice
+            # pipe-end cap q_cap_pipe = A_floor·dx/dt requires it).  Asserting
+            # exactly zero here was a symptom of the old A=0 init that
+            # prevented pipe-end outflow to the 2D surface.
+            self.assertTrue(
+                np.all(state["cell_h"] >= 0.0),
+                f"t=0 cell_h should be non-negative, got {state['cell_h']}",
+            )
+            self.assertTrue(
+                np.all(state["cell_h"] < 1.0),
+                f"t=0 cell_h should be < floor (h_min * width-ish), "
+                f"got {state['cell_h']}",
             )
             np.testing.assert_array_equal(
-                state["cell_depth"], np.zeros_like(state["cell_depth"]),
-                err_msg=f"t=0 cell_depth should be zero, got {state['cell_depth']}",
-            )
-            np.testing.assert_array_equal(
-                state["cell_velocity"], np.zeros_like(state["cell_velocity"]),
-                err_msg=f"t=0 cell_velocity should be zero, got {state['cell_velocity']}",
+                state["cell_q"], np.zeros_like(state["cell_q"]),
+                err_msg=f"t=0 cell_q should be zero, got {state['cell_q']}",
             )
 
     @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(),
@@ -471,16 +482,7 @@ class TestPipeCellMetrics(unittest.TestCase):
     @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(),
                          "hydra_swe2d GPU module not available")
     def test_readback_returns_zeros_on_size_mismatch(self):
-        """Host buffer is zero-init even when the C++ guard skips cudaMemcpy.
-
-        Regression: ``swe2d_pipe1d_readback_node_state`` allocates host
-        buffers via ``py::array_t<double>(N)`` which is equivalent to
-        ``np.empty`` — uninitialized.  If the size guard
-        ``n_* == p.n_*`` fails (e.g. caller passes the wrong count), the
-        cudaMemcpy is skipped and Python sees random heap bits.  The fix
-        pre-zeros every host buffer so a guard mismatch silently degrades
-        to zeros instead of garbage.
-        """
+        """Cell readback zero-fills buffers when no pipe mesh is allocated."""
         import hydra_swe2d as m
         from tests._swe2d_test_helpers import _make_rect_mesh
 
@@ -510,15 +512,15 @@ class TestPipeCellMetrics(unittest.TestCase):
         dev_ptr = int(m.swe2d_get_coupling_dev_ptr())
         self.assertNotEqual(dev_ptr, 0, "Coupling device pointer must be set")
 
-        wrong_n_nodes = 99
         wrong_n_cells = 99
-        state = m.swe2d_pipe1d_readback_node_state(
-            dev_ptr, wrong_n_nodes, wrong_n_cells
+        state = m.swe2d_pipe1d_readback_cell_state(
+            dev_ptr, wrong_n_cells, 0, 0
         )
 
+        self.assertNotIn("node_depth", state)
         np.testing.assert_array_equal(
-            state["node_depth"], np.zeros(wrong_n_nodes),
-            err_msg=f"node_depth should be zero on size mismatch, got {state['node_depth']}",
+            state["cell_depth"], np.zeros(wrong_n_cells),
+            err_msg=f"cell_depth should be zero without a pipe mesh, got {state['cell_depth']}",
         )
         np.testing.assert_array_equal(
             state["cell_A"], np.zeros(wrong_n_cells),

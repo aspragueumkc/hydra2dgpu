@@ -69,8 +69,8 @@ class TestNullBlobGuardInLineTimeseries(unittest.TestCase):
             # Persist then delete a real line_ts row to create the table
             persist_baked_line_ts(
                 gpkg, "rid", 99, "delete_me", times,
-                depth_m=h, velocity_ms=h, wse_m=h, bed_m=h,
-                flow_cms=h, wet_frac=h, fr=h,
+                depth=h, velocity=h, wse=h, bed=h,
+                flow=h, wet_frac=h, fr=h,
             )
             import sqlite3 as _sql
             _c = _sql.connect(gpkg)
@@ -161,8 +161,8 @@ class TestOrphanCleanupOnDeleteRun(unittest.TestCase):
             )
             persist_baked_line_ts(
                 gpkg, "rid", 1, "L", times,
-                depth_m=h, velocity_ms=h, wse_m=h, bed_m=h,
-                flow_cms=h, wet_frac=h, fr=h,
+                depth=h, velocity=h, wse=h, bed=h,
+                flow=h, wet_frac=h, fr=h,
             )
             prof = np.zeros((2, 2), dtype=np.float64)
             wet = np.zeros((2, 2), dtype=np.int32)
@@ -222,7 +222,7 @@ class TestLiveLineProfilePopulation(unittest.TestCase):
             "line_id": 7,
             "line_name": "L7",
             "cell_idx": np.array([0, 2], dtype=np.int32),
-            "station_m": np.array([0.0, 10.0], dtype=np.float64),
+            "station": np.array([0.0, 10.0], dtype=np.float64),
         }]
 
         def fake_callback(sm, t, h, hu, hv, cell_bed):
@@ -234,18 +234,18 @@ class TestLiveLineProfilePopulation(unittest.TestCase):
                 zb = cell_bed[idx] if cell_bed is not None else np.zeros_like(hh)
                 ts_rows.append({
                     "line_id": lid, "line_name": m["line_name"],
-                    "depth_m": float(np.mean(hh)),
-                    "velocity_ms": 0.0, "wse_m": float(np.mean(hh + zb)),
-                    "bed_m": float(np.mean(zb)), "flow_cms": 0.0,
+                    "depth": float(np.mean(hh)),
+                    "velocity": 0.0, "wse": float(np.mean(hh + zb)),
+                    "bed": float(np.mean(zb)), "flow": 0.0,
                     "wet_frac": 1.0, "fr": 0.0,
                 })
                 prof_rows.append({
                     "line_id": lid, "line_name": m["line_name"],
-                    "station_m": np.asarray(m["station_m"], dtype=np.float64),
-                    "depth_m": hh.astype(np.float64),
-                    "velocity_ms": np.zeros_like(hh, dtype=np.float64),
-                    "wse_m": (hh + zb).astype(np.float64),
-                    "bed_m": zb.astype(np.float64),
+                    "station": np.asarray(m["station"], dtype=np.float64),
+                    "depth": hh.astype(np.float64),
+                    "velocity": np.zeros_like(hh, dtype=np.float64),
+                    "wse": (hh + zb).astype(np.float64),
+                    "bed": zb.astype(np.float64),
                     "flow_qn": np.zeros_like(hh, dtype=np.float64),
                     "wet": np.ones_like(hh, dtype=np.int32),
                     "fr": np.zeros_like(hh, dtype=np.float64),
@@ -262,17 +262,17 @@ class TestLiveLineProfilePopulation(unittest.TestCase):
         # The structured storage must now contain line 7
         self.assertIn(7, data._live_line_profile)
         # Profile arrays must be 2D (n_snaps × n_stations)
-        depth = data._live_line_profile[7]["depth_m"]
+        depth = data._live_line_profile[7]["depth"]
         self.assertEqual(depth.shape, (2, 2))
         # Load at t=1 should return the second-snapshot values
         data._live_run_id = "rid"
         from swe2d.services.gpkg_persistence_service import load_baked_line_profile
         out = load_baked_line_profile(data, "rid", 7, 1.0)
-        self.assertIn("station_m", out)
-        np.testing.assert_allclose(out["depth_m"], [1.5, 3.5])
+        self.assertIn("station", out)
+        np.testing.assert_allclose(out["depth"], [1.5, 3.5])
         # And at t=0 the first-snapshot values
         out0 = load_baked_line_profile(data, "rid", 7, 0.0)
-        np.testing.assert_allclose(out0["depth_m"], [1.0, 3.0])
+        np.testing.assert_allclose(out0["depth"], [1.0, 3.0])
 
 
 class TestResultsDataLineTsLivePath(unittest.TestCase):
@@ -294,7 +294,7 @@ class TestResultsDataLineTsLivePath(unittest.TestCase):
         sample_map = [{
             "line_id": 1, "line_name": "L1",
             "cell_idx": np.array([0, 1], dtype=np.int32),
-            "station_m": np.array([0.0, 5.0], dtype=np.float64),
+            "station": np.array([0.0, 5.0], dtype=np.float64),
         }]
 
         def fake_cb(sm, t, h, hu, hv, cell_bed):
@@ -304,17 +304,17 @@ class TestResultsDataLineTsLivePath(unittest.TestCase):
                 hh = h[idx]
                 ts_rows.append({
                     "line_id": int(m["line_id"]), "line_name": m["line_name"],
-                    "depth_m": float(np.mean(hh)), "velocity_ms": 0.0,
-                    "wse_m": float(np.mean(hh)), "bed_m": 0.0,
-                    "flow_cms": 0.0, "wet_frac": 1.0, "fr": 0.0,
+                    "depth": float(np.mean(hh)), "velocity": 0.0,
+                    "wse": float(np.mean(hh)), "bed": 0.0,
+                    "flow": 0.0, "wet_frac": 1.0, "fr": 0.0,
                 })
                 prof_rows.append({
                     "line_id": int(m["line_id"]), "line_name": m["line_name"],
-                    "station_m": np.asarray(m["station_m"], dtype=np.float64),
-                    "depth_m": hh.astype(np.float64),
-                    "velocity_ms": np.zeros_like(hh, dtype=np.float64),
-                    "wse_m": hh.astype(np.float64),
-                    "bed_m": np.zeros_like(hh, dtype=np.float64),
+                    "station": np.asarray(m["station"], dtype=np.float64),
+                    "depth": hh.astype(np.float64),
+                    "velocity": np.zeros_like(hh, dtype=np.float64),
+                    "wse": hh.astype(np.float64),
+                    "bed": np.zeros_like(hh, dtype=np.float64),
                     "flow_qn": np.zeros_like(hh, dtype=np.float64),
                     "wet": np.ones_like(hh, dtype=np.int32),
                     "fr": np.zeros_like(hh, dtype=np.float64),
@@ -331,7 +331,7 @@ class TestResultsDataLineTsLivePath(unittest.TestCase):
         # t_s must reflect the snapshot times (0 and 10), not be empty
         np.testing.assert_allclose(np.sort(ts["t_s"]), [0.0, 10.0])
         # Depth averages: snapshot 0 mean=1.5, snapshot 1 mean=2.5
-        np.testing.assert_allclose(np.sort(ts["depth_m"]), [1.5, 2.5])
+        np.testing.assert_allclose(np.sort(ts["depth"]), [1.5, 2.5])
 
 
 class TestStructureFlowsLivePath(unittest.TestCase):

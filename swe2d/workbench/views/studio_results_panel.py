@@ -50,12 +50,14 @@ def on_results_refresh(dialog) -> None:
     temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:
         temporal.set_data(data)
+    model_gpkg = getattr(dialog, "_model_gpkg_path", "") or ""
+    length_unit = getattr(dialog, "_length_unit_name", "") or ""
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:
         # Notify all viewer widgets of updated data
         for w in viewer.plot_widgets.values():
             if hasattr(w, "set_data"):
-                w.set_data(result_data=data)
+                w.set_data(result_data=data, model_gpkg_path=model_gpkg, length_unit=length_unit)
         viewer.refresh()
 
 
@@ -144,11 +146,13 @@ def on_results_add(dialog) -> None:
     temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:
         temporal.set_data(data)
+    model_gpkg = getattr(dialog, "_model_gpkg_path", "") or ""
+    length_unit = getattr(dialog, "_length_unit_name", "") or ""
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:
         for w in viewer.plot_widgets.values():
             if hasattr(w, "set_data"):
-                w.set_data(result_data=data)
+                w.set_data(result_data=data, model_gpkg_path=model_gpkg, length_unit=length_unit)
         viewer.refresh()
 
 
@@ -297,6 +301,8 @@ def show_results_panel(dialog):
             )
     if temporal is not None:
         temporal.set_data(data)
+    # Ensure pipe-cell data is loaded for profile rendering
+    data.load_coupling_for_first_enabled_run()
     try:
         dialog._refresh_plot()
     except Exception as exc:
@@ -402,11 +408,13 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
     if temporal is not None:
         temporal.set_data(data)
 
+    model_gpkg = getattr(dialog, "_model_gpkg_path", "") or ""
+    length_unit = getattr(dialog, "_length_unit_name", "") or ""
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:
         for w in viewer.plot_widgets.values():
             if hasattr(w, "set_data"):
-                w.set_data(result_data=data)
+                w.set_data(result_data=data, model_gpkg_path=model_gpkg, length_unit=length_unit)
 
     try:
         if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):

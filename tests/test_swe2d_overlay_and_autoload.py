@@ -43,20 +43,19 @@ for _p in (_REPO_ROOT, _BUILD_DIR):
 # ---------------------------------------------------------------------------
 # Headless Qt + mock QGIS bootstrap
 #
-# The trick: real PyQt5 modules (QtGui, QtCore, QtWidgets) must be imported
+# The trick: real ``qgis.PyQt.QtGui/QtCore/QtWidgets`` modules must be imported
 # BEFORE ``install_qgis_mocks()`` runs.  That way the mock's
-# ``_install_pyqt5_mocks()`` sees they're already cached and skips
-# installing substitute mocks.  Then ``_install_qgis_pyqt_submodule()``
-# copies REAL symbols into ``qgis.PyQt.*``, giving us working
-# QImage/QPainter/QApplication even though ``qgis.core`` is mocked.
+# ``_install_qgis_pyqt_submodule()`` populates ``qgis.PyQt.*`` from real Qt
+# symbols, giving us working QImage/QPainter/QApplication even though
+# ``qgis.core`` is mocked.
 #
 # Order:
-#   1. Import real PyQt5 (QImage, QPainter, QApplication)
+#   1. Import real qgis.PyQt.* (QImage, QPainter, QApplication)
 #   2. Install QGIS mocks (qgis.core, qgis.gui stay stubbed)
 #   3. Create a QApplication instance for QPainter use
 # ---------------------------------------------------------------------------
-from PyQt5.QtGui import QImage as _RealQImage, QPainter as _RealQPainter
-from PyQt5.QtWidgets import QApplication as _QApp
+from qgis.PyQt.QtGui import QImage as _RealQImage, QPainter as _RealQPainter
+from qgis.PyQt.QtWidgets import QApplication as _QApp
 
 _test_app = _QApp.instance()
 if _test_app is None:
@@ -77,8 +76,13 @@ _il.invalidate_caches()
 
 # Whether real Qt GUI classes are available (needed for rendering tests).
 # QImage/QPainter classes imported BEFORE mock installation are the real
-# deal if ``PyQt5`` is installed in this environment.  Check by verifying
-# the class module path starts with ``PyQt5`` (not ``unittest.mock``).
+# deal if Qt is installed in this environment.  The class's
+# ``__module__`` is the underlying binding (``PyQt5.QtGui`` under
+# QGIS 3 / PyQt5 — and remains so even when imported via
+# ``qgis.PyQt.QtGui``), not ``unittest.mock`` (mock object).
+# NOTE: Under QGIS 4 (PyQt6) this prefix check will report False even
+# when a real Qt class is loaded; that is a pre-existing test gap
+# documented out-of-scope for Phase 4.3.
 def _is_real_qimage(cls: type) -> bool:
     mod = getattr(cls, "__module__", "") or ""
     return str(mod).startswith("PyQt5") and not str(mod).startswith("unittest")
@@ -402,7 +406,7 @@ class TestOverlayRendering(unittest.TestCase):
 
         if not _HAS_REAL_QT:
             raise unittest.SkipTest(
-                "Real PyQt5 QImage/QPainter unavailable — "
+                "Real Qt QImage/QPainter unavailable — "
                 "skipping QPainter-dependent rendering tests"
             )
         _ensure_qapp()

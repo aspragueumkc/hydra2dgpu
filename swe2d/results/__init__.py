@@ -1,7 +1,9 @@
-"""Results and visualization exports for incremental package migration."""
+"""Results data exports with visualization modules loaded on demand."""
 
-from swe2d.results.high_perf_viewer import render_unstructured_snapshot_image
-from swe2d.results.animation import ResultsAnimationController
+from __future__ import annotations
+
+from typing import Any
+
 from swe2d.results.data import SWE2DResultsData
 from swe2d.results.db_utils import open_ro, table_columns, table_exists
 from swe2d.results.queries import (
@@ -28,3 +30,19 @@ __all__ = [
     "table_columns",
     "table_exists",
 ]
+
+_LAZY_ATTRS = {
+    "ResultsAnimationController": "swe2d.results.animation",
+    "render_unstructured_snapshot_image": "swe2d.results.high_perf_viewer",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Load GUI visualization exports only when explicitly requested."""
+    module_name = _LAZY_ATTRS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module 'swe2d.results' has no attribute {name!r}")
+    module = __import__(module_name, fromlist=[name])
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

@@ -1,0 +1,21 @@
+[workspace]
+channels = ["https://prefix.dev/conda-forge"]
+name = "hydra2dgpu"
+platforms = ["linux-64", "win-64"]
+
+[system-requirements]
+cuda = "12.4"
+
+[dependencies]
+python = "3.12.*"
+qgis = "3.42.*"
+pyqt = "5.15.*"
+numpy = ">=1.26,<2"
+gmsh = ">=4.12"
+netcdf4 = ">=1.6"
+h5py = ">=3.9"
+matplotlib = ">=3.8"
+
+[pypi-dependencies]
+# Pinned to the matching release tag; update on each hydra-swe2d release.
+hydra-swe2d = "==1.2.0"

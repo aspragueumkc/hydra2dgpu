@@ -1,3 +1,4 @@
+import unittest
 """Tests for run_finalizer profile aggregation.
 
 The finalizer must persist line profiles even when the sample callback returns
@@ -75,11 +76,11 @@ def _wide_format_callback(_sample_map, t_s, _h, _hu, _hv, _bed):
             "t_s": float(t_s),
             "line_id": 1,
             "line_name": "section_1",
-            "depth_m": 1.0,
-            "velocity_ms": 0.5,
-            "wse_m": 11.0,
-            "bed_m": 10.0,
-            "flow_cms": 2.0,
+            "depth": 1.0,
+            "velocity": 0.5,
+            "wse": 11.0,
+            "bed": 10.0,
+            "flow": 2.0,
             "wet_frac": 1.0,
             "fr": 0.1,
         }
@@ -89,11 +90,11 @@ def _wide_format_callback(_sample_map, t_s, _h, _hu, _hv, _bed):
             "t_s": float(t_s),
             "line_id": 1,
             "line_name": "section_1",
-            "station_m": np.array([0.0, 10.0, 20.0], dtype=np.float64),
-            "depth_m": np.array([1.0, 1.0, 1.0], dtype=np.float64),
-            "velocity_ms": np.array([0.5, 0.5, 0.5], dtype=np.float64),
-            "wse_m": np.array([11.0, 11.0, 11.0], dtype=np.float64),
-            "bed_m": np.array([10.0, 10.0, 10.0], dtype=np.float64),
+            "station": np.array([0.0, 10.0, 20.0], dtype=np.float64),
+            "depth": np.array([1.0, 1.0, 1.0], dtype=np.float64),
+            "velocity": np.array([0.5, 0.5, 0.5], dtype=np.float64),
+            "wse": np.array([11.0, 11.0, 11.0], dtype=np.float64),
+            "bed": np.array([10.0, 10.0, 10.0], dtype=np.float64),
             "flow_qn": np.array([0.5, 0.5, 0.5], dtype=np.float64),
             "fr": np.array([0.1, 0.1, 0.1], dtype=np.float64),
             "wet": np.array([1, 1, 1], dtype=np.int32),
@@ -130,7 +131,7 @@ def test_finalizer_persists_line_profile_with_station_starting_at_zero(tmp_path)
             "ts_flow_cms": [2.0, 2.0],
             "ts_wet_frac": [1.0, 1.0],
             "ts_fr": [0.1, 0.1],
-            "station_m": stations,
+            "station": stations,
             "prof_depth_m": [np.full(3, 1.0), np.full(3, 1.0)],
             "prof_velocity_ms": [np.full(3, 0.5), np.full(3, 0.5)],
             "prof_wse_m": [np.full(3, 11.0), np.full(3, 11.0)],
@@ -182,3 +183,20 @@ def test_finalizer_persists_line_profile_with_station_starting_at_zero(tmp_path)
         assert row is not None, "swe2d_baked_line_profiles table was not created"
     finally:
         conn.close()
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

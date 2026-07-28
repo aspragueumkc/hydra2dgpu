@@ -34,13 +34,13 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
             {
                 "object_id": "struct_1",
                 "type": "weir",
-                "station_m": 100.0,
+                "station": 100.0,
                 "elev_m": 50.0,
             },
             {
                 "object_id": "struct_2",
                 "type": "orifice",
-                "station_m": 200.0,
+                "station": 200.0,
                 "elev_m": 60.0,
             },
         ]
@@ -87,9 +87,9 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
 
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
-            {"object_id": "struct_2", "type": "orifice", "station_m": 200.0},
-            {"object_id": "struct_3", "type": "weir", "station_m": 300.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
+            {"object_id": "struct_2", "type": "orifice", "station": 200.0},
+            {"object_id": "struct_3", "type": "weir", "station": 300.0},
         ]
         self.widget._result_data = mock_data
 
@@ -115,7 +115,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         """Verify checkbox items store the associated record data."""
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
 
@@ -129,7 +129,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["object_id"], "struct_1")
         self.assertEqual(record["type"], "weir")
-        self.assertEqual(record["station_m"], 100.0)
+        self.assertEqual(record["station"], 100.0)
 
     @unittest.skipIf(not _HAVE_MPL, "Matplotlib not available")
     def test_checkbox_toggle_adds_to_selection(self):
@@ -141,7 +141,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         # Set up mock data to populate table
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
         self.widget._populate_table()
@@ -171,7 +171,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         # Set up mock data to populate table
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
         self.widget._populate_table()
@@ -202,8 +202,8 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         # Set up mock data to populate table
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
-            {"object_id": "struct_2", "type": "orifice", "station_m": 200.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
+            {"object_id": "struct_2", "type": "orifice", "station": 200.0},
         ]
         self.widget._result_data = mock_data
         self.widget._populate_table()
@@ -270,7 +270,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
 
         # Mock item with record missing object_id
         mock_item = MagicMock()
-        mock_item.data.return_value = {"type": "weir", "station_m": 100.0}
+        mock_item.data.return_value = {"type": "weir", "station": 100.0}
         self.widget._table_widget.item.return_value = mock_item
 
         # Simulate cell change
@@ -284,7 +284,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         """Verify header labels include 'Select' as first column."""
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
 
@@ -303,7 +303,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
         """Verify checkbox column is inserted before existing data columns."""
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
 
@@ -328,7 +328,7 @@ class TestPlotViewWidgetTableCheckbox(unittest.TestCase):
 
         mock_data = MagicMock()
         mock_data._coupling_records = [
-            {"object_id": "struct_1", "type": "weir", "station_m": 100.0},
+            {"object_id": "struct_1", "type": "weir", "station": 100.0},
         ]
         self.widget._result_data = mock_data
         self.widget._populate_table()

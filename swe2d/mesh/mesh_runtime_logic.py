@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Runtime mesh helpers: cell centroids, areas, bed elevations, and initial state."""
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -121,6 +121,117 @@ def mesh_cell_min_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
         return out
     tri = mesh_data["cell_nodes"].reshape(-1, 3).astype(np.int32)
     return np.min(node_z[tri], axis=1).astype(np.float64)
+
+
+def mesh_cell_polygons(mesh_data: Dict[str, np.ndarray]) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Build a list of ``(polygon_x, polygon_y)`` arrays, one per mesh cell.
+
+    Pure geometry helper for services that need cell polygons without
+    importing qgis.core (QgsGeometry).  Each polygon is a closed ring
+    (last vertex repeated is implied by the consumer).  Cells with fewer
+    than three vertices emit an empty tuple.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_x``, ``node_y``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    list of ``(np.ndarray, np.ndarray)``
+        One ``(xs, ys)`` float64 tuple per cell, where each ring is
+        open (no repeated final vertex).
+    """
+    node_x = mesh_data["node_x"]
+    node_y = mesh_data["node_y"]
+    polygons: List[Tuple[np.ndarray, np.ndarray]] = []
+
+    if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
+        offs = mesh_data["cell_face_offsets"].astype(np.int32)
+        faces = mesh_data["cell_face_nodes"].astype(np.int32)
+        for ci in range(offs.size - 1):
+            s = int(offs[ci])
+            e = int(offs[ci + 1])
+            ids = faces[s:e]
+            if ids.size < 3:
+                polygons.append((np.empty(0, dtype=np.float64),
+                                 np.empty(0, dtype=np.float64)))
+                continue
+            polygons.append((
+                np.asarray(node_x[ids], dtype=np.float64),
+                np.asarray(node_y[ids], dtype=np.float64),
+            ))
+        return polygons
+
+    tris = mesh_data["cell_nodes"].reshape((-1, 3)).astype(np.int32)
+    for tri in tris:
+        polygons.append((
+            np.asarray(node_x[tri], dtype=np.float64),
+            np.asarray(node_y[tri], dtype=np.float64),
+        ))
+    return polygons
+
+
+def mesh_cell_records_from_mesh_data(
+    mesh_data: Dict[str, np.ndarray],
+) -> List[Dict[str, Any]]:
+    """Produce the canonical plain-data mesh-cell records (spec §5.2).
+
+    Shared adapter contract between the mesh runtime helper and the
+    canonical sample-line geometry service.  Supports both CSR polygon
+    cells (``cell_face_offsets`` + ``cell_face_nodes``) and triangle
+    cells (``cell_nodes``).
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_x``, ``node_y``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    list of ``{"cell_idx": int, "points": np.ndarray}``
+        One record per mesh cell.  ``cell_idx`` is the cell index in
+        enumeration order.  ``points`` is a ``float64`` array of shape
+        ``(N, 2)`` with ``N >= 3`` for polygon rings (need not be
+        closed — the canonical service closes them) or ``N == 3`` for
+        triangle cells.
+    """
+    if mesh_data is None:
+        return []
+    node_x = mesh_data["node_x"]
+    node_y = mesh_data["node_y"]
+    out: List[Dict[str, Any]] = []
+
+    if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
+        offs = mesh_data["cell_face_offsets"].astype(np.int32)
+        faces = mesh_data["cell_face_nodes"].astype(np.int32)
+        for ci in range(int(offs.size) - 1):
+            s = int(offs[ci])
+            e = int(offs[ci + 1])
+            ids = faces[s:e]
+            if ids.size < 3:
+                continue
+            pts = np.column_stack([
+                np.asarray(node_x[ids], dtype=np.float64),
+                np.asarray(node_y[ids], dtype=np.float64),
+            ])
+            out.append({"cell_idx": int(ci), "points": pts})
+        return out
+
+    if "cell_nodes" in mesh_data:
+        tris = mesh_data["cell_nodes"].reshape((-1, 3)).astype(np.int32)
+        for ci, tri in enumerate(tris):
+            pts = np.column_stack([
+                np.asarray(node_x[tri], dtype=np.float64),
+                np.asarray(node_y[tri], dtype=np.float64),
+            ])
+            out.append({"cell_idx": int(ci), "points": pts})
+    return out
 
 
 def mesh_cell_solver_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:

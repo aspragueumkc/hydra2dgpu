@@ -94,6 +94,9 @@ struct SWE2DMesh {
     std::vector<int32_t> face_stencil_5;           // [5 * n_faces] = {u2, u1, u, v, v1}
     std::vector<int32_t> face_mp5_case;            // [n_faces] case ∈ {1,2,3,4}
 
+    // CRS authority WKT (e.g., PROJCRS["NAD83 / Kansas North (ftUS)", ...])
+    std::string crs_wkt;
+
     // Convenience
     bool has_stencil_data() const { return !face_stencil_S0_offsets.empty(); }
 };

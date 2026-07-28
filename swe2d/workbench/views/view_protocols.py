@@ -150,3 +150,33 @@ class RunDockProtocol(Protocol):
 
     def get_progress_bar(self) -> Optional[QtWidgets.QProgressBar]:
         """Progress bar widget."""
+
+
+class WorkbenchMainViewProtocol(Protocol):
+    """Typed access to dialog-wide state for cross-cutting controllers.
+
+    These methods are implemented on the workbench dialog itself (the
+    "main view" of the workbench), not on any specific tab view. They
+    give controllers a typed, testable handle on:
+
+      - the active model GeoPackage path,
+      - the most recent / active run_id, and
+      - the QgisInterface (for canvas / map tool access).
+
+    Consumers MUST NOT reach through to Qt widgets — only these typed
+    accessors. Logging uses the dialog's existing ``_log`` method, which
+    is a method (not a widget attribute) and so is allowed by the MVP
+    widget-boundary rule.
+    """
+
+    def get_active_gpkg_path(self) -> str:
+        """Return the path of the currently-active model GPKG, or '' if none."""
+
+    def get_active_run_id(self) -> str:
+        """Return the most recent / active run_id, or '' if none."""
+
+    def get_qgis_iface(self) -> Any:
+        """Return the QgisInterface for canvas / map tool access (or None)."""
+
+    def _log(self, msg: str) -> None:
+        """Append a message to the workbench runtime log view."""

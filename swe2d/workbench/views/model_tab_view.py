@@ -40,7 +40,7 @@ class ModelTabView(QtWidgets.QWidget):
         gpu_diag_sync_interval_spin,
         tiny_mode_combo, tiny_wet_cell_threshold_spin,
         enable_cuda_graphs_chk, swe2d_perf_mode_chk,
-        internal_flow_layer_combo, internal_flow_field_edit,
+        internal_flow_layer_combo,
         run_time_edit, reconstruction_combo, temporal_order_combo
 
     Rain / Hydrology page (``model_rain_page``):
@@ -510,15 +510,6 @@ class ModelTabView(QtWidgets.QWidget):
         self.bc_lines_layer_combo.addItem("(none)", None)
         self._add_param_row(form, "BC lines layer:", self.bc_lines_layer_combo)
 
-        self.hydrograph_source_layer_combo = QtWidgets.QComboBox()
-        self.hydrograph_source_layer_combo.setObjectName("hydrograph_source_layer_combo")
-        self.hydrograph_source_layer_combo.setToolTip(
-            "Table layer containing hydrograph definitions referenced by BC line "
-            "hydrograph_id attributes. Typically the auto-created swe2d_hydrographs layer."
-        )
-        self.hydrograph_source_layer_combo.addItem("(auto-detect)", None)
-        self._add_param_row(form, "Hydrograph source:", self.hydrograph_source_layer_combo)
-
         self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
         self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
         self.inflow_progressive_chk.setToolTip(
@@ -574,21 +565,11 @@ class ModelTabView(QtWidgets.QWidget):
         self.internal_flow_layer_combo.setObjectName("internal_flow_layer_combo")
         self.internal_flow_layer_combo.setToolTip(
             "Polygon layer defining internal source/sink flow regions. "
-            "Each polygon specifies a flow rate (e.g. q_cms) applied as a source term. "
+            "Each polygon specifies a flow rate (e.g. src_value) applied as a source term. "
             "Select '(none)' to disable internal flows."
         )
         self._add_param_row(form, "Internal flow layer:", self.internal_flow_layer_combo)
         self.internal_flow_layer_combo.addItem("(none)", None)
-
-        self.internal_flow_field_edit = QtWidgets.QLineEdit()
-        self.internal_flow_field_edit.setObjectName("internal_flow_field_edit")
-        self.internal_flow_field_edit.setToolTip(
-            "Field name in the internal flow layer containing source/sink discharge values. "
-            "Default: 'q_cms' (CMS). Positive values = source, negative = sink."
-        )
-        self.internal_flow_field_edit.setText("q_cms")
-        self.internal_flow_field_edit.setPlaceholderText("field name, e.g. q_cms")
-        self._add_param_row(form, "Internal flow field:", self.internal_flow_field_edit)
 
         # -- Numerics --
         form = self._start_param_group(param_form, "Numerics")
@@ -1319,6 +1300,94 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.drainage_gpu_method_combo.setCurrentIndex(0)
 
+        # Drainage — Equation Set (continued): pipe friction + surcharge
+        self.pipe_friction_method_combo = QtWidgets.QComboBox()
+        self.pipe_friction_method_combo.setObjectName("pipe_friction_method_combo")
+        self.pipe_friction_method_combo.setToolTip(
+            "Semi-implicit friction treatment for the 1D pipe solver. "
+            "'None' uses plain Manning's with no stabilisation (may be unstable "
+            "at large timesteps on wide pipes). "
+            "'Substepping (2D-style)' mirrors the 2D solver's apply_friction_cuda_local "
+            "by subdividing the friction update when the Courant number is large. "
+            "'Alpha boost' adds a linear |Q|-proportional damping term "
+            "FRICTION_STABILITY_ALPHA·|Q|/A_full to the implicit denominator."
+        )
+        self._add_param_row(
+            drain_eq_form, "Pipe friction method:", self.pipe_friction_method_combo, advanced=True
+        )
+        self.pipe_friction_method_combo.addItem("None (Manning's only)", 0)
+        self.pipe_friction_method_combo.addItem("Substepping (2D-style)", 1)
+        self.pipe_friction_method_combo.addItem("Alpha boost (stability)", 2)
+        self.pipe_friction_method_combo.setCurrentIndex(0)
+
+        self.pipe_surcharge_method_combo = QtWidgets.QComboBox()
+        self.pipe_surcharge_method_combo.setObjectName("pipe_surcharge_method_combo")
+        self.pipe_surcharge_method_combo.setToolTip(
+            "Surcharge (pressurised flow) handling for closed-pipe cells. "
+            "'None' disables slot surcharge — A is clamped at A_full and "
+            "piezometric head is tracked at nodes only. "
+            "'Preissmann slot' uses a narrow slot above the crown to track "
+            "pressurised area (SWMM / InfoWorks ICM approach). "
+            "'Extran' is a placeholder for the full SWMM EXTRAN method."
+        )
+        self._add_param_row(
+            drain_eq_form, "Pipe surcharge method:", self.pipe_surcharge_method_combo, advanced=True
+        )
+        self.pipe_surcharge_method_combo.addItem("None (open-channel only)", 0)
+        self.pipe_surcharge_method_combo.addItem("Preissmann slot", 1)
+        self.pipe_surcharge_method_combo.addItem("Extran (placeholder)", 2)
+        self.pipe_surcharge_method_combo.setCurrentIndex(0)
+
+        # ── Pipe reconstruction method ──────────────────────────────────
+        self.pipe_recon_method_combo = QtWidgets.QComboBox()
+        self.pipe_recon_method_combo.setObjectName("pipe_recon_method_combo")
+        self.pipe_recon_method_combo.setToolTip(
+            "Reconstruction scheme for the 1D pipe solver.\n"
+            "'First-order upwind' is the most stable option.\n"
+            "'MUSCL-minmod' provides second-order spatial accuracy\n"
+            "with slope limiting to prevent spurious oscillations."
+        )
+        self.pipe_recon_method_combo.addItem("First-order upwind", 0)
+        self.pipe_recon_method_combo.addItem("MUSCL-minmod", 1)
+        self.pipe_recon_method_combo.setCurrentIndex(0)
+        self._add_param_row(
+            drain_eq_form, "Pipe reconstruction:", self.pipe_recon_method_combo, advanced=True
+        )
+
+        # ── Pipe time integrator ───────────────────────────────────────
+        self.pipe_time_integrator_combo = QtWidgets.QComboBox()
+        self.pipe_time_integrator_combo.setObjectName("pipe_time_integrator_combo")
+        self.pipe_time_integrator_combo.setToolTip(
+            "Temporal integration scheme for the 1D pipe solver.\n"
+            "'Forward Euler (RK1)' is first-order explicit.\n"
+            "'RK2' provides second-order accuracy."
+        )
+        self.pipe_time_integrator_combo.addItem("Forward Euler (RK1)", 0)
+        self.pipe_time_integrator_combo.addItem("RK2", 1)
+        self.pipe_time_integrator_combo.setCurrentIndex(1)
+        self._add_param_row(
+            drain_eq_form, "Pipe time integrator:", self.pipe_time_integrator_combo, advanced=True
+        )
+
+        # ── Friction alpha boost ───────────────────────────────────────
+        self.pipe_friction_alpha_spin = QtWidgets.QDoubleSpinBox()
+        self.pipe_friction_alpha_spin.setObjectName("pipe_friction_alpha_spin")
+        self.pipe_friction_alpha_spin.setDecimals(4)
+        self.pipe_friction_alpha_spin.setRange(0.0, 1.0)
+        self.pipe_friction_alpha_spin.setSingleStep(0.001)
+        self.pipe_friction_alpha_spin.setValue(0.01)
+        self.pipe_friction_alpha_spin.setToolTip(
+            "Adds linear-Q damping to Manning friction at large discharges.\n"
+            "gamma += alpha * |Q| / A_full\n\n"
+            "Range: 0.0 (Manning's only) to 1.0 (very strong damping).\n"
+            "Typical values: 0.001-0.1 provide mild damping for stability.\n"
+            "Default 0.01. Higher values stabilize high-flow conditions "
+            "but can slow startup transients."
+        )
+        self._add_param_row(
+            drain_eq_form, "Friction alpha boost:", self.pipe_friction_alpha_spin, advanced=True
+        )
+
         # Drainage — Substepping
         drain_sub_form = self._start_param_group(
             drain_layout, "Drainage — Substepping", advanced=True
@@ -1482,6 +1551,26 @@ class ModelTabView(QtWidgets.QWidget):
         """Relaxation factor for implicit drainage on GPU."""
         return float(self.drainage_implicit_relax_spin.value())
 
+    def get_pipe_friction_method(self) -> int:
+        """1D pipe friction method: 0=NONE, 1=SUBSTEPPING, 2=ALPHA_BOOST."""
+        return int(self.pipe_friction_method_combo.currentData())
+
+    def get_pipe_surcharge_method(self) -> int:
+        """1D pipe surcharge method: 0=NONE, 1=SLOT, 2=EXTRAN."""
+        return int(self.pipe_surcharge_method_combo.currentData())
+
+    def get_pipe_recon_method(self) -> int:
+        """1D pipe reconstruction scheme: 0=UPWIND, 1=MUSCL."""
+        return int(self.pipe_recon_method_combo.currentData())
+
+    def get_pipe_time_integrator(self) -> int:
+        """1D pipe time integrator: 0=RK1, 1=RK2."""
+        return int(self.pipe_time_integrator_combo.currentData())
+
+    def get_pipe_friction_alpha(self) -> float:
+        """Linear-Q damping coefficient for Manning friction."""
+        return float(self.pipe_friction_alpha_spin.value())
+
     def is_inflow_progressive(self) -> bool:
         """Inflow progressive activation checkbox."""
         return bool(self.inflow_progressive_chk.isChecked())
@@ -1553,6 +1642,16 @@ class ModelTabView(QtWidgets.QWidget):
             "culvert_solver_mode_combo": int(self.culvert_solver_mode_combo.currentData()),
             "bridge_coupling_mode": str(self.bridge_stacked_coupling_mode_combo.currentData()),
             "bridge_stacked_coupling_mode_combo": str(self.bridge_stacked_coupling_mode_combo.currentData()),
+            # Initial condition widgets — required for replay JSON to carry
+            # the user's initial state (h0 divergence fix).
+            "initial_condition_combo": str(self.initial_condition_combo.currentData()),
+            "initial_depth_spin": float(self.initial_depth_spin.value()),
+            "initial_wse_spin": float(self.initial_wse_spin.value()),
+            # Default BC type — required for replay JSON to carry the user's
+            # BC selection (bc_tp divergence fix).  Without this the CLI
+            # falls back to default_bc_type=1 (Wall) regardless of the GUI
+            # selection.
+            "default_bc_type_combo": int(self.default_bc_type_combo.currentData()),
         }
 
     def _on_select_results_gpkg(self) -> None:

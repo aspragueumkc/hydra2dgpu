@@ -1,3 +1,4 @@
+import unittest
 """Tests for in-memory results rendering path."""
 import numpy as np
 from swe2d.results.data import SWE2DResultsData
@@ -35,11 +36,11 @@ def _make_data_with_line_ts():
             ts_rows.append({
                 "line_id": int(m["line_id"]),
                 "line_name": m["line_name"],
-                "depth_m": float(np.mean(h[idx])),
-                "velocity_ms": 0.0,
-                "wse_m": float(np.mean(h[idx])),
-                "bed_m": 0.0,
-                "flow_cms": 0.0,
+                "depth": float(np.mean(h[idx])),
+                "velocity": 0.0,
+                "wse": float(np.mean(h[idx])),
+                "bed": 0.0,
+                "flow": 0.0,
                 "wet_frac": 1.0,
                 "fr": 0.0,
             })
@@ -59,7 +60,7 @@ def test_load_timeseries_from_live_with_rows():
     assert "t_s" in result
     assert len(result["t_s"]) == 2
     np.testing.assert_almost_equal(result["t_s"], [0.0, 1.0])
-    np.testing.assert_almost_equal(result["depth_m"], [1.5, 1.7])
+    np.testing.assert_almost_equal(result["depth"], [1.5, 1.7])
 
 
 def test_load_profile_from_live_empty():
@@ -82,7 +83,7 @@ def test_load_profile_from_live_with_rows():
         "line_id": 0,
         "line_name": "Line A",
         "cell_idx": np.array([0, 1], dtype=np.int32),
-        "station_m": np.array([0.0, 5.0], dtype=np.float64),
+        "station": np.array([0.0, 5.0], dtype=np.float64),
     }]
 
     def fake_sampler(sm, t, h, hu, hv, cell_bed):
@@ -92,11 +93,11 @@ def test_load_profile_from_live_with_rows():
             prof_rows.append({
                 "line_id": int(m["line_id"]),
                 "line_name": m["line_name"],
-                "station_m": np.asarray(m["station_m"], dtype=np.float64),
-                "depth_m": h[idx].astype(np.float64),
-                "velocity_ms": np.zeros_like(h[idx], dtype=np.float64),
-                "wse_m": h[idx].astype(np.float64),
-                "bed_m": np.zeros_like(h[idx], dtype=np.float64),
+                "station": np.asarray(m["station"], dtype=np.float64),
+                "depth": h[idx].astype(np.float64),
+                "velocity": np.zeros_like(h[idx], dtype=np.float64),
+                "wse": h[idx].astype(np.float64),
+                "bed": np.zeros_like(h[idx], dtype=np.float64),
                 "flow_qn": np.zeros_like(h[idx], dtype=np.float64),
                 "fr": np.zeros_like(h[idx], dtype=np.float64),
                 "wet": np.ones_like(h[idx], dtype=np.int32),
@@ -110,9 +111,26 @@ def test_load_profile_from_live_with_rows():
     )
 
     result = load_profile_from_live(data, "run_1", 0, 1.0)
-    assert "station_m" in result
-    np.testing.assert_almost_equal(result["station_m"], [0.0, 5.0])
-    np.testing.assert_almost_equal(result["depth_m"], [1.2, 2.2])
+    assert "station" in result
+    np.testing.assert_almost_equal(result["station"], [0.0, 5.0])
+    np.testing.assert_almost_equal(result["depth"], [1.2, 2.2])
 
     result0 = load_profile_from_live(data, "run_1", 0, 0.0)
-    np.testing.assert_almost_equal(result0["depth_m"], [1.0, 2.0])
+    np.testing.assert_almost_equal(result0["depth"], [1.0, 2.0])
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

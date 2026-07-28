@@ -228,6 +228,7 @@ class TestThinInitPattern(unittest.TestCase):
             self.assertTrue(hasattr(dlg._run_dock, "run_btn"))
             self.assertTrue(hasattr(dlg._run_dock, "cancel_btn"))
             self.assertTrue(hasattr(dlg._run_dock, "snapshot_btn"))
+            self.assertTrue(hasattr(dlg._run_dock, "gpu_viewer_btn"))
             self.assertTrue(hasattr(dlg._run_dock, "batch_btn"))
             self.assertTrue(hasattr(dlg._run_dock, "progress_bar"))
         finally:

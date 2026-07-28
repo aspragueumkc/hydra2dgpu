@@ -13,10 +13,10 @@ DynamicTerm = Tuple[np.ndarray, np.ndarray, Hydrograph]
 
 def resolve_internal_flow_field_name(requested_field: str, fields: set) -> Optional[str]:
     """Resolve the best-matching flow field name from available attribute fields."""
-    field_name = str(requested_field or "q_cms").strip() or "q_cms"
+    field_name = str(requested_field or "src_value").strip() or "src_value"
     if field_name in fields:
         return field_name
-    for cand in ("q_cms", "flow_cms", "q", "flow"):
+    for cand in ("src_value", "q_cms", "flow_cms", "q", "flow"):
         if cand in fields:
             return cand
     return None

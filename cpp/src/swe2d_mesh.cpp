@@ -1056,6 +1056,18 @@ std::vector<uint8_t> swe2d_serialize_mesh(const SWE2DMesh& mesh) {
     serialize_vector(buf, mesh.face_stencil_5);
     serialize_vector(buf, mesh.face_mp5_case);
 
+    // CRS WKT string
+    {
+        std::string wkt = mesh.crs_wkt;
+        uint64_t slen = static_cast<uint64_t>(wkt.size());
+        auto sp = reinterpret_cast<const uint8_t*>(&slen);
+        buf.insert(buf.end(), sp, sp + sizeof(uint64_t));
+        if (slen > 0) {
+            auto wp = reinterpret_cast<const uint8_t*>(wkt.data());
+            buf.insert(buf.end(), wp, wp + static_cast<size_t>(slen));
+        }
+    }
+
     return buf;
 }
 
@@ -1145,6 +1157,19 @@ SWE2DMesh swe2d_deserialize_mesh(const uint8_t* data, size_t size) {
     // MP5 5-cell walk table (scheme 8)
     mesh.face_stencil_5          = deserialize_vector<int32_t>(data, size, pos);
     mesh.face_mp5_case           = deserialize_vector<int32_t>(data, size, pos);
+
+    // CRS WKT string (backward compat: old blobs don't have it)
+    if (pos + sizeof(uint64_t) <= size) {
+        uint64_t slen;
+        std::memcpy(&slen, data + pos, sizeof(uint64_t));
+        pos += sizeof(uint64_t);
+        if (slen > 0 && static_cast<size_t>(slen) <= size - pos) {
+            mesh.crs_wkt.assign(reinterpret_cast<const char*>(data + pos), static_cast<size_t>(slen));
+            pos += static_cast<size_t>(slen);
+        } else if (slen == 0) {
+            mesh.crs_wkt.clear();
+        }
+    }
 
     return mesh;
 }

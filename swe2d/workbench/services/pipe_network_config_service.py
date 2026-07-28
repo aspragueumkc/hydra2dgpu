@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from swe2d.workbench.services.pipe_network_service import build_pipe_network_config
+from swe2d.core.pipe_network_service import build_pipe_network_config
 
 
 def build_pipe_network_config_from_widgets(
@@ -29,6 +29,11 @@ def build_pipe_network_config_from_widgets(
     dynamic_relaxation: float,
     implicit_iters: int,
     implicit_relax: float,
+    friction_method: int = 0,
+    recon_method: int = 0,
+    time_integrator: int = 1,
+    friction_alpha: float = 0.01,
+    surcharge_method: int = 0,
     log_fn: Optional[Callable[[str], None]] = None,
 ):
     """Build a PipeNetworkConfig from resolved values.
@@ -64,6 +69,11 @@ def build_pipe_network_config_from_widgets(
             "dynamic_relaxation": dynamic_relaxation,
             "implicit_iters": implicit_iters,
             "implicit_relax": implicit_relax,
+            "friction_method": friction_method,
+            "recon_method": recon_method,
+            "time_integrator": time_integrator,
+            "friction_alpha": friction_alpha,
+            "surcharge_method": surcharge_method,
         },
         log_fn=log_fn,
     )

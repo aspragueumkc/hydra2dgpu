@@ -70,6 +70,16 @@ class WidgetNode:
         return f"{self.class_name}{oname}"
 
 
+class AmbiguousWidgetPathError(RuntimeError):
+    """Raised when a path segment matches more than one direct child.
+
+    ``find_widget_by_path`` rejects ambiguous matches instead of silently
+    returning the first one — paths are required to be deterministic
+    across calls, and a silent first-match would mask refactors that
+    introduce duplicate ``objectName`` siblings.
+    """
+
+
 def _summarise_text(widget: QWidget) -> str:
     """Pick the most useful short text description for *widget*."""
     for getter_name in ("windowTitle", "text", "title", "placeholderText"):
@@ -139,11 +149,15 @@ def _walk_recursive(
     # Skip noisy / non-widget children.
     if class_name in _NOISY_TYPES:
         return
+    # ``QObject.children()`` returns ONLY direct children (QWidget, layouts,
+    # actions, etc.).  We filter to objects that look like widgets; this
+    # fixes the pre-2.H.6 bug where ``findChildren`` jumped levels and
+    # recorded descendants as direct root children.
     try:
-        children: List[QWidget] = widget.findChildren(QWidget, "", )  # type: ignore[arg-type]
+        raw_children = list(widget.children())
     except (RuntimeError, TypeError):
-        children = []
-    # findChildren is recursive and unsorted — sort by id for stable display.
+        raw_children = []
+    children = [c for c in raw_children if hasattr(c, "objectName") and callable(c.objectName)]
     children.sort(key=lambda c: id(c))
     for child in children:
         # Skip widgets that were already captured (e.g. shared popups).
@@ -160,6 +174,69 @@ def find_node_by_object_name(
         if node.object_name == object_name:
             return node
     return None
+
+
+def find_widget_by_path(root: QWidget, path_parts: List[str]) -> Optional[QWidget]:
+    """Walk *root*'s widget tree following each name in *path_parts*.
+
+    Returns the matched live ``QWidget``, or ``None`` if any segment is
+    not found.  Raises :class:`AmbiguousWidgetPathError` if a segment
+    matches more than one direct child at the same level.
+
+    Path contract
+    -------------
+    The root widget is **not** included in the path.  ``path_parts[0]``
+    must match a *direct child* of ``root`` (not ``root`` itself).
+    Callers that include the root name in their path will get a "not
+    found" result; the bridge handler in ``qgis_bridge.py`` strips the
+    optional root prefix and uses ``_resolve_root`` to anchor the path.
+
+    The path is resolved strictly: each segment must match exactly one
+    *direct* child of the current widget.  ``QObject.children()`` is
+    used (not ``findChildren``) so a path cannot jump levels — a
+    sibling three levels deep is unreachable from the root via a
+    two-segment path, by design.
+
+    Empty strings in *path_parts* are skipped (mirrors the bridge, which
+    splits on ``"."`` and discards empty segments).
+    """
+    parts = [p for p in path_parts if p]
+    if not parts:
+        return root
+    widget: Optional[QWidget] = root
+    for name in parts:
+        if widget is None:
+            return None
+        # Direct children only — QObject.children() returns the immediate
+        # QObject children of ``widget``.  Filter to objects that look
+        # like widgets (have an ``objectName()`` method); this excludes
+        # layouts, actions, timers, and other non-widget QObject children
+        # while still accepting custom widget subclasses and plain-Python
+        # test shims.
+        try:
+            raw_children = list(widget.children())
+        except (RuntimeError, TypeError):
+            return None
+        children = [c for c in raw_children if hasattr(c, "objectName") and callable(c.objectName)]
+        matches: List = []
+        for child in children:
+            try:
+                if child.objectName() == name:
+                    matches.append(child)
+            except RuntimeError:
+                continue
+        if len(matches) == 0:
+            return None
+        if len(matches) > 1:
+            matches.sort(key=lambda c: id(c))
+            raise AmbiguousWidgetPathError(
+                f"path segment {name!r} matches {len(matches)} direct "
+                f"children of {type(widget).__name__} "
+                f"objectName={widget.objectName()!r}: "
+                f"{[c.objectName() for c in matches]}"
+            )
+        widget = matches[0]
+    return widget
 
 
 def build_child_index(nodes: List[WidgetNode]) -> dict:

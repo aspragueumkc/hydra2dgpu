@@ -21,6 +21,7 @@ from swe2d.extensions.extension_models import (
     PipeNetworkConfig,
     PipeNetworkState,
 )
+from swe2d.units import SI_GRAVITY
 
 
 class DrainageCouplingEngine:
@@ -118,6 +119,8 @@ def build_drainage_config_from_json(
             max_depth=float(n.get("y_max", 10.0)),
             crest_elev=n.get("crest_elev"),
             rim_elev=n.get("rim_elev"),
+            inlet_box_length=n.get("inlet_box_length"),
+            inlet_box_width=n.get("inlet_box_width"),
             metadata=meta,
         ))
 
@@ -211,11 +214,13 @@ def build_drainage_config_from_json(
         node_inlets=node_inlets,
         outfalls=outfalls,
         pipe_ends=[],
-        gravity=float(data.get("gravity", 9.81)),
+        gravity=float(data.get("gravity", SI_GRAVITY)),
         head_deadband_m=float(data.get("head_deadband_m", 1.0e-3)),
         dynamic_flow_relaxation=float(data.get("dynamic_flow_relaxation", 1.0)),
         pipe_solver_mode=str(data.get("pipe_solver_mode", "diffusion_wave")),
         coupling_substeps=int(data.get("coupling_substeps", 1)),
+        friction_method=int(data.get("friction_method", 0)),
+        surcharge_method=int(data.get("surcharge_method", 0)),
     )
 
 

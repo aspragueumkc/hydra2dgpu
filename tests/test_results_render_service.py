@@ -40,7 +40,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
         selected_elements = {
             "s1": {
                 "type": "structure",
-                "flow_cms": 6.0,  # Current flow at current time
+                "flow": 6.0,  # Current flow at current time
             }
         }
 
@@ -49,7 +49,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
             fig=fig,
             mesh_data=None,
             result_data=result_data,
-            mode="flow_cms",
+            mode="flow",
             h_min=0.0,
             selected_elements=selected_elements,
         )
@@ -91,7 +91,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
             fig=fig,
             mesh_data=None,
             result_data=result_data,
-            mode="flow_cms",
+            mode="flow",
             h_min=0.0,
             selected_elements=selected_elements,
         )
@@ -121,7 +121,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
         selected_elements = {
             "s1": {
                 "type": "drainage_node",  # Not a structure
-                "flow_cms": 6.0,
+                "flow": 6.0,
             }
         }
 
@@ -130,7 +130,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
             fig=fig,
             mesh_data=None,
             result_data=result_data,
-            mode="flow_cms",
+            mode="flow",
             h_min=0.0,
             selected_elements=selected_elements,
         )
@@ -159,7 +159,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
             fig=fig,
             mesh_data=None,
             result_data=result_data,
-            mode="flow_cms",
+            mode="flow",
             h_min=0.0,
             selected_elements=selected_elements,
         )
@@ -193,7 +193,7 @@ class TestRenderStructuresOnFigure(unittest.TestCase):
             fig=fig,
             mesh_data=None,
             result_data=result_data,
-            mode="flow_cms",
+            mode="flow",
             h_min=0.0,
             selected_elements=selected_elements,
         )

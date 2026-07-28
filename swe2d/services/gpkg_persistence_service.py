@@ -107,8 +107,8 @@ def persist_baked_mesh(
 def load_baked_mesh(
     gpkg_path: str,
     mesh_name: str,
-) -> Optional[bytes]:
-    """Load a serialized SWE2DMesh BLOB from the swe2d_baked_mesh table.
+) -> Optional[Tuple[bytes, str]]:
+    """Load a serialized SWE2DMesh BLOB + CRS WKT from the swe2d_baked_mesh table.
 
     Parameters
     ----------
@@ -119,8 +119,9 @@ def load_baked_mesh(
 
     Returns
     -------
-    bytes or None
-        The raw baked BLOB, or None if not found.
+    tuple (blob, crs_wkt) or None
+        ``blob`` is raw baked bytes, ``crs_wkt`` is the CRS WKT string
+        (may be empty for older blobs).  Returns None if mesh not found.
     """
     if not gpkg_path or not os.path.exists(gpkg_path):
         return None
@@ -132,10 +133,12 @@ def load_baked_mesh(
         if cur.fetchone() is None:
             return None
         row = conn.execute(
-            "SELECT baked_blob FROM swe2d_baked_mesh WHERE mesh_name=?",
+            "SELECT baked_blob, crs_wkt FROM swe2d_baked_mesh WHERE mesh_name=?",
             (mesh_name,),
         ).fetchone()
-        return row[0] if row else None
+        if row is None:
+            return None
+        return (row[0], str(row[1] or ""))
     finally:
         conn.close()
 
@@ -209,20 +212,22 @@ def _ensure_ogc_gpkg_tables(conn: sqlite3.Connection, crs_wkt: str = "") -> None
                 (tbl, tbl, datetime.datetime.now(datetime.timezone.utc).isoformat()),
             )
 
-    # ── Simulation configs table ─────────────────────────────────────────
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS swe2d_simulation_configs (
+    # ── Simulation configs table (per-table; default = legacy single table) ─
+    default_table = "swe2d_simulation_configs"
+    _empty_dict = "{}"
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {default_table} (
             config_id       TEXT PRIMARY KEY,
             mesh_name       TEXT,
             created_utc     TEXT NOT NULL,
             run_duration_s  REAL DEFAULT 0.0,
             description     TEXT DEFAULT '',
-            params          TEXT NOT NULL DEFAULT '{}',
+            params          TEXT NOT NULL DEFAULT '{_empty_dict}',
             widget_state    TEXT NOT NULL)
     """)
     # Backwards-compat: add params column if table already exists without it
     try:
-        cur.execute("ALTER TABLE swe2d_simulation_configs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'")
+        cur.execute(f"ALTER TABLE {default_table} ADD COLUMN params TEXT NOT NULL DEFAULT '{_empty_dict}'")
     except sqlite3.OperationalError:
         pass  # column already exists
 
@@ -236,6 +241,7 @@ def persist_simulation_config(
     description: str = "",
     params: Optional[Dict[str, Any]] = None,
     log_fn: Optional[Callable[[str], None]] = None,
+    table_name: str = "swe2d_simulation_configs",
 ) -> None:
     """Save a simulation configuration to the GeoPackage.
 
@@ -262,12 +268,26 @@ def persist_simulation_config(
     """
     _log = log_fn or (lambda _: None)
     _params = params if params is not None else {}
+    table = str(table_name or "swe2d_simulation_configs").strip() or "swe2d_simulation_configs"
     try:
         conn = sqlite3.connect(gpkg_path)
         _ensure_ogc_gpkg_tables(conn)
         cur = conn.cursor()
+        _empty_dict_default = "{}"
         cur.execute(
-            "INSERT OR REPLACE INTO swe2d_simulation_configs "
+            f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                config_id       TEXT PRIMARY KEY,
+                mesh_name       TEXT,
+                created_utc     TEXT NOT NULL,
+                run_duration_s  REAL DEFAULT 0.0,
+                description     TEXT DEFAULT '',
+                params          TEXT NOT NULL DEFAULT '{_empty_dict_default}',
+                widget_state    TEXT NOT NULL)
+            """
+        )
+        cur.execute(
+            f"INSERT OR REPLACE INTO {table} "
             "(config_id, mesh_name, created_utc, run_duration_s, description, params, widget_state) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -282,7 +302,7 @@ def persist_simulation_config(
         )
         conn.commit()
         conn.close()
-        _log(f"Simulation config '{config_id}' saved to {gpkg_path}")
+        _log(f"Simulation config '{config_id}' saved to table '{table}' in {gpkg_path}")
     except Exception as exc:
         _log(f"[WARNING] Failed to persist simulation config: {exc}")
 
@@ -485,7 +505,7 @@ def persist_all_baked_results(
     mesh_name : str
     snapshot_timesteps : list of (t_s, h_arr, hu_arr, hv_arr)
     line_ts_items : list of dict, optional
-        Each dict: line_id, line_name, times (ndarray), depth_m (ndarray), ...
+        Each dict: line_id, line_name, times (ndarray), depth (ndarray), ...
     profile_items : list of dict, optional
         Each dict: line_id, line_name, station_m, times, depth_m (2-D), ...
     coupling_items : list of dict, optional
@@ -580,11 +600,11 @@ def persist_all_baked_results(
                 rows.append((
                     run_id, line_id, line_name, len(times),
                     times.tobytes(),
-                    np.asarray(item.get("depth_m", []), dtype=np.float64).tobytes(),
-                    np.asarray(item.get("velocity_ms", []), dtype=np.float64).tobytes(),
-                    np.asarray(item.get("wse_m", []), dtype=np.float64).tobytes(),
-                    np.asarray(item.get("bed_m", []), dtype=np.float64).tobytes(),
-                    np.asarray(item.get("flow_cms", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("depth", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("velocity", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("wse", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("bed", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("flow", []), dtype=np.float64).tobytes(),
                     np.asarray(item.get("wet_frac", []), dtype=np.float64).tobytes(),
                     np.asarray(item.get("fr", []), dtype=np.float64).tobytes(),
                 ))
@@ -620,17 +640,17 @@ def persist_all_baked_results(
             for item in profile_items:
                 line_id = int(item["line_id"])
                 line_name = str(item.get("line_name", f"line_{line_id}"))
-                station_m = np.asarray(item["station_m"], dtype=np.float64)
+                station = np.asarray(item.get("station", item.get("station_m", np.empty(0))), dtype=np.float64)
                 times = np.asarray(item["times"], dtype=np.float64)
                 rows.append((
                     run_id, line_id, line_name,
-                    len(station_m), len(times),
-                    station_m.tobytes(),
+                    len(station), len(times),
+                    station.tobytes(),
                     times.tobytes(),
-                    np.asarray(item["depth_m"], dtype=np.float64).tobytes(),
-                    np.asarray(item["velocity_ms"], dtype=np.float64).tobytes(),
-                    np.asarray(item["wse_m"], dtype=np.float64).tobytes(),
-                    np.asarray(item["bed_m"], dtype=np.float64).tobytes(),
+                    np.asarray(item["depth"], dtype=np.float64).tobytes(),
+                    np.asarray(item["velocity"], dtype=np.float64).tobytes(),
+                    np.asarray(item["wse"], dtype=np.float64).tobytes(),
+                    np.asarray(item["bed"], dtype=np.float64).tobytes(),
                     np.asarray(item["flow_qn"], dtype=np.float64).tobytes(),
                     np.asarray(item["fr"], dtype=np.float64).tobytes(),
                     np.asarray(item["wet"], dtype=np.int32).tobytes(),
@@ -689,22 +709,33 @@ def persist_all_baked_results(
                     n_timesteps INTEGER,
                     times_blob BLOB,
                     values_blob BLOB,
+                    cell_invert REAL DEFAULT 0.0,
+                    cell_width REAL DEFAULT 1.0,
+                    cell_height REAL DEFAULT 1.0,
+                    cell_shape_type INTEGER DEFAULT 0,
                     PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
             """)
+            _ensure_pipe_cell_ts_columns(conn)
             for item in pipe_cell_items:
                 times = np.asarray(item["times"], dtype=np.float64)
                 values = np.asarray(item["values"], dtype=np.float64)
                 conn.execute(
                     "INSERT OR REPLACE INTO swe2d_baked_pipe_cell_ts "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (run_id, str(item["link_id"]), int(item["cell_sub_idx"]),
                      str(item["metric"]), len(times),
-                     times.tobytes(), values.tobytes()),
+                     times.tobytes(), values.tobytes(),
+                     float(item.get("cell_invert", 0.0)),
+                     float(item.get("cell_width", 1.0)),
+                     float(item.get("cell_height", 1.0)),
+                     int(item.get("cell_shape_type", 0))),
                 )
-                if log_fn:
-                    log_fn(f"Baked pipe-cell ts: link={item['link_id']} "
-                           f"cell={item['cell_sub_idx']} metric={item['metric']} "
-                           f"({len(times)} steps)")
+            if log_fn and pipe_cell_items:
+                _links = len({it["link_id"] for it in pipe_cell_items})
+                _cells = len({(it["link_id"], it["cell_sub_idx"]) for it in pipe_cell_items})
+                _metrics = len({it["metric"] for it in pipe_cell_items})
+                _steps = len(pipe_cell_items[0]["times"])
+                log_fn(f"Baked pipe-cell ts: {_links} links, {_cells} cells, {_metrics} metrics ({_steps} steps)")
 
         # ── Overlay fields ───────────────────────────────────────────────
         if overlay_field_items:
@@ -1033,6 +1064,25 @@ def persist_baked_coupling_batch(
         conn.close()
 
 
+def _ensure_pipe_cell_ts_columns(conn: sqlite3.Connection) -> None:
+    """Add missing geometry columns to an existing swe2d_baked_pipe_cell_ts table.
+
+    The table originally had 7 columns (run_id, link_id, cell_sub_idx, metric,
+    n_timesteps, times_blob, values_blob).  Later versions add 4 geometry columns
+    for profile rendering.  Calling this after ``CREATE TABLE IF NOT EXISTS``
+    upgrades legacy tables so inserts with geometry values succeed.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(swe2d_baked_pipe_cell_ts)").fetchall()}
+    for col, dtype in [
+        ("cell_invert", "REAL DEFAULT 0.0"),
+        ("cell_width", "REAL DEFAULT 1.0"),
+        ("cell_height", "REAL DEFAULT 1.0"),
+        ("cell_shape_type", "INTEGER DEFAULT 0"),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE swe2d_baked_pipe_cell_ts ADD COLUMN {col} {dtype}")
+
+
 def persist_baked_pipe_cell_ts(
     gpkg_path: str,
     run_id: str,
@@ -1067,22 +1117,33 @@ def persist_baked_pipe_cell_ts(
                 n_timesteps INTEGER,
                 times_blob BLOB,
                 values_blob BLOB,
+                cell_invert REAL DEFAULT 0.0,
+                cell_width REAL DEFAULT 1.0,
+                cell_height REAL DEFAULT 1.0,
+                cell_shape_type INTEGER DEFAULT 0,
                 PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
         """)
+        _ensure_pipe_cell_ts_columns(conn)
         for item in pipe_cell_items:
             times = np.asarray(item["times"], dtype=np.float64)
             values = np.asarray(item["values"], dtype=np.float64)
             conn.execute(
                 "INSERT OR REPLACE INTO swe2d_baked_pipe_cell_ts "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, str(item["link_id"]), int(item["cell_sub_idx"]),
                  str(item["metric"]), len(times),
-                 times.tobytes(), values.tobytes()),
+                 times.tobytes(), values.tobytes(),
+                 float(item.get("cell_invert", 0.0)),
+                 float(item.get("cell_width", 1.0)),
+                 float(item.get("cell_height", 1.0)),
+                 int(item.get("cell_shape_type", 0))),
             )
-            if log_fn:
-                log_fn(f"Baked pipe-cell ts: link={item['link_id']} "
-                       f"cell={item['cell_sub_idx']} metric={item['metric']} "
-                       f"({len(times)} steps)")
+        if log_fn and pipe_cell_items:
+            _links = len({it["link_id"] for it in pipe_cell_items})
+            _cells = len({(it["link_id"], it["cell_sub_idx"]) for it in pipe_cell_items})
+            _metrics = len({it["metric"] for it in pipe_cell_items})
+            _steps = len(pipe_cell_items[0]["times"])
+            log_fn(f"Baked pipe-cell ts: {_links} links, {_cells} cells, {_metrics} metrics ({_steps} steps)")
         conn.commit()
     finally:
         conn.close()
@@ -1154,20 +1215,45 @@ def load_baked_pipe_cell_ts(
     -------
     list of dict
         Each dict has keys: ``link_id``, ``cell_sub_idx``, ``metric``,
-        ``n_timesteps``, ``times`` (ndarray), ``values`` (ndarray).
+        ``n_timesteps``, ``times`` (ndarray), ``values`` (ndarray), plus
+        ``cell_invert``, ``cell_width``, ``cell_height`` and
+        ``cell_shape_type``.
     """
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_pipe_cell_ts'"
     )
     if cur.fetchone() is None:
         return []
-    rows = conn.execute(
-        "SELECT link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob "
-        "FROM swe2d_baked_pipe_cell_ts WHERE run_id=?",
-        (run_id,),
-    ).fetchall()
+
+    info = conn.execute("PRAGMA table_info(swe2d_baked_pipe_cell_ts)").fetchall()
+    col_names = {row[1] for row in info}
+    has_geom = {"cell_invert", "cell_width", "cell_height", "cell_shape_type"} <= col_names
+
+    if has_geom:
+        rows = conn.execute(
+            "SELECT link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob, "
+            "cell_invert, cell_width, cell_height, cell_shape_type "
+            "FROM swe2d_baked_pipe_cell_ts WHERE run_id=?",
+            (run_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob "
+            "FROM swe2d_baked_pipe_cell_ts WHERE run_id=?",
+            (run_id,),
+        ).fetchall()
+
     out: List[Dict[str, Any]] = []
-    for link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob in rows:
+    for row in rows:
+        if has_geom:
+            link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob, \
+                cell_invert, cell_width, cell_height, cell_shape_type = row
+        else:
+            link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob = row
+            cell_invert = 0.0
+            cell_width = 1.0
+            cell_height = 1.0
+            cell_shape_type = 0
         out.append({
             "link_id": str(link_id),
             "cell_sub_idx": int(cell_sub_idx),
@@ -1181,6 +1267,10 @@ def load_baked_pipe_cell_ts(
                 np.frombuffer(values_blob, dtype=np.float64).copy()
                 if values_blob is not None else np.empty(0, dtype=np.float64)
             ),
+            "cell_invert": float(cell_invert) if cell_invert is not None else 0.0,
+            "cell_width": float(cell_width) if cell_width is not None else 1.0,
+            "cell_height": float(cell_height) if cell_height is not None else 1.0,
+            "cell_shape_type": int(cell_shape_type) if cell_shape_type is not None else 0,
         })
     return out
 
@@ -1239,11 +1329,11 @@ def persist_baked_line_ts(
     line_id: int,
     line_name: str,
     times: np.ndarray,
-    depth_m: np.ndarray,
-    velocity_ms: np.ndarray,
-    wse_m: np.ndarray,
-    bed_m: np.ndarray,
-    flow_cms: np.ndarray,
+    depth: np.ndarray,
+    velocity: np.ndarray,
+    wse: np.ndarray,
+    bed: np.ndarray,
+    flow: np.ndarray,
     wet_frac: np.ndarray,
     fr: np.ndarray,
     log_fn: Optional[Callable[[str], None]] = None,
@@ -1262,7 +1352,7 @@ def persist_baked_line_ts(
         Human-readable line name.
     times : ndarray
         1-D float64 array of timestamps.
-    depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr : ndarray
+    depth, velocity, wse, bed, flow, wet_frac, fr : ndarray
         1-D float64 arrays (same length as times).
     log_fn : callable, optional
         Logging callback.
@@ -1293,11 +1383,11 @@ def persist_baked_line_ts(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, line_id, line_name, len(times),
              times.tobytes(),
-             np.asarray(depth_m, dtype=np.float64).tobytes(),
-             np.asarray(velocity_ms, dtype=np.float64).tobytes(),
-             np.asarray(wse_m, dtype=np.float64).tobytes(),
-             np.asarray(bed_m, dtype=np.float64).tobytes(),
-             np.asarray(flow_cms, dtype=np.float64).tobytes(),
+             np.asarray(depth, dtype=np.float64).tobytes(),
+             np.asarray(velocity, dtype=np.float64).tobytes(),
+             np.asarray(wse, dtype=np.float64).tobytes(),
+             np.asarray(bed, dtype=np.float64).tobytes(),
+             np.asarray(flow, dtype=np.float64).tobytes(),
              np.asarray(wet_frac, dtype=np.float64).tobytes(),
              np.asarray(fr, dtype=np.float64).tobytes()),
         )
@@ -1323,8 +1413,8 @@ def persist_baked_line_ts_batch(
     run_id : str
         Run identifier.
     line_items : list of dict
-        Each dict has keys: line_id, line_name, times, depth_m,
-        velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr.
+        Each dict has keys: line_id, line_name, times, depth,
+        velocity, wse, bed, flow, wet_frac, fr.
     log_fn : callable, optional
         Logging callback.
     """
@@ -1357,11 +1447,11 @@ def persist_baked_line_ts_batch(
             rows.append((
                 run_id, line_id, line_name, len(times),
                 times.tobytes(),
-                np.asarray(item.get("depth_m", []), dtype=np.float64).tobytes(),
-                np.asarray(item.get("velocity_ms", []), dtype=np.float64).tobytes(),
-                np.asarray(item.get("wse_m", []), dtype=np.float64).tobytes(),
-                np.asarray(item.get("bed_m", []), dtype=np.float64).tobytes(),
-                np.asarray(item.get("flow_cms", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("depth", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("velocity", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("wse", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("bed", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("flow", []), dtype=np.float64).tobytes(),
                 np.asarray(item.get("wet_frac", []), dtype=np.float64).tobytes(),
                 np.asarray(item.get("fr", []), dtype=np.float64).tobytes(),
             ))
@@ -1509,24 +1599,24 @@ def persist_baked_line_profile_batch(
         for item in profile_items:
             line_id = int(item["line_id"])
             line_name = str(item.get("line_name", f"line_{line_id}"))
-            station_m = np.asarray(item["station_m"], dtype=np.float64)
+            station = np.asarray(item["station"], dtype=np.float64)
             times = np.asarray(item["times"], dtype=np.float64)
             rows.append((
                 run_id, line_id, line_name,
-                len(station_m), len(times),
-                station_m.tobytes(),
+                len(station), len(times),
+                station.tobytes(),
                 times.tobytes(),
-                np.asarray(item["depth_m"], dtype=np.float64).tobytes(),
-                np.asarray(item["velocity_ms"], dtype=np.float64).tobytes(),
-                np.asarray(item["wse_m"], dtype=np.float64).tobytes(),
-                np.asarray(item["bed_m"], dtype=np.float64).tobytes(),
+                np.asarray(item["depth"], dtype=np.float64).tobytes(),
+                np.asarray(item["velocity"], dtype=np.float64).tobytes(),
+                np.asarray(item["wse"], dtype=np.float64).tobytes(),
+                np.asarray(item["bed"], dtype=np.float64).tobytes(),
                 np.asarray(item["flow_qn"], dtype=np.float64).tobytes(),
                 np.asarray(item["fr"], dtype=np.float64).tobytes(),
                 np.asarray(item["wet"], dtype=np.int32).tobytes(),
             ))
             if log_fn:
                 log_fn(f"Baked line profile saved: line={line_id} "
-                       f"({len(times)} timesteps x {len(station_m)} stations)")
+                       f"({len(times)} timesteps x {len(station)} stations)")
         conn.executemany(
             "INSERT OR REPLACE INTO swe2d_baked_line_profiles "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1556,8 +1646,8 @@ def load_baked_line_timeseries(
     Returns
     -------
     dict
-        Dict with keys ``t_s``, ``depth_m``, ``velocity_ms``, ``wse_m``,
-        ``bed_m``, ``flow_cms``, or empty dict if not found.
+        Dict with keys ``t_s``, ``depth``, ``velocity``, ``wse``,
+        ``bed``, ``flow``, or empty dict if not found.
     """
     # Live data path
     if not isinstance(source, str):
@@ -1572,9 +1662,18 @@ def load_baked_line_timeseries(
             result = {"line_name": raw.get("line_name", "")}
             times = getattr(d, '_live_times', None)
             result["t_s"] = np.asarray(times, dtype=np.float64) if times is not None else np.empty(0, dtype=np.float64)
-            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m",
-                       "flow_cms", "wet_frac", "fr"):
+            _OLD_TS_KEY = {
+                "depth": "depth_m",
+                "velocity": "velocity_ms",
+                "wse": "wse_m",
+                "bed": "bed_m",
+                "flow": "flow_cms",
+            }
+            for k in ("depth", "velocity", "wse", "bed", "flow", "wet_frac", "fr"):
                 v = raw.get(k)
+                if v is None:
+                    old_k = _OLD_TS_KEY.get(k)
+                    v = raw.get(old_k) if old_k else None
                 result[k] = np.asarray(v, dtype=np.float64) if v is not None else np.empty(0, dtype=np.float64)
             return result
         if hasattr(d, 'get_line_ts_arrays'):
@@ -1610,11 +1709,11 @@ def load_baked_line_timeseries(
 
         return {
             "t_s": _f64(1),
-            "depth_m": _f64(2),
-            "velocity_ms": _f64(3),
-            "wse_m": _f64(4),
-            "bed_m": _f64(5),
-            "flow_cms": _f64(6),
+            "depth": _f64(2),
+            "velocity": _f64(3),
+            "wse": _f64(4),
+            "bed": _f64(5),
+            "flow": _f64(6),
             "wet_frac": _f64(7),
             "fr": _f64(8),
         }
@@ -1657,22 +1756,23 @@ def load_baked_line_profile(
         # Structured live storage populated by SWE2DResultsData.populate_live_line_metrics
         raw = getattr(d, '_live_line_profile', {}).get(line_id)
         if isinstance(raw, dict):
-            sta = np.asarray(raw.get("station_m", np.empty(0)), dtype=np.float64)
+            sta = np.asarray(raw.get("station", raw.get("station_m", np.empty(0))), dtype=np.float64)
             if sta.size == 0:
                 return {}
             snap_times = np.asarray(getattr(d, '_live_times', np.empty(0)), dtype=np.float64)
             if snap_times.size == 0:
                 return {}
             i = int(np.argmin(np.abs(snap_times - t_sec)))
-            out = {"station_m": sta}
-            for key in ("wse_m", "bed_m", "depth_m", "velocity_ms", "flow_qn", "fr"):
-                arr = raw.get(key)
+            out = {"station": sta}
+            for new_k, old_k in (("wse", "wse_m"), ("bed", "bed_m"), ("depth", "depth_m"),
+                                  ("velocity", "velocity_ms"), ("flow_qn", None), ("fr", None)):
+                arr = raw.get(new_k, raw.get(old_k)) if old_k else raw.get(new_k)
                 if arr is None or not hasattr(arr, "ndim"):
-                    out[key] = np.full(sta.size, np.nan, dtype=np.float64)
+                    out[new_k] = np.full(sta.size, np.nan, dtype=np.float64)
                 elif arr.ndim == 2 and i < arr.shape[0]:
-                    out[key] = np.asarray(arr[i], dtype=np.float64)
+                    out[new_k] = np.asarray(arr[i], dtype=np.float64)
                 else:
-                    out[key] = np.full(sta.size, np.nan, dtype=np.float64)
+                    out[new_k] = np.full(sta.size, np.nan, dtype=np.float64)
             wet = raw.get("wet")
             if wet is not None and hasattr(wet, "ndim") and wet.ndim == 2 and i < wet.shape[0]:
                 out["wet"] = np.asarray(wet[i], dtype=np.int32)
@@ -1710,11 +1810,11 @@ def load_baked_line_profile(
         times = np.frombuffer(row[3], dtype=np.float64)
         i = int(np.argmin(np.abs(times - t_sec)))
         return {
-            "station_m": stations,
-            "wse_m": np.frombuffer(row[4], dtype=np.float64).reshape(n_ts, n_sta)[i],
-            "bed_m": np.frombuffer(row[5], dtype=np.float64).reshape(n_ts, n_sta)[i],
-            "depth_m": np.frombuffer(row[6], dtype=np.float64).reshape(n_ts, n_sta)[i],
-            "velocity_ms": np.frombuffer(row[7], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "station": stations,
+            "wse": np.frombuffer(row[4], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "bed": np.frombuffer(row[5], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "depth": np.frombuffer(row[6], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "velocity": np.frombuffer(row[7], dtype=np.float64).reshape(n_ts, n_sta)[i],
             "flow_qn": np.frombuffer(row[8], dtype=np.float64).reshape(n_ts, n_sta)[i],
             "fr": np.frombuffer(row[9], dtype=np.float64).reshape(n_ts, n_sta)[i],
             "wet": np.frombuffer(row[10], dtype=np.int32).reshape(n_ts, n_sta)[i],

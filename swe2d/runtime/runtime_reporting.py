@@ -66,7 +66,7 @@ class SWE2DRuntimeReporter:
         line_names_by_id: Optional[Dict[int, str]] = None,
         line_ids_ordered: Optional[list] = None,
         process_events_callback: Callable[[], None],
-        set_progress_callback: Callable[[int], None],
+        set_progress_callback: Callable[[int, Dict[str, Any]], None],
         log_callback: Callable[[str], None],
         perf_mode: bool = False,
     ) -> Dict[str, Any]:
@@ -143,12 +143,12 @@ class SWE2DRuntimeReporter:
                 # GPU line metrics are pre-computed on-device during
                 # store_snapshot.  Read them back and push to the viewer.
                 has_lm = getattr(backend, "has_line_sampling", False)
-                logger.warning("[LINE_DIAG] runtime_reporting: sample_map=%s has_line_sampling=%s",
+                logger.debug("[LINE_DIAG] runtime_reporting: sample_map=%s has_line_sampling=%s",
                                bool(sample_map), has_lm)
                 if sample_map and has_lm:
                     try:
                         lm = backend.read_line_metrics()
-                        logger.warning("[LINE_DIAG] runtime_reporting: lm=%s", type(lm))
+                        logger.debug("[LINE_DIAG] runtime_reporting: lm=%s", type(lm))
                         if lm:
                             results_data.populate_live_line_metrics_from_gpu(
                                 lm, line_names_by_id=line_names_by_id,
@@ -196,7 +196,15 @@ class SWE2DRuntimeReporter:
         timing_samples += 1
 
         pct = int(min(100.0, (t_accum / max(float(run_duration_s), 1.0e-9)) * 100.0))
-        set_progress_callback(pct)
+        set_progress_callback(
+            pct,
+            {
+                "step": int(i),
+                "t_s": float(t_accum),
+                "dt": float(dt_used),
+                "wet_cells": int(last_diag["wet_cells"]),
+            },
+        )
         i += 1
 
         should_log_default = (i == 1 or i % 10 == 0 or pct >= 100)

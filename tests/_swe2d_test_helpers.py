@@ -424,6 +424,92 @@ def _serialize_and_persist_mesh(
     )
 
 
+def _write_drainage_network_gpkg(
+    drainage_gpkg: str,
+    nodes: "list[dict]",
+    links: "list[dict]",
+) -> None:
+    """Write a drainage network as GPKG vector layers (canonical schema).
+
+    Creates ``SWE2D_Drainage_Nodes`` (Point) and ``SWE2D_Drainage_Links``
+    (LineString) layers with the field schemas from
+    ``swe2d.workbench.services.schema_definitions.LAYER_SCHEMAS`` — the
+    ``nodes_layer`` / ``links_layer`` data-source form that
+    ``run_context_builder.build_run_context_from_dict`` actually reads.
+
+    ``nodes`` items: {id, type, x, y, invert, rim, max_depth, surface_area}.
+    ``links`` items: {id, from, to, length, diameter, roughness, max_flow,
+    inlet_invert, outlet_invert}.
+    """
+    from osgeo import ogr
+    from swe2d.workbench.services.schema_definitions import (
+        LAYER_SCHEMAS,
+        get_display_name,
+    )
+
+    def _ogr_type(ftype: str):
+        if ftype == "integer":
+            return ogr.OFTInteger
+        if ftype == "double":
+            return ogr.OFTReal
+        return ogr.OFTString
+
+    if os.path.exists(drainage_gpkg):
+        os.remove(drainage_gpkg)
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(drainage_gpkg)
+    if ds is None:
+        raise RuntimeError(f"cannot create {drainage_gpkg}")
+
+    def _make_layer(layer_key: str, geom_type) -> object:
+        schema = LAYER_SCHEMAS[layer_key]
+        lyr = ds.CreateLayer(get_display_name(layer_key), geom_type=geom_type)
+        for fname, ftype in schema["fields"]:
+            fld = ogr.FieldDefn(fname, _ogr_type(ftype))
+            lyr.CreateField(fld)
+        return lyr
+
+    node_lyr = _make_layer("swe2d_drainage_nodes", ogr.wkbPoint)
+    coords: "dict[str, tuple[float, float]]" = {}
+    for n in nodes:
+        coords[n["id"]] = (float(n["x"]), float(n["y"]))
+        f = ogr.Feature(node_lyr.GetLayerDefn())
+        f.SetField("node_id", str(n["id"]))
+        f.SetField("node_type", str(n.get("type", "junction")))
+        f.SetField("invert_elev", float(n["invert"]))
+        f.SetField("rim_elev", float(n["rim"]))
+        f.SetField("max_depth", float(n.get("max_depth", n["rim"] - n["invert"])))
+        f.SetField("surface_area", float(n.get("surface_area", 5.0)))
+        if n.get("type") == "outfall":
+            f.SetField("outfall_mode", "free")
+            f.SetField("crest_elev", float(n["invert"]))
+        g = ogr.Geometry(ogr.wkbPoint)
+        g.AddPoint(float(n["x"]), float(n["y"]))
+        f.SetGeometry(g)
+        node_lyr.CreateFeature(f)
+
+    link_lyr = _make_layer("swe2d_drainage_links", ogr.wkbLineString)
+    for lk in links:
+        f = ogr.Feature(link_lyr.GetLayerDefn())
+        f.SetField("link_id", str(lk["id"]))
+        f.SetField("from_node", str(lk["from"]))
+        f.SetField("to_node", str(lk["to"]))
+        f.SetField("link_type", "conduit")
+        f.SetField("link_shape", "circular")
+        f.SetField("length", float(lk["length"]))
+        f.SetField("diameter", float(lk["diameter"]))
+        f.SetField("roughness_n", float(lk["roughness"]))
+        f.SetField("max_flow", float(lk.get("max_flow", -1.0)))
+        f.SetField("inlet_invert_elev", float(lk["inlet_invert"]))
+        f.SetField("outlet_invert_elev", float(lk["outlet_invert"]))
+        g = ogr.Geometry(ogr.wkbLineString)
+        g.AddPoint(*coords[lk["from"]])
+        g.AddPoint(*coords[lk["to"]])
+        f.SetGeometry(g)
+        link_lyr.CreateFeature(f)
+
+    ds = None  # flush + close
+
+
 def _run_cli_coupling(
     gpkg_path: str,
     mesh_name: str,
@@ -437,7 +523,6 @@ def _run_cli_coupling(
     bc_vl: np.ndarray,
     params: dict,
     duration_s: float,
-    q_in: float,
     structures_cfg: dict | None = None,
     h0: np.ndarray | None = None,
 ) -> None:
@@ -445,7 +530,17 @@ def _run_cli_coupling(
 
     Builds the mesh, bakes it into ``gpkg_path``, then calls
     ``swe2d.cli.headless_runner.execute_run`` with ``params`` overridden for
-    ``duration_s``, ``q_in``, and the synthetic drainage network.
+    ``duration_s`` and the synthetic drainage network.
+
+    The drainage network is written to a sidecar GPKG as
+    ``SWE2D_Drainage_Nodes`` / ``SWE2D_Drainage_Links`` layers and passed in
+    the supported ``nodes_layer`` / ``links_layer`` data-source form — the
+    previous inline ``{"nodes": [...], "links": [...]}`` JSON was silently
+    DROPPED by ``run_context_builder`` (only the layer form is read), which
+    made every consumer of this helper exercise a no-op drainage path.
+    Note: the old inline ``inlets[].flow_rate`` constant inflow has no
+    layer-schema equivalent, so drainage is now driven by 2D→node capture
+    (junction invert set below the bed) rather than direct node injection.
 
     Optional ``structures_cfg`` is added to params as ``structures`` so the
     CLI builds a HydraulicStructureConfig and wires up the structure
@@ -464,63 +559,61 @@ def _run_cli_coupling(
         bc_n0, bc_n1, bc_tp, bc_vl,
     )
 
-    # Determine cell count for drainage inlets.  Supports both triangulated
-    # (flat int32) and polygon (N, 4) cell_nodes representations.
-    if cell_nodes.ndim == 1:
-        ncells = int(cell_nodes.size // 3)
-    else:
-        ncells = int(cell_nodes.shape[0])
     nodes_x_mean = float(node_x.mean())
     nodes_y_mean = float(node_y.mean())
-    inlet_cell = 0
-    outlet_cell = max(ncells - 1, 0)
 
-    drainage_cfg = {
-        "nodes": [
-            {
-                "id": "n_in", "type": "inlet",
-                "invert": 9.5, "y_max": 12.0, "area": 5.0,
-                "surcharge_depth": 1.0, "initial_depth": 0.5,
-                "x": nodes_x_mean - 5.0, "y": nodes_y_mean,
-            },
-            {
-                "id": "n_out", "type": "outfall",
-                "invert": 5.0, "y_max": 12.0, "area": 5.0,
-                "surcharge_depth": 1.0, "initial_depth": 0.0,
-                "x": nodes_x_mean + 5.0, "y": nodes_y_mean,
-            },
-        ],
-        "links": [
-            {
-                "from": "n_in", "to": "n_out",
-                "length": 10.0, "diameter": 1.0,
-                "roughness": 0.013, "max_flow": -1.0,
-            },
-        ],
-        "inlets": [
-            {
-                "node_id": "n_in",
-                "inlet_cell": inlet_cell,
-                "flow_rate": float(q_in),
-            },
-        ],
-        "outfalls": [
-            {
-                "node_id": "n_out",
-                "invert": 5.0,
-            },
-        ],
-    }
+    # Junction invert below the lowest bed so the 2D domain genuinely
+    # drains into the pipe; outfall invert lower still so the link conveys.
+    z_bed_min = float(node_z.min())
+    drainage_nodes = [
+        {
+            "id": "n_in", "type": "junction",
+            "invert": z_bed_min - 0.5, "rim": z_bed_min + 2.0,
+            "surface_area": 5.0,
+            "x": nodes_x_mean - 5.0, "y": nodes_y_mean,
+        },
+        {
+            "id": "n_out", "type": "outfall",
+            "invert": z_bed_min - 1.5, "rim": z_bed_min + 2.0,
+            "surface_area": 5.0,
+            "x": nodes_x_mean + 5.0, "y": nodes_y_mean,
+        },
+    ]
+    drainage_links = [
+        {
+            "id": "l_in_out", "from": "n_in", "to": "n_out",
+            "length": 10.0, "diameter": 1.0,
+            "roughness": 0.013, "max_flow": -1.0,
+            "inlet_invert": z_bed_min - 0.5,
+            "outlet_invert": z_bed_min - 1.5,
+        },
+    ]
+    drainage_gpkg = os.path.join(
+        os.path.dirname(os.path.abspath(gpkg_path)),
+        f"drainage_{mesh_name}.gpkg",
+    )
+    _write_drainage_network_gpkg(drainage_gpkg, drainage_nodes, drainage_links)
 
     # Override mesh name + run length + add drainage to params.
     # Output/snap intervals default to t_end (1 sample), so force smaller
     # intervals to get a meaningful coupling time series.
     p = dict(params)
-    p["mesh"] = mesh_name
+    p["mesh"] = {
+        "mesh_name": mesh_name,
+        "gpkg_path": gpkg_path,
+        "crs_wkt": "",
+    }
     p["params"] = dict(p.get("params", {}))
     p["params"]["duration_s"] = float(duration_s)
     p["params"]["output_interval_s"] = float(p["params"].get("output_interval_s", 1.0))
-    p["drainage"] = drainage_cfg
+    # Persist coupling rows — the CLI builder defaults these to False.
+    p["params"]["save_coupling_results"] = True
+    p["params"]["save_mesh_results"] = True
+    p["drainage"] = {
+        "nodes_layer": "SWE2D_Drainage_Nodes",
+        "links_layer": "SWE2D_Drainage_Links",
+        "gpkg": drainage_gpkg,
+    }
     if structures_cfg is not None:
         p["structures"] = structures_cfg
     if h0 is not None:

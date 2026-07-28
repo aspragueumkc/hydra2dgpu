@@ -11,7 +11,8 @@ from typing import Dict, List
 import numpy as np
 
 
-def save_baked_mesh(mesh_data: Dict[str, np.ndarray], gpkg_path: str, mesh_name: str) -> int:
+def save_baked_mesh(mesh_data: Dict[str, np.ndarray], gpkg_path: str, mesh_name: str,
+                     crs_wkt: str = "") -> int:
     """Serialize ``mesh_data`` via the hydra_swe2d C extension and persist it
     under ``mesh_name`` in the GPKG. Returns the number of cells in the baked
     BLOB so callers can log/sanity-check.
@@ -48,6 +49,7 @@ def save_baked_mesh(mesh_data: Dict[str, np.ndarray], gpkg_path: str, mesh_name:
     persist_baked_mesh(
         gpkg_path, mesh_name, blob,
         info["n_nodes"], info["n_cells"], info["n_edges"],
+        crs_wkt=str(crs_wkt),
     )
     return int(info["n_cells"])
 
@@ -73,15 +75,19 @@ def load_baked_mesh(gpkg_path: str, mesh_name: str) -> Dict[str, np.ndarray]:
     from hydra_swe2d import swe2d_deserialize_mesh
     from swe2d.services.gpkg_persistence_service import load_baked_mesh as _load_blob
 
-    blob = _load_blob(gpkg_path, mesh_name)
-    if blob is None:
+    result = _load_blob(gpkg_path, mesh_name)
+    if result is None:
         raise KeyError(mesh_name)
+    blob, db_crs_wkt = result
     pm = swe2d_deserialize_mesh(blob)
+    # Prefer CRS from the BLOB (new format), fall back to DB column (old format)
+    _crs = str(pm.crs_wkt or "").strip() or str(db_crs_wkt or "").strip()
     mesh_data: Dict[str, np.ndarray] = {
         "mesh_name": str(mesh_name),
         "node_x": np.asarray(pm.node_x, dtype=np.float64),
         "node_y": np.asarray(pm.node_y, dtype=np.float64),
         "node_z": np.asarray(pm.node_z, dtype=np.float64),
+        "crs_wkt": _crs,
     }
     if pm.cell_face_nodes is not None:
         mesh_data["cell_nodes"] = np.asarray(pm.cell_face_nodes, dtype=np.int32)

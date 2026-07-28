@@ -30,7 +30,7 @@ import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from swe2d.workbench.devtools.ast_patterns import (
     LocatedNode,
@@ -308,6 +308,106 @@ def rename_in_file(
     return build_rename_patch(file_path, [edit])
 
 
+def rename(
+    old_value: str,
+    new_value: str,
+    view_files: List[str],
+) -> PatchResult:
+    """Build a patch renaming the first ``setObjectName(old_value)`` node.
+
+    The old name must be defined in exactly one view file and appear exactly
+    once there; otherwise a ``ValueError`` is raised so the caller can surface
+    a clear error to the user.
+    """
+    if not old_value:
+        raise ValueError("old_value cannot be empty")
+    if not new_value:
+        raise ValueError("new_value cannot be empty")
+
+    owners: Dict[str, List[LocatedNode]] = {}
+    for fp in view_files:
+        if not Path(fp).is_file():
+            continue
+        inv = scan_view_file(fp)
+        for loc in inv.set_object_names:
+            if _extract_constant(loc.node, "setObjectName") == old_value:
+                owners.setdefault(fp, []).append(loc)
+
+    if not owners:
+        raise ValueError(f"setObjectName({old_value!r}) not found in any view file")
+    if len(owners) > 1:
+        raise ValueError(
+            f"objectName {old_value!r} is defined in multiple files: {sorted(owners)}"
+        )
+
+    owning_file, locs = next(iter(owners.items()))
+    if len(locs) > 1:
+        raise ValueError(
+            f"objectName {old_value!r} appears multiple times in {owning_file}"
+        )
+    loc = locs[0]
+    edit = Edit(
+        kind="setObjectName",
+        file_path=owning_file,
+        lineno=loc.lineno,
+        old_value=old_value,
+        new_value=new_value,
+    )
+    return build_rename_patch(owning_file, [edit])
+
+
+def relabel(
+    old_value: str,
+    new_value: str,
+    view_files: List[str],
+) -> PatchResult:
+    """Build a patch relabeling all label-like string constants.
+
+    Matches ``QGroupBox("old")``, ``toolbox.addItem(page, "old")``,
+    ``_add_param_row(..., "old", ...)`` and ``addRow("old", widget)``.
+    All occurrences must live in the same file; otherwise a ``ValueError`` is
+    raised.
+    """
+    if not old_value:
+        raise ValueError("old_value cannot be empty")
+
+    edits: List[Edit] = []
+    owning_file: Optional[str] = None
+    for fp in view_files:
+        if not Path(fp).is_file():
+            continue
+        inv = scan_view_file(fp)
+        for kind, collection in (
+            ("QGroupBox", inv.group_titles),
+            ("addItem", inv.toolbox_add_items),
+            ("_add_param_row", inv.add_param_rows),
+            ("addRow", inv.add_row_labels),
+        ):
+            for loc in collection:
+                if _extract_constant(loc.node, kind) == old_value:
+                    if owning_file is None:
+                        owning_file = fp
+                    elif owning_file != fp:
+                        raise ValueError(
+                            f"label {old_value!r} appears in multiple files: "
+                            f"{owning_file} and {fp}"
+                        )
+                    edits.append(
+                        Edit(
+                            kind=kind,
+                            file_path=fp,
+                            lineno=loc.lineno,
+                            old_value=old_value,
+                            new_value=new_value,
+                        )
+                    )
+
+    if not edits:
+        raise ValueError(f"label {old_value!r} not found in any view file")
+    assert owning_file is not None
+    return build_rename_patch(owning_file, edits)
+
+
 __all__ = [
     "Edit",
     "PatchResult",
@@ -315,4 +415,6 @@ __all__ = [
     "rename_in_file",
     "write_patch_file",
     "apply_edit_to_source",
+    "rename",
+    "relabel",
 ]

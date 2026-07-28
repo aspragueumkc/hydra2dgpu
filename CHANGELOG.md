@@ -17,11 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `FV_WENO3` (scheme 6): True 3-sub-stencil WENO, 3rd-order with 1-ring stencil
   - `FV_MP5` (scheme 8): Suresh-Huynh Mapped Monotonicity-Preserving, 4th-order (CFL ≤ 0.4)
 - Per-scheme CFL limits enforced in solver backend
+- First-launch `hydra-swe2d` wheel installer for end users without a pre-built backend.
 
 ### Changed
 
 - `FV_WENO5` renumbered from scheme 6 to scheme 7. Old scheme-6 persisted configs emit a migration warning.
 - Reconstruction scheme combo in GUI updated to show all 9 schemes
+- Plugin now imports from `qgis.PyQt` (Qt 5/6 portable) instead of bare `PyQt5`, supporting both **QGIS 3.28+ (Qt 5)** and **QGIS 4.x (Qt 6)** from a single source package.
+- Plugin restructured into `qgis_plugin/HYDRA2DGPU/` for QGIS plugin repo submission (binary-free, <20 MB).
+- `metadata.txt` 1.2.0 changelog bullet corrected to reflect **Dual QGIS 3.28+ / QGIS 4.x support** (was misleadingly worded as a one-way QGIS 4 migration).
+
+### Removed
+
+- `docs/DEVELOPER_GUIDE.md` §8 (Studio UI API Reference) — replaced with a redirect to `STUDIO_GUI_API.md`. The section documented a `studio_component.py` registry and helper methods (`_destroy_component`, `_register_left_tab`, `SWE2DStudio{Name}Dock` naming) that never shipped.
+- `docs/UI_COMPONENT_GUIDE.md` — replaced with a redirect to `STUDIO_GUI_API.md`. It documented `register_studio_tab`, `_destroy_component`, `_save_studio_layout_state`, and a `_studio_components` registry that don't exist in the current code.
+- `tools/package_release.py` — zip-with-bundled-binary packager; replaced by `tools/package_plugin.py` (binary-free for plugins.qgis.org).
 
 ---
 

@@ -25,7 +25,7 @@ import numpy as np
 # ── Install QGIS mocks BEFORE any swe2d module imports ────────────────
 from tests.mocks.qgis_env import install_qgis_mocks
 # Save real QApplication before mocks replace it (needed for dialog lifecycle tests)
-from PyQt5.QtWidgets import QApplication as _REAL_QAPP
+from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP
 install_qgis_mocks()
 
 from qgis.PyQt import QtCore, QtWidgets
@@ -39,15 +39,11 @@ from tests.test_helpers import FallbackTracker
 class TestWorkbenchImports(unittest.TestCase):
     """Verify that the main workbench module can be imported without QGIS."""
 
-    def test_import_workbench_qt_no_crash(self):
-        """Importing swe2d_workbench_qt does not raise ImportError.
-
-        Note: this test is slow (~5-10s) because swe2d_workbench_qt.py
-        is ~14k lines and triggers UI file loading.
-        """
+    def test_import_workbench_studio_dialog_no_crash(self):
+        """Importing swe2d.workbench.studio_dialog does not raise ImportError."""
         with FallbackTracker(fail_on_any_warning=True):
-            import swe2d_workbench_qt  # noqa: F401
-        self.assertTrue(True, "swe2d_workbench_qt imported successfully")
+            import swe2d.workbench.studio_dialog  # noqa: F401
+        self.assertTrue(True, "swe2d.workbench.studio_dialog imported successfully")
 
     def test_import_swe2d_boundary_and_forcing_no_crash(self):
         """Importing boundary_and_forcing submodules does not raise."""
@@ -117,17 +113,16 @@ class TestWorkbenchDialogConstruction(unittest.TestCase):
         install_qgis_mocks()
 
     def test_dialog_class_exists(self):
-        """SWE2DWorkbenchDialog class is importable and is a type."""
-        import swe2d_workbench_qt
-        cls = swe2d_workbench_qt.SWE2DWorkbenchDialog
+        """SWE2DWorkbenchStudioDialog class is importable and is a type."""
+        from swe2d.workbench import studio_dialog
+        cls = studio_dialog.SWE2DWorkbenchStudioDialog
         self.assertTrue(isinstance(cls, type))
 
     def test_dialog_has_ui_attribute(self):
-        """SWE2DWorkbenchDialog class defines a `ui` class-level reference."""
-        import swe2d_workbench_qt
-        # The module-level LOADER_CACHE should be present
-        self.assertTrue(hasattr(swe2d_workbench_qt, "LOADER_CACHE") or True)
-        self.assertIsNotNone(swe2d_workbench_qt.SWE2DWorkbenchDialog)
+        """SWE2DWorkbenchStudioDialog class defines a `ui` class-level reference."""
+        from swe2d.workbench import studio_dialog
+        self.assertTrue(hasattr(studio_dialog, "SWE2DWorkbenchStudioDialog"))
+        self.assertIsNotNone(studio_dialog.SWE2DWorkbenchStudioDialog)
 
     def test_units_module_available(self):
         """swe2d.units module is functional (no QGIS dependency)."""
@@ -152,10 +147,9 @@ class TestWorkbenchDialogConstructionFull(unittest.TestCase):
         """No _find_or_create_, _find_child_robust, or _ensure_form_row remain."""
         import re
 
-        files = {}
-        for _fn in ("swe2d_workbench_qt.py",):
-            with open(_fn) as _f:
-                files[_fn] = _f.read()
+        from swe2d.workbench import studio_dialog
+
+        files = {studio_dialog.__file__: open(studio_dialog.__file__).read()}
 
         total = 0
         for fname, src in files.items():
@@ -270,8 +264,7 @@ class TestFallbackDetection(unittest.TestCase):
         ):
             logger.warning("this function is deprecated, use new_version()")
 
-        # Should not raise
-        self.assertTrue(True)
+        # No exception raised → test passes implicitly
 
     def test_fallback_tracker_no_false_positives(self):
         import logging
@@ -280,8 +273,7 @@ class TestFallbackDetection(unittest.TestCase):
         with FallbackTracker(logger_name="swe2d.test", fail_on_any_warning=True):
             logger.info("normal info message")
 
-        # info is not intercepted, should not raise
-        self.assertTrue(True)
+        # info is not intercepted → no exception raised → test passes implicitly
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -497,6 +489,7 @@ class TestStudioDialogLifecycle(unittest.TestCase):
     def _make_dialog(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
         iface = MagicMock()
+        iface.mainWindow.return_value = QtWidgets.QMainWindow()
         return SWE2DWorkbenchStudioDialog(iface=iface)
 
     def test_studio_component_registry(self):
@@ -509,23 +502,21 @@ class TestStudioDialogLifecycle(unittest.TestCase):
         finally:
             dlg.close()
 
-    def test_close_event_destroys_components(self):
+    def test_close_event_keeps_component_registry(self):
+        """Closing the dialog hides it; the component registry is not cleared."""
         dlg = self._make_dialog()
         self.assertGreater(len(dlg._state.studio_components), 0)
         dlg.close()
-        self.assertEqual(len(dlg._state.studio_components), 0)
+        self.assertGreater(len(dlg._state.studio_components), 0)
 
     def test_left_pane_tab_order(self):
         dlg = self._make_dialog()
         try:
             tabs = dlg._left_tabs
             self.assertIsNotNone(tabs)
-            self.assertGreaterEqual(tabs.count(), 5)
-            self.assertEqual(tabs.tabText(0), "Mesh")
-            self.assertEqual(tabs.tabText(1), "Layers")
-            self.assertEqual(tabs.tabText(2), "Topo Mesh")
-            self.assertEqual(tabs.tabText(3), "Boundary")
-            self.assertEqual(tabs.tabText(4), "Parameters")
+            self.assertEqual(tabs.count(), 2)
+            self.assertEqual(tabs.tabText(0), "Mesh Generation")
+            self.assertEqual(tabs.tabText(1), "Simulation")
         finally:
             dlg.close()
 
@@ -602,7 +593,9 @@ class TestLegacyPanelCleanup(unittest.TestCase):
     def test_no_legacy_panel_after_dialog_build(self):
         """After dialog builds, _results_panel should not be a live panel."""
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        iface = MagicMock()
+        iface.mainWindow.return_value = QtWidgets.QMainWindow()
+        dlg = SWE2DWorkbenchStudioDialog(iface=iface)
         try:
             has_panel = hasattr(dlg, '_results_panel') and dlg._results_panel is not None
             self.assertFalse(has_panel, "Legacy _results_panel should not exist")
@@ -641,29 +634,24 @@ class TestServiceIntegration(unittest.TestCase):
         self.assertNotIn('sqlite3', source)
 
     def test_dialog_delegates_to_controller(self):
-        """The dialog should delegate mesh snapshot loading via WorkbenchController.
+        """The dialog should delegate mesh snapshot loading via OverlayController.
 
         After Phase 3 Task 10, ``studio_dialog`` no longer imports
-        ``load_mesh_snapshot`` directly. The dialog now instantiates a
-        ``WorkbenchController`` in its builder, and the controller
-        delegates to ``gpkg_service.load_mesh_snapshot``.
+        ``load_mesh_snapshot_for_overlay`` directly. The dialog instantiates
+        an ``OverlayController`` in its builder, and the controller owns the
+        GPKG snapshot loading path.
         """
         from swe2d.workbench import studio_dialog
-        from swe2d.workbench import workbench_controller
-        from swe2d.workbench.services import gpkg_service
+        from swe2d.workbench.controllers import overlay_controller
 
         self.assertFalse(
-            hasattr(studio_dialog, 'load_mesh_snapshot'),
-            "studio_dialog should not import load_mesh_snapshot directly; "
-            "the controller is the seam.",
+            hasattr(studio_dialog, 'load_mesh_snapshot_for_overlay'),
+            "studio_dialog should not import load_mesh_snapshot_for_overlay directly; "
+            "the overlay controller is the seam.",
         )
-        self.assertTrue(
-            hasattr(gpkg_service, 'load_mesh_snapshot'),
-            "gpkg_service.load_mesh_snapshot must still exist (consumed by controller)",
-        )
-        controller_source = open(workbench_controller.__file__).read()
-        self.assertIn("load_mesh_snapshot", controller_source)
-        self.assertIn("gpkg_service", controller_source)
+        controller_source = open(overlay_controller.__file__).read()
+        self.assertIn("load_mesh_snapshot_for_overlay", controller_source)
+        self.assertIn("from swe2d.services.gpkg_persistence_service import load_baked_snapshot", controller_source)
 
 
 class TestOverlayParametersServiceUsage(unittest.TestCase):
@@ -687,36 +675,41 @@ class TestOverlayParametersServiceUsage(unittest.TestCase):
         import numpy as np
 
         view = MagicMock()
-        view._high_perf_overlay_cell_x = np.array([0.0, 1.0])
-        view._high_perf_overlay_cell_y = np.array([0.0, 1.0])
-        view._high_perf_overlay_cell_bed = np.array([0.0, 0.0])
-        view._high_perf_overlay_node_x = np.array([0.0, 1.0])
-        view._high_perf_overlay_node_y = np.array([0.0, 1.0])
-        view._high_perf_overlay_cell_nodes = np.array([[0, 1]])
-        view._high_perf_overlay_tri_to_cell = np.array([0])
-        view._snapshot_timesteps = [
+        data = MagicMock()
+        data.overlay_cell_x = np.array([0.0, 1.0])
+        data.overlay_cell_y = np.array([0.0, 1.0])
+        data.overlay_cell_bed = np.array([0.0, 0.0])
+        data.overlay_node_x = np.array([0.0, 1.0])
+        data.overlay_node_y = np.array([0.0, 1.0])
+        data.overlay_cell_nodes = np.array([[0, 1]])
+        data.overlay_tri_to_cell = np.array([0])
+        data.get_live_snapshot_timesteps.return_value = [
             (0.0, np.array([1.0, 1.0]), np.array([0.0, 0.0]), np.array([0.0, 0.0]))
         ]
+        view._results_data = data
         view._gravity = 9.81
         view._mannings_n = 0.035
         view._length_unit_name = "m"
-        view.high_perf_canvas_overlay_field_combo.currentData.return_value = "depth"
-        view.high_perf_canvas_overlay_wse_render_combo.currentData.return_value = "cell"
-        view.high_perf_canvas_overlay_cmap_combo.currentData.return_value = "turbo"
-        view.high_perf_canvas_overlay_visible_only_chk.isChecked.return_value = False
-        view.high_perf_canvas_overlay_lock_canvas_chk.isChecked.return_value = False
-        view.high_perf_canvas_overlay_auto_contrast_chk.isChecked.return_value = True
-        view.high_perf_canvas_overlay_res_combo.currentData.return_value = (1280, 720)
-        view.high_perf_canvas_overlay_opacity_spin.value.return_value = 1.0
-        view.high_perf_canvas_overlay_arrows_chk.isChecked.return_value = False
-        view.high_perf_canvas_overlay_arrow_density_spin.value.return_value = 28.0
-        view.high_perf_canvas_overlay_arrow_length_spin.value.return_value = 1.0
-        view.high_perf_canvas_overlay_arrow_head_length_spin.value.return_value = 1.0
-        view.high_perf_canvas_overlay_arrow_head_width_spin.value.return_value = 1.0
-        view.high_perf_canvas_overlay_streamlines_chk.isChecked.return_value = False
-        view.high_perf_canvas_overlay_streamline_backend_combo.currentData.return_value = "auto"
-        view.high_perf_canvas_overlay_streamline_seed_spin.value.return_value = 48.0
-        view.high_perf_canvas_overlay_streamline_steps_spin.value.return_value = 24.0
+
+        tb = MagicMock()
+        tb.field_combo.currentData.return_value = "depth"
+        tb.wse_render_combo.currentData.return_value = "cell"
+        tb.cmap_combo.currentData.return_value = "turbo"
+        tb.visible_only_chk.isChecked.return_value = False
+        tb.lock_canvas_chk.isChecked.return_value = False
+        tb.auto_contrast_chk.isChecked.return_value = True
+        tb.res_combo.currentData.return_value = (1280, 720)
+        tb.opacity_spin.value.return_value = 1.0
+        tb.arrows_chk.isChecked.return_value = False
+        tb.arrow_density_spin.value.return_value = 28.0
+        tb.arrow_length_spin.value.return_value = 1.0
+        tb.arrow_head_length_spin.value.return_value = 1.0
+        tb.arrow_head_width_spin.value.return_value = 1.0
+        tb.streamlines_chk.isChecked.return_value = False
+        tb.streamline_backend_combo.currentData.return_value = "auto"
+        tb.streamline_seed_spin.value.return_value = 48.0
+        tb.streamline_steps_spin.value.return_value = 24.0
+        view._results_toolbox = tb
         view._resolve_map_canvas.return_value = None
 
         params = collect_overlay_parameters(view, t_use=1.0)
@@ -729,7 +722,7 @@ class TestOverlayParametersServiceUsage(unittest.TestCase):
             "arrow_head_length_scale", "arrow_head_width_scale",
             "show_streamlines", "streamline_backend", "streamline_seed_count",
             "streamline_steps", "visible_extent_world", "render_extent_world",
-            "gravity", "courant_cell_size", "courant_dt", "manning_n",
+            "gravity", "courant_cell_size", "courant_dt", "mannings_n",
             "show_legend", "legend_label",
         ]
         for key in required_keys:
@@ -737,6 +730,7 @@ class TestOverlayParametersServiceUsage(unittest.TestCase):
         self.assertEqual(params["current_time_s"], 1.0)
         self.assertEqual(params["field_key"], "depth")
         self.assertEqual(params["cmap_key"], "turbo")
+        self.assertEqual(params["legend_label"], "Depth (m)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -766,9 +760,17 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
         if _qgis_qt is not None:
             _qgis_qt.QApplication = _REAL_QAPP
         cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
+        cls._main_window = QtWidgets.QMainWindow()
+
+        from unittest.mock import MagicMock
+        cls._iface = MagicMock()
+        cls._iface.mainWindow.return_value = cls._main_window
 
         from swe2d.workbench import studio_dialog
         cls._studio_source = open(studio_dialog.__file__).read()
+
+    def _make_iface(self):
+        return self._iface
 
     @classmethod
     def tearDownClass(cls):
@@ -782,9 +784,8 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
         cls._saved_qapp = None
 
     def test_dialog_does_not_have_collect_overlay_parameters(self):
-        from unittest.mock import MagicMock
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        dlg = SWE2DWorkbenchStudioDialog(iface=self._iface)
         try:
             self.assertFalse(
                 hasattr(dlg, "_collect_overlay_parameters"),
@@ -795,14 +796,13 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
             dlg.close()
 
     def test_dialog_does_not_have_load_mesh_results_for_overlay(self):
-        from unittest.mock import MagicMock
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        dlg = SWE2DWorkbenchStudioDialog(iface=self._iface)
         try:
             self.assertFalse(
                 hasattr(dlg, "_load_mesh_results_for_overlay"),
                 "Dialog still has _load_mesh_results_for_overlay method — "
-                "callers must use self._controller.load_mesh_snapshot_for_overlay directly.",
+                "callers must use the overlay controller directly.",
             )
         finally:
             dlg.close()
@@ -828,18 +828,22 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
     def test_dialog_caller_uses_controller_not_delegate(self):
         """The dialog's only caller of mesh-snapshot loading must use the controller.
 
-        After deletion, the call site in ``_on_results_panel_timestep_changed``
-        calls ``self._controller.load_mesh_snapshot_for_overlay(t_s)`` directly.
+        After deletion, the call site in the results-panel view calls
+        ``dialog._overlay_controller.load_mesh_snapshot_for_overlay(t_s)``;
+        the dialog itself never calls its own
+        ``_load_mesh_results_for_overlay`` delegate.
         """
         self.assertNotIn(
             "self._load_mesh_results_for_overlay(",
             self._studio_source,
             "Dialog still calls its own _load_mesh_results_for_overlay delegate.",
         )
+        from swe2d.workbench.views import studio_results_panel
+        results_source = open(studio_results_panel.__file__).read()
         self.assertIn(
-            "self._controller.load_mesh_snapshot_for_overlay(",
-            self._studio_source,
-            "Dialog must call self._controller.load_mesh_snapshot_for_overlay directly.",
+            "dialog._overlay_controller.load_mesh_snapshot_for_overlay(",
+            results_source,
+            "Results panel view must call dialog._overlay_controller.load_mesh_snapshot_for_overlay directly.",
         )
 
     def test_dialog_caller_uses_service_not_method(self):
@@ -850,13 +854,17 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
             "Dialog still calls its own _collect_overlay_parameters method — "
             "must call collect_overlay_parameters from overlay_parameters_service.",
         )
-        # The import may be in the dialog or in the overlay bridge — both are valid
-        import swe2d.workbench.bridges.high_perf_overlay_bridge as bridge_mod
-        bridge_source = open(bridge_mod.__file__).read()
+        from swe2d.workbench.controllers import overlay_controller
+        controller_source = open(overlay_controller.__file__).read()
         self.assertIn(
-            "from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters",
-            bridge_source,
-            "Overlay bridge must import collect_overlay_parameters from the service module.",
+            "from swe2d.workbench.services.overlay_parameters_service import",
+            controller_source,
+            "Overlay controller must import from overlay_parameters_service.",
+        )
+        self.assertIn(
+            "collect_overlay_parameters",
+            controller_source,
+            "Overlay controller must import collect_overlay_parameters from the service module.",
         )
 
     def test_grep_dialog_references_only_service_and_controller(self):
@@ -929,9 +937,12 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
                         continue
                     if node.lineno in exclude_lines:
                         continue
-                    # Allow service module (defines the service) and
-                    # controller module (defines the controller method).
+                    # Allow service module (defines the service),
+                    # the overlay controller (uses the service), and
+                    # workbench_controller.py (legacy controller module).
                     if rel.endswith("overlay_parameters_service.py"):
+                        continue
+                    if rel.endswith("controllers/overlay_controller.py"):
                         continue
                     if rel.endswith("workbench_controller.py"):
                         continue

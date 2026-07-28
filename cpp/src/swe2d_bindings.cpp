@@ -19,14 +19,32 @@
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"
 #include "swe2d_units.cuh"
+#include "swe2d_gpu_viewer.cuh"
+#include "swe2d_gpu_viewer_interop.cuh"
+#include "swe2d_gpu_diag_ring.cuh"
+#include "swe2d_gpu_viewer_hud.cuh"
+#include "swe2d_gpu_viewer_nvenc.cuh"
 
 #ifdef HYDRA_HAS_CUDA
 #include "swe2d_gpu.cuh"
 #endif
 
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(call)                                                        \
+    do {                                                                        \
+        cudaError_t _cuda_err = call;                                           \
+        if (_cuda_err != cudaSuccess) {                                         \
+            throw std::runtime_error(std::string("CUDA error at ") +            \
+                __FILE__ + ":" + std::to_string(__LINE__) + ": " +              \
+                cudaGetErrorString(_cuda_err));                                 \
+        }                                                                       \
+    } while (0)
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -709,6 +727,27 @@ struct PySolver {
 PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.doc() = "2D SWE hybrid GPU/CPU solver on unstructured polygon mesh";
 
+    // ── Bind the calling thread to device 0 on module import ────────────────
+    // When QGIS runs swe2d_gpu_init / swe2d_pipe1d_step from a QThread worker,
+    // the CUDA runtime lazily initialises a per-thread context for that
+    // worker thread on first call.  Without this, the worker thread's first
+    // CUDA call has been observed to land on a different default device than
+    // the one the device memory was allocated against (notably when the host
+    // has multiple GPUs), causing the very first kernel to fault with
+    // "illegal memory access".  Forcing every thread that touches the module
+    // to device 0 at import time removes the ambiguity — both the main
+    // thread (which probed swe2d_gpu_available earlier) and any QThread
+    // worker that calls into the bindings end up on device 0.
+    // This is a no-op on machines with a single GPU.
+#ifdef HYDRA_HAS_CUDA
+    {
+        int count = 0;
+        if (cudaGetDeviceCount(&count) == cudaSuccess && count > 0) {
+            cudaSetDevice(0);
+        }
+    }
+#endif
+
     // ── GPU query ─────────────────────────────────────────────────────────────
     m.def("swe2d_gpu_available", &swe2d_gpu_available,
           "Return True if a CUDA-capable GPU is present and the GPU path was compiled.");
@@ -950,19 +989,557 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"),
         "Return number of snapshots currently in the device ring buffer.");
 
-    // ── Line metrics ring buffer bindings ──
-    m.def("swe2d_gpu_configure_line_sampling",
+    // ── Phase 2 — CLI headless color renderer ─────────────────────────────
+    // Allocates the output framebuffer on device, uploads cell_x/cell_y +
+    // the colormap LUT, launches swe2d_viewer::launch_color_kernel, then
+    // D2H's the RGBA bytes into a pinned-host numpy array.
+    m.def("swe2d_gpu_render_field_to_rgba",
         [](std::shared_ptr<PySolver>& ps,
-           py::array_t<int32_t, py::array::c_style | py::array::forcecast> station_offsets,
-           py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell_idx,
-           py::array_t<double,  py::array::c_style | py::array::forcecast> weights,
-           py::array_t<double,  py::array::c_style | py::array::forcecast> normal_x,
-           py::array_t<double,  py::array::c_style | py::array::forcecast> normal_y,
-           py::array_t<double,  py::array::c_style | py::array::forcecast> station_m,
-           double gravity,
-           double h_min) {
+           std::string field_key,
+           double vmin, double vmax,
+           int32_t width, int32_t height,
+           py::array_t<uint8_t,  py::array::c_style | py::array::forcecast> colormap_lut,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_x_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_y_in,
+           double x_min, double x_max,
+           double y_min, double y_max) -> py::dict {
             if (!ps || !ps->solver || !ps->solver->dev)
                 throw std::runtime_error("solver not initialized");
+            if (colormap_lut.size() != 256 * 4)
+                throw std::runtime_error("colormap_lut must be 256 * 4 = 1024 bytes");
+            if (cell_x_in.size() != cell_y_in.size())
+                throw std::runtime_error("cell_x / cell_y must have equal length");
+            int32_t n_cells = static_cast<int32_t>(cell_x_in.size());
+            SWE2DDeviceState* dev = ps->solver->dev;
+            if (dev->n_cells != n_cells)
+                throw std::runtime_error(
+                    "cell_x / cell_y size (" + std::to_string(n_cells) +
+                    ") does not match solver n_cells (" +
+                    std::to_string(dev->n_cells) + ")");
+
+            // Pick the device field buffer.
+            const double* d_field = nullptr;
+            if (field_key == "depth" || field_key == "h") d_field = dev->d_h;
+            else if (field_key == "hu")                     d_field = dev->d_hu;
+            else if (field_key == "hv")                     d_field = dev->d_hv;
+            else throw std::runtime_error(
+                "unknown field_key: " + field_key +
+                " (must be 'depth'/'h', 'hu', or 'hv')");
+            if (d_field == nullptr)
+                throw std::runtime_error("device field buffer not allocated");
+
+            // Upload cell_x / cell_y to device (small — n_cells doubles).
+            double *d_cell_x = nullptr, *d_cell_y = nullptr;
+            cudaMalloc(&d_cell_x, sizeof(double) * n_cells);
+            cudaMalloc(&d_cell_y, sizeof(double) * n_cells);
+            cudaMemcpy(d_cell_x, cell_x_in.data(), sizeof(double) * n_cells,
+                       cudaMemcpyHostToDevice);
+            cudaMemcpy(d_cell_y, cell_y_in.data(), sizeof(double) * n_cells,
+                       cudaMemcpyHostToDevice);
+
+            // Upload colormap LUT (1024 bytes).
+            uint8_t *d_lut = nullptr;
+            cudaMalloc(&d_lut, 1024);
+            cudaMemcpy(d_lut, colormap_lut.data(), 1024, cudaMemcpyHostToDevice);
+
+            // Allocate output framebuffer on device (zero-fill for background).
+            size_t fb_bytes = (size_t)width * (size_t)height * 4;
+            uint8_t *d_rgba = nullptr;
+            cudaMalloc(&d_rgba, fb_bytes);
+            cudaMemset(d_rgba, 0, fb_bytes);
+
+            // Launch the color kernel.
+            swe2d_viewer::launch_color_kernel(
+                n_cells, d_field, vmin, vmax,
+                d_cell_x, d_cell_y,
+                x_min, x_max, y_min, y_max,
+                width, height, d_lut, d_rgba, /*stream=*/0);
+
+            // D2H the framebuffer into pinned host memory (no-copy wrap).
+            uint8_t *h_rgba = nullptr;
+            cudaMallocHost(&h_rgba, fb_bytes);
+            cudaMemcpy(h_rgba, d_rgba, fb_bytes, cudaMemcpyDeviceToHost);
+
+            // Free device scratch.
+            cudaFree(d_cell_x);
+            cudaFree(d_cell_y);
+            cudaFree(d_lut);
+            cudaFree(d_rgba);
+
+            // Wrap as (height, width, 4) numpy array.  Capsule frees the
+            // pinned buffer when the numpy array is GC'd.
+            auto capsule = py::capsule(h_rgba, [](void* p) {
+                cudaFreeHost(p);
+            });
+            // C-contiguous layout (height, width, 4) — pybind11 infers
+            // the strides from the shape.  Use std::vector<ssize_t>
+            // explicitly since ShapeContainer is a vector alias.
+            std::vector<ssize_t> shape = {(ssize_t)height, (ssize_t)width, 4};
+            py::array_t<uint8_t> arr(shape, h_rgba, capsule);
+            py::dict out;
+            out["image"] = arr;
+            out["width"] = width;
+            out["height"] = height;
+            return out;
+        },
+        py::arg("solver"), py::arg("field_key"),
+        py::arg("vmin"), py::arg("vmax"),
+        py::arg("width"), py::arg("height"),
+        py::arg("colormap_lut"),
+        py::arg("cell_x"), py::arg("cell_y"),
+        py::arg("x_min"), py::arg("x_max"),
+        py::arg("y_min"), py::arg("y_max"),
+        "Render a single field frame to RGBA on device, D2H, return as numpy array.\n"
+        "Returns {image: (H,W,4) uint8 ndarray, width, height}.");
+
+    // ── Phase 3 — CUDA-OpenGL interop (zero D2H GUI render) ──────────────
+    // Register / unregister a GL texture for CUDA write access.  The GL
+    // context must be current on the calling thread at register time.
+    m.def("swe2d_gpu_register_gl_texture",
+        [](uint32_t gl_texture) -> uintptr_t {
+            CUgraphicsResource res = swe2d_viewer_interop::register_texture(
+                static_cast<unsigned int>(gl_texture));
+            return reinterpret_cast<uintptr_t>(res);
+        },
+        py::arg("gl_texture"),
+        "Register a GL_TEXTURE_2D with CUDA for write access.  Returns opaque\n"
+        "resource handle (uintptr_t).  Throws RuntimeError on failure.");
+
+    m.def("swe2d_gpu_unregister_gl_texture",
+        [](uintptr_t resource_handle) {
+            auto res = reinterpret_cast<CUgraphicsResource>(resource_handle);
+            swe2d_viewer_interop::unregister(res);
+        },
+        py::arg("resource_handle"),
+        "Unregister a previously-registered CUDA-OpenGL texture resource.");
+
+    // Render a single frame directly into a registered GL texture (no D2H).
+    // The OpenGL context must be current.  Returns {ok, bytes_written}.
+    m.def("swe2d_gpu_render_into_gl_texture",
+        [](std::shared_ptr<PySolver>& ps,
+           std::string field_key,
+           double vmin, double vmax,
+           uintptr_t resource_handle,
+           int32_t width, int32_t height,
+           py::array_t<uint8_t,  py::array::c_style | py::array::forcecast> colormap_lut,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_x_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_y_in,
+           double x_min, double x_max,
+           double y_min, double y_max) -> py::dict {
+            if (!ps || !ps->solver || !ps->solver->dev)
+                throw std::runtime_error("solver not initialized");
+            CUgraphicsResource res = reinterpret_cast<CUgraphicsResource>(resource_handle);
+            if (res == nullptr)
+                throw std::runtime_error("invalid CUDA-OpenGL resource handle");
+            if (colormap_lut.size() != 256 * 4)
+                throw std::runtime_error("colormap_lut must be 256 * 4 bytes");
+            if (width <= 0 || height <= 0)
+                throw std::runtime_error("width / height must be positive");
+            int32_t n_cells = static_cast<int32_t>(cell_x_in.size());
+            if (cell_y_in.size() != (size_t)n_cells)
+                throw std::runtime_error("cell_x / cell_y must have equal length");
+            SWE2DDeviceState* dev = ps->solver->dev;
+            if (dev->n_cells != n_cells)
+                throw std::runtime_error("cell size mismatch with solver n_cells");
+
+            const double* d_field = nullptr;
+            if (field_key == "depth" || field_key == "h") d_field = dev->d_h;
+            else if (field_key == "hu")                     d_field = dev->d_hu;
+            else if (field_key == "hv")                     d_field = dev->d_hv;
+            else throw std::runtime_error("unknown field_key: " + field_key);
+            if (d_field == nullptr)
+                throw std::runtime_error("device field buffer not allocated");
+
+            // Upload cell_x / cell_y / LUT to device (one-shot per call;
+            // future optimization: cache d_cell_x / d_cell_y on device
+            // at mesh-load time).
+            double *d_cell_x = nullptr, *d_cell_y = nullptr;
+            double *d_vminmax = nullptr;
+            cudaMalloc(&d_cell_x, sizeof(double) * n_cells);
+            cudaMalloc(&d_cell_y, sizeof(double) * n_cells);
+            cudaMalloc(&d_vminmax, sizeof(double) * 2);
+            cudaMemcpy(d_cell_x, cell_x_in.data(), sizeof(double) * n_cells,
+                       cudaMemcpyHostToDevice);
+            cudaMemcpy(d_cell_y, cell_y_in.data(), sizeof(double) * n_cells,
+                       cudaMemcpyHostToDevice);
+            // vmin / vmax come from host (computed in Python) — upload to
+            // a 2-element device buffer the color kernel reads from.
+            double h_vminmax[2] = { vmin, vmax };
+            cudaMemcpy(d_vminmax, h_vminmax, sizeof(double) * 2,
+                       cudaMemcpyHostToDevice);
+            uint8_t *d_lut = nullptr;
+            cudaMalloc(&d_lut, 1024);
+            cudaMemcpy(d_lut, colormap_lut.data(), 1024, cudaMemcpyHostToDevice);
+
+            // Local cleanup guard for the per-call scratch buffers.  No
+            // exception from inside the try block escapes without freeing
+            // them; the success path frees them too (no double-free —
+            // pointers are nulled).
+            auto free_scratch = [&]() noexcept {
+                if (d_cell_x)  { cudaFree(d_cell_x);  d_cell_x  = nullptr; }
+                if (d_cell_y)  { cudaFree(d_cell_y);  d_cell_y  = nullptr; }
+                if (d_vminmax) { cudaFree(d_vminmax); d_vminmax = nullptr; }
+                if (d_lut)     { cudaFree(d_lut);     d_lut     = nullptr; }
+            };
+
+            bool mapped = false;
+            try {
+                // Map the GL texture for CUDA write.
+                cudaArray_t* cu_array_ptr =
+                    swe2d_viewer_interop::map_for_cuda_write(res);
+                cudaArray_t cu_array = *cu_array_ptr;
+                delete cu_array_ptr;
+                mapped = true;
+
+                // Launch the color kernel writing per-cell RGBA into the
+                // cudaArray_t (no D2H).
+                swe2d_viewer_interop::launch_color_kernel_into_array(
+                    n_cells, d_field, d_vminmax,
+                    d_cell_x, d_cell_y,
+                    x_min, x_max, y_min, y_max,
+                    width, height, d_lut, cu_array,
+                    /*stream=*/0);
+
+                // Unmap so OpenGL can use the texture for rendering.
+                swe2d_viewer_interop::unmap(res);
+                mapped = false;
+
+                swe2d_viewer_interop::check_cuda_stage(
+                    "viewer unmap", nullptr);
+            } catch (...) {
+                if (mapped) {
+                    // Swallow secondary errors during cleanup — we're
+                    // already on the failure path; the primary exception
+                    // is what callers need to see.
+                    try { swe2d_viewer_interop::unmap(res); } catch (...) {}
+                }
+                free_scratch();
+                throw;
+            }
+            free_scratch();
+
+            py::dict out;
+            out["ok"] = true;
+            out["bytes_written"] = (int64_t)width * (int64_t)height * 4;
+            return out;
+        },
+        py::arg("solver"), py::arg("field_key"),
+        py::arg("vmin"), py::arg("vmax"),
+        py::arg("resource_handle"),
+        py::arg("width"), py::arg("height"),
+        py::arg("colormap_lut"),
+        py::arg("cell_x"), py::arg("cell_y"),
+        py::arg("x_min"), py::arg("x_max"),
+        py::arg("y_min"), py::arg("y_max"),
+        "Render into a registered CUDA-OpenGL texture (zero D2H).\n"
+        "Caller must hold the OpenGL context current and have already\n"
+        "called swe2d_gpu_register_gl_texture.  Returns {ok, bytes_written}.");
+
+    // ── swe2d_gpu_render_into_gl_texture_dev — live-solver variant ────
+    // Same as the solver-taking binding above but takes a raw
+    // ``uintptr_t dev_ptr`` instead of a PySolver.  Reads d_h / d_hu /
+    // d_hv directly from the SWE2DDeviceState, computes vmin/vmax on
+    // device (single-block reduction, no D2H for the display range),
+    // and writes RGBA into the GL-mapped cudaArray.  Fully zero-D2H
+    // for the colorization path.
+    m.def("swe2d_gpu_render_into_gl_texture_dev",
+        [](uintptr_t dev_ptr,
+           std::string field_key,
+           uintptr_t resource_handle,
+           int32_t width, int32_t height,
+           py::array_t<uint8_t,  py::array::c_style | py::array::forcecast> colormap_lut,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_x_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_y_in,
+           double x_min, double x_max,
+           double y_min, double y_max) -> py::dict {
+            SWE2DDeviceState* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            if (dev == nullptr)
+                throw std::runtime_error("invalid device pointer");
+            CUgraphicsResource res = reinterpret_cast<CUgraphicsResource>(resource_handle);
+            if (res == nullptr)
+                throw std::runtime_error("invalid CUDA-OpenGL resource handle");
+            if (colormap_lut.size() != 256 * 4)
+                throw std::runtime_error("colormap_lut must be 256 * 4 bytes");
+            if (width <= 0 || height <= 0)
+                throw std::runtime_error("width / height must be positive");
+            int32_t n_cells = static_cast<int32_t>(cell_x_in.size());
+            if (cell_y_in.size() != (size_t)n_cells)
+                throw std::runtime_error("cell_x / cell_y must have equal length");
+            if (dev->n_cells != n_cells)
+                throw std::runtime_error("cell size mismatch with solver n_cells");
+
+            const double* d_field = nullptr;
+            if      (field_key == "depth" || field_key == "h") d_field = dev->d_h;
+            else if (field_key == "hu")                       d_field = dev->d_hu;
+            else if (field_key == "hv")                       d_field = dev->d_hv;
+            else throw std::runtime_error("unknown field_key: " + field_key);
+            if (d_field == nullptr)
+                throw std::runtime_error("device field buffer not allocated");
+
+            // Allocate scratch on device.
+            double *d_cell_x = nullptr, *d_cell_y = nullptr;
+            double *d_vminmax = nullptr;
+            uint8_t *d_lut = nullptr;
+            CUDA_CHECK(cudaMalloc(&d_cell_x, sizeof(double) * n_cells));
+            CUDA_CHECK(cudaMalloc(&d_cell_y, sizeof(double) * n_cells));
+            CUDA_CHECK(cudaMalloc(&d_vminmax, sizeof(double) * 2));
+            CUDA_CHECK(cudaMalloc(&d_lut, 1024));
+
+            // Seed vmin/vmax to +INF / -INF.
+            double h_inf[2] = {  1.0e300, -1.0e300 };
+            CUDA_CHECK(cudaMemcpy(d_vminmax, h_inf, sizeof(double) * 2,
+                                  cudaMemcpyHostToDevice));
+
+            // Upload cell_x / cell_y / LUT (one-shot per call).
+            CUDA_CHECK(cudaMemcpy(d_cell_x, cell_x_in.data(),
+                                  sizeof(double) * n_cells,
+                                  cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_cell_y, cell_y_in.data(),
+                                  sizeof(double) * n_cells,
+                                  cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_lut, colormap_lut.data(), 1024,
+                                  cudaMemcpyHostToDevice));
+
+            // Local cleanup guard for the per-call scratch buffers.  No
+            // exception from inside the try block escapes without freeing
+            // them; the success path frees them too (no double-free —
+            // pointers are nulled).
+            auto free_scratch = [&]() noexcept {
+                if (d_cell_x)  { cudaFree(d_cell_x);  d_cell_x  = nullptr; }
+                if (d_cell_y)  { cudaFree(d_cell_y);  d_cell_y  = nullptr; }
+                if (d_vminmax) { cudaFree(d_vminmax); d_vminmax = nullptr; }
+                if (d_lut)     { cudaFree(d_lut);     d_lut     = nullptr; }
+            };
+
+            bool mapped = false;
+            try {
+                // Device-side min/max reduction over d_field (zero D2H).
+                swe2d_viewer_interop::compute_field_minmax_into_dev(
+                    n_cells, d_field, d_vminmax, /*stream=*/0);
+
+                // Map the GL texture for CUDA write.
+                cudaArray_t* cu_array_ptr =
+                    swe2d_viewer_interop::map_for_cuda_write(res);
+                cudaArray_t cu_array = *cu_array_ptr;
+                delete cu_array_ptr;
+                mapped = true;
+
+                // Launch the color kernel — reads vmin/vmax from d_vminmax,
+                // d_field directly from dev, writes RGBA into the cudaArray.
+                swe2d_viewer_interop::launch_color_kernel_into_array(
+                    n_cells, d_field, d_vminmax,
+                    d_cell_x, d_cell_y,
+                    x_min, x_max, y_min, y_max,
+                    width, height, d_lut, cu_array,
+                    /*stream=*/0);
+
+                // Unmap so OpenGL can use the texture for rendering.
+                swe2d_viewer_interop::unmap(res);
+                mapped = false;
+
+                swe2d_viewer_interop::check_cuda_stage(
+                    "viewer unmap", nullptr);
+            } catch (...) {
+                if (mapped) {
+                    // Swallow secondary errors during cleanup — we're
+                    // already on the failure path; the primary exception
+                    // is what callers need to see.
+                    try { swe2d_viewer_interop::unmap(res); } catch (...) {}
+                }
+                free_scratch();
+                throw;
+            }
+            free_scratch();
+
+            py::dict out;
+            out["ok"] = true;
+            out["bytes_written"] = (int64_t)width * (int64_t)height * 4;
+            return out;
+        },
+        py::arg("dev_ptr"), py::arg("field_key"),
+        py::arg("resource_handle"),
+        py::arg("width"), py::arg("height"),
+        py::arg("colormap_lut"),
+        py::arg("cell_x"), py::arg("cell_y"),
+        py::arg("x_min"), py::arg("x_max"),
+        py::arg("y_min"), py::arg("y_max"),
+        "Render live solver state into a registered CUDA-OpenGL texture (zero D2H).\n"
+        "Takes a uintptr_t to SWE2DDeviceState; reads d_h/d_hu/d_hv directly.\n"
+        "Computes vmin/vmax on device, writes RGBA into the GL texture.\n"
+        "Caller must hold the OpenGL context current and have called\n"
+        "swe2d_gpu_register_gl_texture.  Returns {ok, bytes_written}.");
+
+    // ── Phase 4 — diagnostic ring buffer (per-step DiagRecord on device) ──
+    // Init / shutdown — bind the lifetime to the worker's first init.
+    m.def("swe2d_gpu_init_diag_ring",
+        [](int32_t initial_capacity) {
+            swe2d_diag_ring::init(initial_capacity > 0 ? initial_capacity : 1024);
+        },
+        py::arg("initial_capacity") = 1024,
+        "Initialize the device-side diagnostic ring buffer.");
+
+    m.def("swe2d_gpu_shutdown_diag_ring",
+        []() {
+            swe2d_diag_ring::shutdown();
+        },
+        "Free the device-side diagnostic ring buffer.");
+
+    m.def("swe2d_gpu_push_diag",
+        [](double t_s, double dt_used, int32_t gpu_active, int32_t wet_cells,
+           double max_courant, double max_wse_error, double mass_total) {
+            swe2d_diag_ring::push(t_s, dt_used, gpu_active, wet_cells,
+                                  max_courant, max_wse_error, mass_total);
+        },
+        py::arg("t_s"), py::arg("dt_used"),
+        py::arg("gpu_active"), py::arg("wet_cells"),
+        py::arg("max_courant"), py::arg("max_wse_error"), py::arg("mass_total"),
+        "Push one DiagRecord into the device ring buffer.");
+
+    m.def("swe2d_gpu_read_latest_diag",
+        []() -> py::dict {
+            swe2d_diag_ring::DiagRecord rec{};
+            swe2d_diag_ring::read_latest(&rec);
+            py::dict out;
+            out["t_s"] = rec.t_s;
+            out["dt_used"] = rec.dt_used;
+            out["gpu_active"] = rec.gpu_active;
+            out["wet_cells"] = rec.wet_cells;
+            out["max_courant"] = rec.max_courant;
+            out["max_wse_error"] = rec.max_wse_error;
+            out["mass_total"] = rec.mass_total;
+            return out;
+        },
+        "Read the latest per-step DiagRecord from the device ring buffer.");
+
+    m.def("swe2d_gpu_clear_diag",
+        []() { swe2d_diag_ring::clear(); },
+        "Clear all DiagRecords from the device ring buffer (next push at slot 0).");
+
+    // ── Phase 5 — NVENC recording (zero D2H for the encode step) ──
+    m.def("swe2d_gpu_nvenc_available",
+        []() { return swe2d_nvenc::is_available(); },
+        "Return true if libnvidia-encode.so is loadable and a CUcontext is available.");
+
+    m.def("swe2d_gpu_nvenc_start",
+        [](const std::string& path, int32_t width, int32_t height,
+           int32_t fps, int32_t gop_size, uintptr_t d_nv12_device_ptr) -> uintptr_t {
+            void* dev_ptr = reinterpret_cast<void*>(d_nv12_device_ptr);
+            auto* h = swe2d_nvenc::start(path, width, height, fps, gop_size, dev_ptr);
+            return reinterpret_cast<uintptr_t>(h);
+        },
+        py::arg("output_path"), py::arg("width"), py::arg("height"),
+        py::arg("fps") = 30, py::arg("gop_size") = 30,
+        py::arg("d_nv12_device_ptr"),
+        "Open a NVENC recording session writing H.264 NALs to `output_path`\n"
+        "(.ts format — MPEG-Transport-Stream written by our custom muxer).\n"
+        "Returns opaque recorder handle (uintptr_t).  d_nv12_device_ptr must\n"
+        "point to a device-resident NV12 buffer of width*height*1.5 bytes.");
+
+    m.def("swe2d_gpu_nvenc_encode_rgba",
+        [](uintptr_t handle, py::array_t<uint8_t,
+                                     py::array::c_style | py::array::forcecast> rgba) -> py::dict {
+            auto* h = reinterpret_cast<swe2d_nvenc::NVencHandle*>(handle);
+            py::buffer_info info = rgba.request();
+            if (info.ndim != 3 || info.shape[2] != 4)
+                throw std::runtime_error("rgba must be (H, W, 4) uint8");
+            const uint8_t* data = static_cast<const uint8_t*>(info.ptr);
+            int64_t bytes = swe2d_nvenc::encode_rgba(h, data);
+            py::dict out;
+            out["ok"] = bytes > 0;
+            out["bytes"] = bytes;
+            return out;
+        },
+        py::arg("handle"), py::arg("rgba"),
+        "Encode one RGBA frame (host buffer → GPU → NVENC → .ts).\n"
+        "Returns {ok, bytes_written}.");
+
+    m.def("swe2d_gpu_nvenc_finalize",
+        [](uintptr_t handle) -> py::dict {
+            auto* h = reinterpret_cast<swe2d_nvenc::NVencHandle*>(handle);
+            int64_t total = swe2d_nvenc::finalize(h);
+            py::dict out;
+            out["ok"] = true;
+            out["total_bytes"] = total;
+            return out;
+        },
+        py::arg("handle"),
+        "Flush encoder + close .ts file + free recorder.");
+
+    // ── Phase 4.2 — HUD render kernel (text overlay on GL texture) ──
+    m.def("swe2d_gpu_render_hud",
+        [](uintptr_t resource_handle,
+           int32_t width, int32_t height,
+           std::string text,
+           int32_t text_x, int32_t text_y,
+           uint32_t bg_rgba, uint32_t fg_rgba) -> py::dict {
+            CUgraphicsResource res = reinterpret_cast<CUgraphicsResource>(resource_handle);
+            if (res == nullptr)
+                throw std::runtime_error("invalid CUDA-OpenGL resource handle");
+            if (width <= 0 || height <= 0)
+                throw std::runtime_error("width / height must be positive");
+
+            // No scratch buffers here — only the GL mapping needs to be
+            // released if anything inside the try block throws.
+            bool mapped = false;
+            try {
+                // Map GL texture for CUDA write.
+                cudaArray_t* cu_array_ptr =
+                    swe2d_viewer_interop::map_for_cuda_write(res);
+                cudaArray_t cu_array = *cu_array_ptr;
+                delete cu_array_ptr;
+                mapped = true;
+
+                // Render text.
+                swe2d_hud::init();
+                swe2d_hud::render(cu_array, width, height,
+                                  text.c_str(), text_x, text_y,
+                                  bg_rgba, fg_rgba);
+
+                // Unmap so OpenGL can use the texture.
+                swe2d_viewer_interop::unmap(res);
+                mapped = false;
+
+                swe2d_viewer_interop::check_cuda_stage(
+                    "viewer unmap", nullptr);
+            } catch (...) {
+                if (mapped) {
+                    // Swallow secondary errors during cleanup — we're
+                    // already on the failure path; the primary exception
+                    // is what callers need to see.
+                    try { swe2d_viewer_interop::unmap(res); } catch (...) {}
+                }
+                throw;
+            }
+
+            py::dict out;
+            out["ok"] = true;
+            out["text"] = text;
+            return out;
+        },
+        py::arg("resource_handle"),
+        py::arg("width"), py::arg("height"),
+        py::arg("text"),
+        py::arg("x"), py::arg("y"),
+        py::arg("bg_rgba") = 0x00000000,
+        py::arg("fg_rgba") = 0xFFFFFFFF,
+        "Render one line of ASCII text onto the registered GL texture\n"
+        "(zero D2H).  Uses embedded 5x7 font; unmapped chars render as '?'.");
+
+    // ── Line metrics ring buffer bindings ──
+m.def("swe2d_gpu_configure_line_sampling",
+           [](py::object solver,
+              py::array_t<int32_t, py::array::c_style | py::array::forcecast> station_offsets,
+              py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell_idx,
+              py::array_t<double,  py::array::c_style | py::array::forcecast> weights,
+              py::array_t<double,  py::array::c_style | py::array::forcecast> normal_x,
+              py::array_t<double,  py::array::c_style | py::array::forcecast> normal_y,
+              py::array_t<double,  py::array::c_style | py::array::forcecast> station_m,
+double gravity,
+               double h_min) {
+            auto ps = solver.cast<std::shared_ptr<PySolver>>();
+            if (!ps || !ps->solver || !ps->solver->dev) {
+                throw std::runtime_error("swe2d_gpu_configure_line_sampling: null solver/device");
+            }
             SWE2DDeviceState* dev = ps->solver->dev;
             int32_t n_lines = static_cast<int32_t>(station_offsets.size()) - 1;
             swe2d_gpu_configure_line_sampling(
@@ -1115,39 +1692,40 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             swe2d_gpu_preload_coupling_cell_area(nullptr, static_cast<int32_t>(cell_area.size()), cell_area.data());
         }, py::arg("cell_area"), "Preload cell areas to GPU once.");
 
-    m.def("swe2d_gpu_apply_pipe_end_bc",
-        [](int32_t n_cells) {
-            extern SWE2DDeviceState* s_coupling_dev;
-            swe2d_gpu_apply_pipe_end_bc(s_coupling_dev, n_cells);
-        }, py::arg("n_cells"),
-        "Apply pipe-end boundary conditions from surface WSE before swe2d_pipe1d_step. "
-        "Sets pipe-end node depths to the effective surface WSE so the pipe solver "
-        "sees the correct daylight boundary condition.");
 
+    // P3#17 (audit 2026-07-22): `swe2d_gpu_compute_coupling_full_on_device`
+    // is superseded by the unified face kernel path
+    // (`swe2d_pipe1d_step` → `swe2d_unified_face_flux_kernel`) in production.
+    // Re-introduced as a TEST-ONLY binding (2026-07-22) because
+    // `tests/test_swe2d_gpu_drainage_network.py::TestGPUInletCapture`
+    // exercises the inlet-exchange kernel directly without going through
+    // the full unified-mesh build.  Production path does NOT call this.
+    // When those tests are ported to swe2d_pipe1d_step + readback, this
+    // binding can be removed again.
     m.def("swe2d_gpu_compute_coupling_full_on_device",
-        [](py::object cell_wse_obj,
-           int32_t n_structures,
-           py::object host_flows_obj) {
-            const double* cell_wse_ptr = nullptr;
-            int32_t n_cells = 0;
-            const double* host_flows_ptr = nullptr;
-            if (!cell_wse_obj.is_none()) {
-                auto cell_wse = cell_wse_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
-                cell_wse_ptr = cell_wse.data();
-                n_cells = static_cast<int32_t>(cell_wse.size());
-            }
-            if (!host_flows_obj.is_none()) {
-                auto host_flows = host_flows_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
-                host_flows_ptr = host_flows.data();
-            }
-            swe2d_gpu_compute_coupling_full_on_device(
-                nullptr, n_cells, n_structures, cell_wse_ptr,
-                host_flows_ptr);
-        }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
-           py::arg("host_structure_flows")=py::none(),
-        "Run full coupling on-device using preloaded params. "
-        "Pass cell_wse=None to compute WSE = h + zb on GPU. "
-        "Pass host_structure_flows to override GPU-computed structure flows.");
+         [](py::object cell_wse_obj,
+            int32_t n_structures,
+            py::object host_flows_obj) {
+             const double* cell_wse_ptr = nullptr;
+             int32_t n_cells = 0;
+             const double* host_flows_ptr = nullptr;
+             if (!cell_wse_obj.is_none()) {
+                 auto cell_wse = cell_wse_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+                 cell_wse_ptr = cell_wse.data();
+                 n_cells = static_cast<int32_t>(cell_wse.size());
+             }
+             if (!host_flows_obj.is_none()) {
+                 auto host_flows = host_flows_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+                 host_flows_ptr = host_flows.data();
+             }
+             swe2d_gpu_compute_coupling_full_on_device(
+                 nullptr, n_cells, n_structures, cell_wse_ptr,
+                 host_flows_ptr, false);
+         }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
+            py::arg("host_structure_flows")=py::none(),
+         "TEST-ONLY: superseded in production by swe2d_pipe1d_step + "
+         "solver_dev_ptr.  Computes on-device coupling (inlet + outfall + "
+         "structure + culvert) and writes results to d_external_source_mps.");
 
     m.def("swe2d_gpu_ensure_drainage_q_buf",
         [](int32_t n_cells) {
@@ -1174,65 +1752,72 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::object pipe_end_invert_obj, py::object pipe_end_diameter_obj,
            py::object pipe_end_area_obj,
            py::object pipe_end_kin_obj, py::object pipe_end_kout_obj,
+           py::object pipe_end_enable_overflow_obj,
+           py::object pipe_end_overflow_elevation_obj,
+           py::object pipe_end_max_overflow_rate_obj,
            py::object node_max_depth_obj) {
-            extern SWE2DDeviceState* s_coupling_dev;
-            auto get_arr_i32 = [](py::object o, py::array_t<int32_t>& out) {
-                if (!o.is_none()) out = o.cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>();
-            };
-            auto get_arr_f64 = [](py::object o, py::array_t<double>& out) {
-                if (!o.is_none()) out = o.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
-            };
-            py::array_t<double> nmd;
-            py::array_t<int32_t> ic, in_, it, igk, ict, oc, on_, ozs, pec, pen_;
-            py::array_t<double> icr, iw, icd, iq, igl, igw, igo, icl, ich, isl, isw, oi_, od_, ocd, oq, pei_, ped_, pea_, pekin_, pekout_;
-            get_arr_f64(node_max_depth_obj, nmd);
-            int32_t n_nodes = static_cast<int32_t>(nmd.size());
-            get_arr_i32(inlet_cell_obj, ic);
-            int32_t n_inlets = static_cast<int32_t>(ic.size());
-            get_arr_i32(inlet_node_obj, in_);
-            get_arr_f64(inlet_crest_obj, icr);
-            get_arr_f64(inlet_width_obj, iw);
-            get_arr_f64(inlet_cd_obj, icd);
-            get_arr_f64(inlet_qmax_obj, iq);
-            get_arr_i32(inlet_type_obj, it);
-            get_arr_f64(inlet_grate_len_obj, igl);
-            get_arr_f64(inlet_grate_wid_obj, igw);
-            get_arr_i32(inlet_grate_kind_obj, igk);
-            get_arr_f64(inlet_grate_open_obj, igo);
-            get_arr_f64(inlet_curb_len_obj, icl);
-            get_arr_f64(inlet_curb_ht_obj, ich);
-            get_arr_i32(inlet_curb_throat_obj, ict);
-            get_arr_f64(inlet_slot_len_obj, isl);
-            get_arr_f64(inlet_slot_wid_obj, isw);
-            get_arr_i32(outfall_cell_obj, oc);
-            int32_t n_outfalls = static_cast<int32_t>(oc.size());
-            get_arr_i32(outfall_node_obj, on_);
-            get_arr_f64(outfall_invert_obj, oi_);
-            get_arr_f64(outfall_diameter_obj, od_);
-            get_arr_f64(outfall_cd_obj, ocd);
-            get_arr_f64(outfall_qmax_obj, oq);
-            get_arr_i32(outfall_zero_storage_obj, ozs);
-            get_arr_i32(pipe_end_cell_obj, pec);
-            int32_t n_pipe_ends = static_cast<int32_t>(pec.size());
-            get_arr_i32(pipe_end_node_obj, pen_);
-            get_arr_f64(pipe_end_invert_obj, pei_);
-            get_arr_f64(pipe_end_diameter_obj, ped_);
-            get_arr_f64(pipe_end_area_obj, pea_);
-            get_arr_f64(pipe_end_kin_obj, pekin_);
-            get_arr_f64(pipe_end_kout_obj, pekout_);
-            swe2d_gpu_upload_drainage_exchange_params(
-                s_coupling_dev, n_nodes, n_inlets, n_outfalls, n_pipe_ends,
-                ic.data(), in_.data(), icr.data(), iw.data(),
-                icd.data(), iq.data(),
-                it.data(), igl.data(), igw.data(),
-                igk.data(), igo.data(), icl.data(), ich.data(),
-                ict.data(), isl.data(), isw.data(),
-                oc.data(), on_.data(), oi_.data(), od_.data(),
-                ocd.data(), oq.data(), ozs.data(),
-                pec.data(), pen_.data(), pei_.data(), ped_.data(),
-                pea_.data(), pekin_.data(), pekout_.data(),
-                nmd.data());
-        },
+             extern SWE2DDeviceState* s_coupling_dev;
+             auto get_arr_i32 = [](py::object o, py::array_t<int32_t>& out) {
+                 if (!o.is_none()) out = o.cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>();
+             };
+             auto get_arr_f64 = [](py::object o, py::array_t<double>& out) {
+                 if (!o.is_none()) out = o.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+             };
+             py::array_t<double> nmd;
+             py::array_t<int32_t> ic, in_, it, igk, ict, oc, on_, ozs, pec, pen_, peo;
+             py::array_t<double> icr, iw, icd, iq, igl, igw, igo, icl, ich, isl, isw, oi_, od_, ocd, oq, pei_, ped_, pea_, pekin_, pekout_, peovr, peomxr;
+             get_arr_f64(node_max_depth_obj, nmd);
+             int32_t n_nodes = static_cast<int32_t>(nmd.size());
+             get_arr_i32(inlet_cell_obj, ic);
+             int32_t n_inlets = static_cast<int32_t>(ic.size());
+             get_arr_i32(inlet_node_obj, in_);
+             get_arr_f64(inlet_crest_obj, icr);
+             get_arr_f64(inlet_width_obj, iw);
+             get_arr_f64(inlet_cd_obj, icd);
+             get_arr_f64(inlet_qmax_obj, iq);
+             get_arr_i32(inlet_type_obj, it);
+             get_arr_f64(inlet_grate_len_obj, igl);
+             get_arr_f64(inlet_grate_wid_obj, igw);
+             get_arr_i32(inlet_grate_kind_obj, igk);
+             get_arr_f64(inlet_grate_open_obj, igo);
+             get_arr_f64(inlet_curb_len_obj, icl);
+             get_arr_f64(inlet_curb_ht_obj, ich);
+             get_arr_i32(inlet_curb_throat_obj, ict);
+             get_arr_f64(inlet_slot_len_obj, isl);
+             get_arr_f64(inlet_slot_wid_obj, isw);
+             get_arr_i32(outfall_cell_obj, oc);
+             int32_t n_outfalls = static_cast<int32_t>(oc.size());
+             get_arr_i32(outfall_node_obj, on_);
+             get_arr_f64(outfall_invert_obj, oi_);
+             get_arr_f64(outfall_diameter_obj, od_);
+             get_arr_f64(outfall_cd_obj, ocd);
+             get_arr_f64(outfall_qmax_obj, oq);
+             get_arr_i32(outfall_zero_storage_obj, ozs);
+             get_arr_i32(pipe_end_cell_obj, pec);
+             int32_t n_pipe_ends = static_cast<int32_t>(pec.size());
+             get_arr_i32(pipe_end_node_obj, pen_);
+             get_arr_f64(pipe_end_invert_obj, pei_);
+             get_arr_f64(pipe_end_diameter_obj, ped_);
+             get_arr_f64(pipe_end_area_obj, pea_);
+             get_arr_f64(pipe_end_kin_obj, pekin_);
+             get_arr_f64(pipe_end_kout_obj, pekout_);
+             get_arr_i32(pipe_end_enable_overflow_obj, peo);
+             get_arr_f64(pipe_end_overflow_elevation_obj, peovr);
+             get_arr_f64(pipe_end_max_overflow_rate_obj, peomxr);
+             swe2d_gpu_upload_drainage_exchange_params(
+                 s_coupling_dev, n_nodes, n_inlets, n_outfalls, n_pipe_ends,
+                 ic.data(), in_.data(), icr.data(), iw.data(),
+                 icd.data(), iq.data(),
+                 it.data(), igl.data(), igw.data(),
+                 igk.data(), igo.data(), icl.data(), ich.data(),
+                 ict.data(), isl.data(), isw.data(),
+                 oc.data(), on_.data(), oi_.data(), od_.data(),
+                 ocd.data(), oq.data(), ozs.data(),
+                 pec.data(), pen_.data(), pei_.data(), ped_.data(),
+                 pea_.data(), pekin_.data(), pekout_.data(),
+                 peo.data(), peovr.data(), peomxr.data(),
+                 nmd.data());
+         },
         py::arg("inlet_cell")=py::none(), py::arg("inlet_node")=py::none(),
         py::arg("inlet_crest")=py::none(), py::arg("inlet_width")=py::none(),
         py::arg("inlet_cd")=py::none(), py::arg("inlet_qmax")=py::none(),
@@ -1250,24 +1835,18 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("pipe_end_invert")=py::none(), py::arg("pipe_end_diameter")=py::none(),
         py::arg("pipe_end_area")=py::none(),
         py::arg("pipe_end_kin")=py::none(), py::arg("pipe_end_kout")=py::none(),
+        py::arg("pipe_end_enable_overflow")=py::none(),
+        py::arg("pipe_end_overflow_elevation")=py::none(),
+        py::arg("pipe_end_max_overflow_rate")=py::none(),
         py::arg("node_max_depth")=py::none(),
         "Upload drainage exchange parameters (inlets, outfalls, pipe-ends, node max depth) to GPU.");
 
-    m.def("swe2d_gpu_upload_outfall_free_bc_nodes",
-        [](py::object outfall_node_indices_obj) {
-            extern SWE2DDeviceState* s_coupling_dev;
-            int32_t n_outfall_nodes = 0;
-            const int32_t* outfall_node_indices = nullptr;
-            py::array_t<int32_t> oni;
-            if (!outfall_node_indices_obj.is_none()) {
-                oni = outfall_node_indices_obj.cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>();
-                n_outfall_nodes = static_cast<int32_t>(oni.size());
-                outfall_node_indices = oni.data();
-            }
-            swe2d_gpu_upload_outfall_free_bc_nodes(s_coupling_dev, n_outfall_nodes, outfall_node_indices);
-        },
-        py::arg("outfall_node_indices")=py::none(),
-        "Upload outfall node indices and mark them as free-discharge boundary nodes.");
+    // Fix P2#11 (audit 2026-07-22): removed `swe2d_gpu_upload_outfall_free_bc_nodes`
+    // binding.  The C++ function body was a no-op (Phase 2.1 retired the per-node
+    // outfall flag arrays; flags now live on per-face `face_class == OUTFALL_BC`
+    // for free outfalls and `SURFACE_2D_PIPE_END` for coupled outfalls, both
+    // built by `swe2d_build_unified_mesh`).  No-op call from coupling.py:1752
+    // removed.
 
     m.def("swe2d_gpu_accumulate_external_source",
         [](std::shared_ptr<PySolver>& ps,
@@ -1292,6 +1871,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             return result;
         }, py::arg("n_cells"),
         "Read back coupling source rates [m/s] from device after on-device compute.");
+
 
     m.def("swe2d_gpu_readback_structure_flows",
         [](int32_t n_structures) -> py::array_t<double> {
@@ -1410,6 +1990,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         py::arg("n_cells"),
         "Read back per-cell external structure flux arrays (for debug).");
+
+
 
     m.def("swe2d_gpu_alloc_ext_struct_flux",
         [](int32_t n_cells)
@@ -1744,57 +2326,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 #endif
 
     // ── 1D pipe network ────────────────────────────────────────────────────────
-    m.def("swe2d_build_pipe1d_mesh",
-        [](int32_t n_links,
-           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_from_node,
-           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_to_node,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_length,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_diameter,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_roughness_n,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_inlet_loss_k,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_outlet_loss_k,
-           py::array_t<double, py::array::c_style|py::array::forcecast> node_invert_elev,
-           py::array_t<double, py::array::c_style|py::array::forcecast> node_surface_area,
-           py::array_t<double, py::array::c_style|py::array::forcecast> node_max_depth,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_in,
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_out,
-           int32_t max_cell_length,
-           uintptr_t dev_ptr,
-           // Optional shape arrays (default empty = all circular)
-           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_shape_type =
-               py::array_t<int32_t>(),
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_width =
-               py::array_t<double>(),
-           py::array_t<double, py::array::c_style|py::array::forcecast> link_height =
-               py::array_t<double>()) -> void
-        {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            const int32_t* shape_ptr = nullptr;
-            const double* w_ptr = nullptr;
-            const double* h_ptr = nullptr;
-            if (link_shape_type.size() > 0) shape_ptr = link_shape_type.data();
-            if (link_width.size() > 0)      w_ptr   = link_width.data();
-            if (link_height.size() > 0)     h_ptr   = link_height.data();
-            swe2d_build_pipe1d_mesh(n_links,
-                link_from_node.data(), link_to_node.data(),
-                link_length.data(), link_diameter.data(), link_roughness_n.data(),
-                link_inlet_loss_k.data(), link_outlet_loss_k.data(),
-                node_invert_elev.data(), node_surface_area.data(), node_max_depth.data(),
-                link_invert_in.data(), link_invert_out.data(),
-                max_cell_length,
-                shape_ptr, w_ptr, h_ptr,
-                &dev->pipe1d);
+
+    m.def("swe2d_get_solver_dev_ptr",
+        [](const std::shared_ptr<PySolver>& ps) -> int64_t {
+            if (!ps || !ps->solver || !ps->solver->dev)
+                return 0;
+            return reinterpret_cast<int64_t>(ps->solver->dev);
         },
-        py::arg("n_links"), py::arg("link_from_node"), py::arg("link_to_node"),
-        py::arg("link_length"), py::arg("link_diameter"), py::arg("link_roughness_n"),
-        py::arg("link_inlet_loss_k"), py::arg("link_outlet_loss_k"),
-        py::arg("node_invert_elev"), py::arg("node_surface_area"), py::arg("node_max_depth"),
-        py::arg("link_invert_in"), py::arg("link_invert_out"),
-        py::arg("max_cell_length"), py::arg("dev_ptr"),
-        py::arg("link_shape_type") = py::array_t<int32_t>(),
-        py::arg("link_width") = py::array_t<double>(),
-        py::arg("link_height") = py::array_t<double>(),
-        "Build 1D pipe network CSR topology and allocate device buffers in pipe1d state.");
+        "Return the solver's SWE2DDeviceState* as int64, or 0 if not initialized.");
 
     m.def("swe2d_pipe1d_step",
         [](uintptr_t dev_ptr,
@@ -1803,118 +2342,621 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            int32_t coupling_substeps,
            int32_t implicit_iters,
            double relaxation,
-           double gravity) -> void
-        {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            swe2d_pipe1d_step(dev, dt, solver_mode.c_str(), coupling_substeps,
-                              implicit_iters, relaxation, gravity);
-        },
-        py::arg("dev_ptr"),
-        py::arg("dt"),
-        py::arg("solver_mode"),
-        py::arg("coupling_substeps"),
-        py::arg("implicit_iters"),
-        py::arg("relaxation"),
-        py::arg("gravity"),
-        "Advance 1D pipe network one coupling step using GPU kernels.");
+           double gravity,
+           double k_mann,
+           double h_min,
+           int32_t surcharge_method,
+           double theta = 1.0,
+           double omega_min = 1.0e-6,
+           int32_t friction_method = 0,
+           int32_t recon_method = 0,
+           int32_t time_integrator = 1,
+           double friction_alpha = 0.01,
+           uintptr_t solver_dev_ptr = 0) -> void
+         {
+              auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+              auto* solver_dev = solver_dev_ptr
+                  ? reinterpret_cast<SWE2DDeviceState*>(solver_dev_ptr)
+                  : nullptr;
+              swe2d_pipe1d_step(dev, dt, solver_mode.c_str(), coupling_substeps,
+                                implicit_iters, relaxation, gravity, k_mann, h_min,
+                                surcharge_method, theta, omega_min, friction_method,
+                                recon_method, time_integrator, friction_alpha,
+                                solver_dev);
+          },
+         py::arg("dev_ptr"),
+         py::arg("dt"),
+         py::arg("solver_mode"),
+         py::arg("coupling_substeps"),
+         py::arg("implicit_iters"),
+         py::arg("relaxation"),
+         py::arg("gravity"),
+         py::arg("k_mann") = 1.0,
+         py::arg("h_min") = 1.0e-6,
+         py::arg("surcharge_method") = 0,
+         py::arg("theta") = 1.0,
+         py::arg("omega_min") = 1.0e-6,
+         py::arg("friction_method") = 0,
+         py::arg("recon_method") = 0,
+         py::arg("time_integrator") = 1,
+         py::arg("friction_alpha") = 0.01,
+         py::arg("solver_dev_ptr") = 0,
+         "Advance 1D pipe network one coupling step using GPU kernels. "
+        "k_mann is the Manning unit conversion factor (1.0 for SI, 1.486 for USC). "
+        "h_min is the configured wet/dry depth floor (model units). "
+        "surcharge_method: 0=none, 1=SLOT (Preissmann slot for pressurised flow). "
+        "Default is SLOT — the non-pressurised path loses mass at the full-section "
+        "continuity clamp and is retained only for comparison. "
+        "theta: implicit factor for the piezometric-head gradient (1.0 = first-order "
+        "backward-Euler; matches Casulli 2013 eq 5). "
+        "omega_min: floor for the friction coefficient γ in the implicit "
+        "(1+γ·Δt) denominator, mirrors OMEGA_MIN in cpp/src/swe2d_xsect_constants.h. "
+        "friction_method: 0=NONE, 1=SUBSTEPPING (2D-style), 2=ALPHA_BOOST. "
+        "Controls which semi-implicit friction treatment is applied. "
+        "recon_method: 0=First-order upwind, 1=MUSCL-minmod. "
+        "time_integrator: 0=RK1 (Forward Euler), 1=RK2 (default). "
+        "friction_alpha: additive linear-Q damping: gamma += alpha*|Q|/A_full (default 0.01).");
 
-    m.def("swe2d_pipe1d_upload_node_depth",
+
+
+    // REMOVED Phase 2.1 bindings:
+    //   swe2d_pipe1d_init_full                    (replaced by swe2d_pipe1d_init_cell_area)
+    //   swe2d_pipe1d_upload_outfall_state         (outfall state on per-face d_ghost_outfall_*)
+    //   swe2d_pipe1d_upload_junction_overflow_state  (class-5 face handles overflow)
+    //   swe2d_pipe1d_upload_node_rim              (rim lives on d_cell_rim)
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 2.5 — Python bindings for the unified (face-indexed) pipe1D API
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    m.def("swe2d_build_unified_mesh",
         [](uintptr_t dev_ptr,
-           py::array_t<double, py::array::c_style|py::array::forcecast> node_depth) -> void
+           int32_t n_links,
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_from,
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_to,
+           py::array_t<double, py::array::c_style|py::array::forcecast> L,
+           py::array_t<double, py::array::c_style|py::array::forcecast> D,
+           py::array_t<double, py::array::c_style|py::array::forcecast> n_mann,
+           py::array_t<double, py::array::c_style|py::array::forcecast> S0,
+            py::array_t<double, py::array::c_style|py::array::forcecast> node_invert,
+            py::object node_inlet_loss_k_obj = py::none(),
+            py::object node_outlet_loss_k_obj = py::none(),
+            int32_t n_manhole_cells,
+           py::object manhole_node_ids,
+           py::object manhole_invert,
+           py::object manhole_surface_area,
+           py::object manhole_max_depth,
+           py::object manhole_rim,
+           py::object manhole_diameter,
+           int32_t n_inlet_cells,
+            py::object inlet_node_ids,
+            py::object inlet_invert,
+            py::object inlet_surface_area,
+            py::object inlet_max_depth,
+            py::object inlet_diameter,
+            py::object inlet_cell_length_obj = py::none(),
+            py::object inlet_cell_width_obj = py::none(),
+            py::object mcl_obj = py::none(),
+            double grav_slot_cfl = 0.0,
+            py::object node_is_outfall = py::none(),
+             int32_t n_pipe_ends = 0,
+             py::object pipe_end_node_ids = py::none(),
+             py::object link_shape_type_obj = py::none(),
+             py::object link_width_obj = py::none(),
+             py::object link_height_obj = py::none(),
+             py::object link_inlet_loss_k_obj = py::none(),
+              py::object link_outlet_loss_k_obj = py::none(),
+              py::object link_upstream_offset_obj = py::none(),
+              py::object link_downstream_offset_obj = py::none(),
+              // ── Inlet capture face params (SURFACE_2D_INLET class 4, HEC-22) ──
+             py::object inlet_face_node_obj = py::none(),
+             py::object inlet_face_2d_cell_obj = py::none(),
+             py::object inlet_face_type_obj = py::none(),
+             py::object inlet_face_grate_len_obj = py::none(),
+             py::object inlet_face_grate_wid_obj = py::none(),
+             py::object inlet_face_grate_open_obj = py::none(),
+             py::object inlet_face_curb_len_obj = py::none(),
+             py::object inlet_face_curb_ht_obj = py::none(),
+             py::object inlet_face_curb_throat_obj = py::none(),
+             py::object inlet_face_slot_len_obj = py::none(),
+             py::object inlet_face_slot_wid_obj = py::none(),
+             py::object inlet_face_crest_obj = py::none(),
+             py::object inlet_face_cd_obj = py::none(),
+             py::object inlet_face_qmax_obj = py::none()) -> void
         {
             auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            auto info = node_depth.request();
-            swe2d_pipe1d_upload_node_depth(dev, static_cast<const double*>(info.ptr),
-                                           static_cast<int32_t>(info.shape[0]));
-        },
-        py::arg("dev_ptr"),
-        py::arg("node_depth"),
-        "Upload node depths from host to device before each pipe step.");
 
-    m.def("swe2d_pipe1d_init_area_from_depth",
-        [](uintptr_t dev_ptr) -> void {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            swe2d_pipe1d_init_area_from_depth(&dev->pipe1d);
-        },
-        py::arg("dev_ptr"),
-        "Initialize pipe cell area from uploaded node depths.");
-
-    m.def("swe2d_pipe1d_init_full",
-        [](uintptr_t dev_ptr) -> void {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            swe2d_pipe1d_init_full(&dev->pipe1d);
-        },
-        py::arg("dev_ptr"),
-        "Initialize pipe cell area to full cross-section (primed).");
-
-    m.def("swe2d_outfall_free_bc_kernel_host",
-        [](uintptr_t dev_ptr) -> void {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            swe2d_outfall_free_bc_kernel_host(dev->pipe1d.n_nodes,
-                dev->pipe1d.d_node_is_outfall, dev->pipe1d.d_node_depth);
-        },
-        py::arg("dev_ptr"),
-        "Force free outfall node depth to zero before pipe1d step.");
-
-    m.def("swe2d_pipe1d_readback_node_state",
-        [](uintptr_t dev_ptr, int32_t n_nodes, int32_t n_cells) -> py::dict
-        {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-            py::array_t<double> node_depth_arr(n_nodes);
-            py::array_t<double> cell_A_arr(n_cells);
-            py::array_t<double> cell_Q_arr(n_cells);
-            py::array_t<double> cell_width_arr(n_cells);
-            py::array_t<double> cell_height_arr(n_cells);
-            py::array_t<int32_t> cell_shape_type_arr(n_cells);
-            py::array_t<double> cell_invert_arr(n_cells);
-            py::array_t<int32_t> cell_owner_link_arr(n_cells);
-            py::array_t<int32_t> cell_sub_idx_arr(n_cells);
-            // Zero-init the host buffers.  py::array_t<double>(N) is
-            // equivalent to np.empty(N) — it does NOT zero-initialize.  The
-            // downstream readback function guards each cudaMemcpy with
-            // ``n_* == p.n_*``; if any guard fails, the host buffer stays
-            // uninitialized and Python sees random heap bits.  Pre-zeroing
-            // here turns "guard fail" from silent corruption into a clean
-            // zero result.
-            if (n_nodes > 0) std::memset(node_depth_arr.mutable_data(), 0, static_cast<size_t>(n_nodes) * sizeof(double));
-            if (n_cells > 0) {
-                std::memset(cell_A_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
-                std::memset(cell_Q_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
-                std::memset(cell_width_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
-                std::memset(cell_height_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
-                std::memset(cell_shape_type_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
-                std::memset(cell_invert_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
-                std::memset(cell_owner_link_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
-                std::memset(cell_sub_idx_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
+            // Compute link_invert_in/out from node_invert and link topology,
+            // plus optional per-link upstream/downstream offsets (e.g. when a
+            // pipe's invert sits above its node's invert elevation).
+            auto lf = link_from.unchecked<1>();
+            auto lt = link_to.unchecked<1>();
+            auto ni = node_invert.unchecked<1>();
+            std::vector<double> link_invert_in(n_links);
+            std::vector<double> link_invert_out(n_links);
+            // Parse optional offset arrays
+            auto to_f64_ptr_l = [](const py::object& o) -> const double* {
+                if (o.is_none()) return nullptr;
+                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
+                return (arr.size() > 0) ? arr.data() : nullptr;
+            };
+            const double* up_off = to_f64_ptr_l(link_upstream_offset_obj);
+            const double* dn_off = to_f64_ptr_l(link_downstream_offset_obj);
+            for (int32_t i = 0; i < n_links; ++i) {
+                link_invert_in[i]  = ni(lf(i)) + (up_off ? up_off[i] : 0.0);
+                link_invert_out[i] = ni(lt(i)) + (dn_off ? dn_off[i] : 0.0);
             }
-            swe2d_pipe1d_readback_node_state(
-                dev,
-                node_depth_arr.mutable_data(),
-                cell_A_arr.mutable_data(),
-                cell_Q_arr.mutable_data(),
-                cell_width_arr.mutable_data(),
-                cell_height_arr.mutable_data(),
-                cell_shape_type_arr.mutable_data(),
-                cell_invert_arr.mutable_data(),
-                cell_owner_link_arr.mutable_data(),
-                cell_sub_idx_arr.mutable_data(),
-                n_nodes, n_cells);
+
+            // Default loss coefficients (zero), node surface area / max depth
+            std::vector<double> default_loss(n_links, 0.0);
+            int32_t n_nodes = static_cast<int32_t>(ni.size());
+            std::vector<double> default_nsa(n_nodes, 1.0e10);
+            std::vector<double> default_nmd(n_nodes, 10.0);
+
+            // Helpers for optional arrays
+            auto to_i32_ptr = [](const py::object& o) -> const int32_t* {
+                if (o.is_none()) return nullptr;
+                auto arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(o);
+                return (arr.size() > 0) ? arr.data() : nullptr;
+            };
+            auto to_f64_ptr = [](const py::object& o) -> const double* {
+                if (o.is_none()) return nullptr;
+                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
+                return (arr.size() > 0) ? arr.data() : nullptr;
+            };
+            auto i32_sz = [](const py::object& o) -> int32_t {
+                if (o.is_none()) return 0;
+                return static_cast<int32_t>(py::cast<py::array_t<int32_t>>(o).size());
+            };
+            auto f64_size = [](const py::object& o) -> int32_t {
+                if (o.is_none()) return 0;
+                return static_cast<int32_t>(py::cast<py::array_t<double>>(o).size());
+            };
+
+            // Per-link max_cell_length: accept scalar float (broadcast to n_links)
+            // or per-link array.  If absent (None), nullptr disables subdivision.
+            std::vector<double> link_mcl_broadcast;
+            const double* link_mcl_ptr = nullptr;
+            if (!mcl_obj.is_none()) {
+                if (py::isinstance<py::float_>(mcl_obj) || py::isinstance<py::int_>(mcl_obj)) {
+                    link_mcl_broadcast.assign(n_links, py::cast<double>(mcl_obj));
+                    link_mcl_ptr = link_mcl_broadcast.data();
+                } else {
+                    link_mcl_ptr = to_f64_ptr(mcl_obj);
+                }
+            }
+
+            // Convert manhole structure params → volume-equivalent rectangular
+            std::vector<double> m_cl, m_cw, m_ch;
+            const double* m_cl_p = nullptr, *m_cw_p = nullptr, *m_ch_p = nullptr;
+            if (n_manhole_cells > 0) {
+                auto md = py::cast<py::array_t<double>>(manhole_diameter).unchecked<1>();
+                auto mh = py::cast<py::array_t<double>>(manhole_max_depth).unchecked<1>();
+                m_cl.resize(n_manhole_cells); m_cw.resize(n_manhole_cells); m_ch.resize(n_manhole_cells);
+                for (int32_t i = 0; i < n_manhole_cells; ++i) {
+                    double d = md(i);
+                    m_cl[i] = d;
+                    m_cw[i] = M_PI * d / 4.0;
+                    m_ch[i] = mh(i);
+                }
+                m_cl_p = m_cl.data(); m_cw_p = m_cw.data(); m_ch_p = m_ch.data();
+            }
+
+            // Convert inlet structure params → volume-equivalent rectangular
+            std::vector<double> i_cl, i_cw, i_ch;
+            const double* i_cl_p = nullptr, *i_cw_p = nullptr, *i_ch_p = nullptr;
+            const double* i_cell_len_in = to_f64_ptr(inlet_cell_length_obj);
+            const double* i_cell_wid_in = to_f64_ptr(inlet_cell_width_obj);
+            int32_t n_cell_len = f64_size(inlet_cell_length_obj);
+            int32_t n_cell_wid = f64_size(inlet_cell_width_obj);
+            if (n_inlet_cells > 0) {
+                auto id = py::cast<py::array_t<double>>(inlet_diameter).unchecked<1>();
+                auto ih = py::cast<py::array_t<double>>(inlet_max_depth).unchecked<1>();
+                i_cl.resize(n_inlet_cells); i_cw.resize(n_inlet_cells); i_ch.resize(n_inlet_cells);
+                for (int32_t i = 0; i < n_inlet_cells; ++i) {
+                    double d = id(i);
+                    double len = (i_cell_len_in != nullptr && i < n_cell_len) ? i_cell_len_in[i] : d;
+                    double wid = (i_cell_wid_in != nullptr && i < n_cell_wid) ? i_cell_wid_in[i] : M_PI * d / 4.0;
+                    i_cl[i] = len;
+                    i_cw[i] = wid;
+                    i_ch[i] = ih(i);
+                }
+                i_cl_p = i_cl.data(); i_cw_p = i_cw.data(); i_ch_p = i_ch.data();
+            }
+
+            // Build node classification arrays from optional inputs.
+            // Default: all zeros → WALL boundary (zero flux).
+            std::vector<int32_t> node_class_vec(n_nodes, 0);
+
+            // node_is_outfall
+            const int32_t* outfall_ptr = nullptr;
+            if (!node_is_outfall.is_none()) {
+                auto of_arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(node_is_outfall);
+                if (of_arr.size() >= n_nodes) {
+                    outfall_ptr = of_arr.data();
+                }
+            }
+            if (outfall_ptr == nullptr) {
+                // Default to all zeros → no outfalls (WALL boundary)
+                outfall_ptr = node_class_vec.data();
+            }
+
+            // node_is_inlet: derived from inlet_node_ids
+            std::vector<int32_t> inlet_class_vec;
+            const int32_t* inlet_class_ptr = nullptr;
+            if (n_inlet_cells > 0) {
+                inlet_class_vec.assign(n_nodes, 0);
+                auto in_ids = py::cast<py::array_t<int32_t>>(inlet_node_ids).unchecked<1>();
+                for (int32_t i = 0; i < n_inlet_cells; ++i) {
+                    int32_t ni = in_ids(i);
+                    if (ni >= 0 && ni < n_nodes) inlet_class_vec[ni] = 1;
+                }
+                inlet_class_ptr = inlet_class_vec.data();
+            }
+            // else: keep nullptr → no INLET_BC faces
+
+            // node_is_pipe_end: derived from pipe_end_node_ids
+            std::vector<int32_t> pipe_end_class_vec;
+            const int32_t* pipe_end_class_ptr = nullptr;
+            if (n_pipe_ends > 0) {
+                pipe_end_class_vec.assign(n_nodes, 0);
+                auto pe_ids = py::cast<py::array_t<int32_t>>(pipe_end_node_ids).unchecked<1>();
+                for (int32_t i = 0; i < n_pipe_ends; ++i) {
+                    int32_t ni = pe_ids(i);
+                    if (ni >= 0 && ni < n_nodes) pipe_end_class_vec[ni] = 1;
+                }
+                pipe_end_class_ptr = pipe_end_class_vec.data();
+            }
+
+            // link_inlet_loss_k / link_outlet_loss_k — optional per-link loss coefficients
+            const double* link_inlet_loss_k_ptr = nullptr;
+            const double* link_outlet_loss_k_ptr = nullptr;
+            if (!link_inlet_loss_k_obj.is_none()) {
+                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_inlet_loss_k_obj);
+                if (arr.size() >= n_links) {
+                    link_inlet_loss_k_ptr = arr.data();
+                }
+            }
+            if (!link_outlet_loss_k_obj.is_none()) {
+                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_outlet_loss_k_obj);
+                if (arr.size() >= n_links) {
+                    link_outlet_loss_k_ptr = arr.data();
+                }
+            }
+            // Fallback to zero loss if not provided
+            if (link_inlet_loss_k_ptr == nullptr) link_inlet_loss_k_ptr = default_loss.data();
+            if (link_outlet_loss_k_ptr == nullptr) link_outlet_loss_k_ptr = default_loss.data();
+
+            // Per-node entrance/exit loss coefficients (optional, may be null)
+            const double* node_inlet_loss_k_ptr = to_f64_ptr(node_inlet_loss_k_obj);
+            const double* node_outlet_loss_k_ptr = to_f64_ptr(node_outlet_loss_k_obj);
+
+            swe2d_build_pipe1d_mesh(
+                n_links,
+                link_from.data(), link_to.data(),
+                L.data(), D.data(), n_mann.data(),
+                link_inlet_loss_k_ptr, link_outlet_loss_k_ptr,
+                node_invert.data(),
+                node_inlet_loss_k_ptr,
+                node_outlet_loss_k_ptr,
+                default_nsa.data(), default_nmd.data(),
+                link_invert_in.data(), link_invert_out.data(),
+                link_mcl_ptr,
+                grav_slot_cfl,
+                to_i32_ptr(link_shape_type_obj),
+                to_f64_ptr(link_width_obj),
+                to_f64_ptr(link_height_obj),
+                &dev->pipe1d,
+                i32_sz(manhole_node_ids), to_i32_ptr(manhole_node_ids),
+                m_cl_p, m_cw_p, m_ch_p,
+                i32_sz(inlet_node_ids), to_i32_ptr(inlet_node_ids),
+                i_cl_p, i_cw_p, i_ch_p,
+                outfall_ptr,
+                inlet_class_ptr,
+                pipe_end_class_ptr,
+                dev->n_cells,
+                i32_sz(inlet_face_node_obj), to_i32_ptr(inlet_face_node_obj),
+                to_i32_ptr(inlet_face_2d_cell_obj),
+                to_i32_ptr(inlet_face_type_obj),
+                to_f64_ptr(inlet_face_grate_len_obj),
+                to_f64_ptr(inlet_face_grate_wid_obj),
+                to_f64_ptr(inlet_face_grate_open_obj),
+                to_f64_ptr(inlet_face_curb_len_obj),
+                to_f64_ptr(inlet_face_curb_ht_obj),
+                to_f64_ptr(inlet_face_curb_throat_obj),
+                to_f64_ptr(inlet_face_slot_len_obj),
+                to_f64_ptr(inlet_face_slot_wid_obj),
+                to_f64_ptr(inlet_face_crest_obj),
+                to_f64_ptr(inlet_face_cd_obj),
+                to_f64_ptr(inlet_face_qmax_obj),
+                0, nullptr, nullptr, nullptr, 0, nullptr);
+
+            // (removed Phase 2.1): manhole_rim → d_node_rim upload path retired.
+            // Manhole rim now lives on per-cell d_cell_rim (sized [n_cells_all]
+            // indexed by manhole cell index) which is uploaded inside
+            // swe2d_build_pipe1d_mesh directly. See plan §3.3.
+        },
+        py::arg("dev_ptr"),
+        py::arg("n_links"),
+        py::arg("link_from"), py::arg("link_to"),
+        py::arg("L"), py::arg("D"), py::arg("n_mann"), py::arg("S0"),
+        py::arg("node_invert"),
+        py::arg("node_inlet_loss_k") = py::none(),
+        py::arg("node_outlet_loss_k") = py::none(),
+        py::arg("n_manhole_cells") = 0,
+        py::arg("manhole_node_ids") = py::none(),
+        py::arg("manhole_invert") = py::none(),
+        py::arg("manhole_surface_area") = py::none(),
+        py::arg("manhole_max_depth") = py::none(),
+        py::arg("manhole_rim") = py::none(),
+        py::arg("manhole_diameter") = py::none(),
+        py::arg("n_inlet_cells") = 0,
+        py::arg("inlet_node_ids") = py::none(),
+        py::arg("inlet_invert") = py::none(),
+        py::arg("inlet_surface_area") = py::none(),
+        py::arg("inlet_max_depth") = py::none(),
+        py::arg("inlet_diameter") = py::none(),
+        py::arg("inlet_cell_length") = py::none(),
+        py::arg("inlet_cell_width") = py::none(),
+        py::arg("mcl") = py::none(),
+        py::arg("grav_slot_cfl") = 0.0,
+        py::arg("node_is_outfall") = py::none(),
+        py::arg("n_pipe_ends") = 0,
+        py::arg("pipe_end_node_ids") = py::none(),
+        py::arg("link_shape_type") = py::none(),
+        py::arg("link_width") = py::none(),
+        py::arg("link_height") = py::none(),
+        py::arg("link_inlet_loss_k") = py::none(),
+        py::arg("link_outlet_loss_k") = py::none(),
+        py::arg("link_upstream_offset") = py::none(),
+        py::arg("link_downstream_offset") = py::none(),
+        // ── Inlet capture face params (HEC-22 SURFACE_2D_INLET, class 4) ──
+        py::arg("inlet_face_node") = py::none(),
+        py::arg("inlet_face_2d_cell") = py::none(),
+        py::arg("inlet_face_type") = py::none(),
+        py::arg("inlet_face_grate_len") = py::none(),
+        py::arg("inlet_face_grate_wid") = py::none(),
+        py::arg("inlet_face_grate_open") = py::none(),
+        py::arg("inlet_face_curb_len") = py::none(),
+        py::arg("inlet_face_curb_ht") = py::none(),
+        py::arg("inlet_face_curb_throat") = py::none(),
+        py::arg("inlet_face_slot_len") = py::none(),
+        py::arg("inlet_face_slot_wid") = py::none(),
+        py::arg("inlet_face_crest") = py::none(),
+        py::arg("inlet_face_cd") = py::none(),
+        py::arg("inlet_face_qmax") = py::none(),
+        "Build unified pipe1D mesh from test API. "
+        "Wraps swe2d_build_pipe1d_mesh with test-compatible parameter names and "
+        "volume-equivalent rectangular cell geometry for manhole/inlet cells. "
+        "node_is_outfall: optional [n_nodes] int32 array (1=outfall, 0=wall). "
+        "Default all-zeros (wall BC at every pipe end).");
+
+    m.def("swe2d_pipe1d_upload_cell_h",
+        [](uintptr_t dev_ptr, py::array_t<double> depths) -> void {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            auto info = depths.request();
+            int32_t n = static_cast<int32_t>(info.size);
+            if (n <= 0 || !dev->pipe1d.d_cell_h) return;
+            // Pipe1d arrays are allocated via cudaMallocAsync on dev->d_stream
+            // (see pipe1d.cu:~672).  Sync the device before the synchronous
+            // cudaMemcpy so the async allocations are visible to the default stream.
+            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_cell_h, info.ptr,
+                static_cast<size_t>(n) * sizeof(double), cudaMemcpyHostToDevice));
+        },
+        py::arg("dev_ptr"),
+        py::arg("depths"),
+        "Upload per-cell depths to d_cell_h (all cell classes).");
+
+    m.def("swe2d_pipe1d_init_cell_area",
+        [](uintptr_t dev_ptr, double h_min) -> void {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_pipe1d_init_cell_area(&dev->pipe1d, h_min);
+        },
+        py::arg("dev_ptr"),
+        py::arg("h_min") = 1.0e-6,
+        "Initialize cell A from per-cell depth for all cell classes.");
+
+    m.def("swe2d_pipe1d_readback_cell_state",
+        [](uintptr_t dev_ptr,
+           int32_t n_pipe_cells,
+           int32_t n_manhole_cells,
+           int32_t n_inlet_cells) -> py::dict
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            auto& p = dev->pipe1d;
+            // Use the device's actual cell count (source of truth once the mesh
+            // is built), falling back to the Python-provided sum when the mesh
+            // hasn't been initialised (test-only path).
+            const int32_t dev_nc = p.n_cells_all;
+            int32_t nc = (dev_nc > 0) ? dev_nc : (n_pipe_cells + n_manhole_cells + n_inlet_cells);
+            auto read_f64 = [nc](double* src, size_t sz) -> py::array_t<double> {
+                py::array_t<double> arr(nc);
+                if (nc > 0) std::memset(arr.mutable_data(), 0,
+                    static_cast<size_t>(nc) * sizeof(double));
+                if (src) {
+                    size_t ncpy = (std::min)(static_cast<size_t>(nc), sz);
+                    CUDA_CHECK(cudaMemcpy(arr.mutable_data(), src,
+                        ncpy * sizeof(double), cudaMemcpyDeviceToHost));
+                }
+                return arr;
+            };
+            auto read_i32 = [nc](int32_t* src, size_t sz) -> py::array_t<int32_t> {
+                py::array_t<int32_t> arr(nc);
+                if (nc > 0) std::memset(arr.mutable_data(), 0,
+                    static_cast<size_t>(nc) * sizeof(int32_t));
+                if (src) {
+                    size_t ncpy = (std::min)(static_cast<size_t>(nc), sz);
+                    CUDA_CHECK(cudaMemcpy(arr.mutable_data(), src,
+                        ncpy * sizeof(int32_t), cudaMemcpyDeviceToHost));
+                }
+                return arr;
+            };
+            // Determine actual device-side allocation sizes
+            size_t nc64 = static_cast<size_t>(p.n_cells_all > 0 ? p.n_cells_all : nc);
+            py::array_t<double> cell_A = read_f64(p.d_A, nc64);
+            py::array_t<double> cell_Q = read_f64(p.d_Q, nc64);
+            py::array_t<double> cell_y = read_f64(p.d_cell_y, nc64);
+            py::array_t<double> cell_invert = read_f64(p.d_cell_invert, nc64);
+            py::array_t<double> cell_velocity(nc);
+            py::array_t<double> cell_depth(nc);
+            const double* cell_A_data = cell_A.data();
+            const double* cell_Q_data = cell_Q.data();
+            const double* cell_y_data = cell_y.data();
+            const double* cell_invert_data = cell_invert.data();
+            double* cell_velocity_data = cell_velocity.mutable_data();
+            double* cell_depth_data = cell_depth.mutable_data();
+            for (int32_t c = 0; c < nc; ++c) {
+                const double A_safe = (std::max)(cell_A_data[c], 1.0e-12);
+                cell_velocity_data[c] = cell_Q_data[c] / A_safe;
+                cell_depth_data[c] = cell_y_data[c] - cell_invert_data[c];
+            }
+
             py::dict d;
-            d["node_depth"] = node_depth_arr;
-            d["cell_A"] = cell_A_arr;
-            d["cell_Q"] = cell_Q_arr;
-            d["cell_width"] = cell_width_arr;
-            d["cell_height"] = cell_height_arr;
-            d["cell_shape_type"] = cell_shape_type_arr;
-            d["cell_invert"] = cell_invert_arr;
-            d["cell_owner_link"] = cell_owner_link_arr;
-            d["cell_sub_idx"] = cell_sub_idx_arr;
+            d["cell_A"]         = cell_A;
+            d["cell_Q"]         = cell_Q;
+            d["cell_velocity"]  = cell_velocity;
+            // Documented alias: depth is water-surface elevation minus invert.
+            d["cell_depth"]     = cell_depth;
+            d["cell_y"]         = cell_y;
+            d["cell_h"]         = read_f64(p.d_cell_h, nc64);
+            d["cell_q"]         = read_f64(p.d_cell_q, nc64);
+            d["cell_fr"]        = read_f64(p.d_cell_fr, nc64);
+            d["cell_slot_width"] = read_f64(p.d_cell_slot_width, nc64);
+            d["cell_class"]     = read_i32(p.d_cell_class, nc64);
+            d["cell_invert"]    = cell_invert;
+            d["cell_length"]    = read_f64(p.d_cell_length, nc64);
+            d["cell_width"]     = read_f64(p.d_cell_width, nc64);
+            // Back-compat: legacy readback returned cell_height (the rectangular
+            // cross-section height used by _depth_from_area_rectangular).  The
+            // unified mesh stores the same value in d_cell_height; expose it
+            // under the legacy key so existing Python callers (e.g. coupling.py
+            // readback_coupling_state) keep working.
+            d["cell_height"]    = read_f64(p.d_cell_height, nc64);
+            // Phase 2.1 metadata arrays
+            d["cell_surface_area"] = read_f64(p.d_cell_surface_area, nc64);
+            d["cell_crown"]     = read_f64(p.d_cell_crown, nc64);
+            d["cell_rim"]       = read_f64(p.d_cell_rim, nc64);
+            d["cell_max_depth"] = read_f64(p.d_cell_max_depth, nc64);
+            d["cell_owner_link"] = read_i32(p.d_cell_owner_link, nc64);
+            d["cell_sub_idx"]   = read_i32(p.d_cell_sub_idx, nc64);
+            d["cell_shape_type"] = read_i32(p.d_cell_shape_type, nc64);
+            d["n_pipe_cells"]   = static_cast<int32_t>(p.n_pipe_cells);
+            d["n_manhole_cells"] = static_cast<int32_t>(p.n_manhole_cells);
+            d["n_inlet_cells"]  = static_cast<int32_t>(p.n_inlet_cells);
+            d["n_cells_all"]    = static_cast<int32_t>(nc);
             return d;
         },
         py::arg("dev_ptr"),
-        py::arg("n_nodes"),
-        py::arg("n_cells"),
-        "Readback pipe1d node depths, cell areas, flows, per-cell geometry, and cell-to-link mapping.");
+        py::arg("n_pipe_cells"),
+        py::arg("n_manhole_cells") = 0,
+        py::arg("n_inlet_cells") = 0,
+        "Readback ALL cell state (pipe + manhole + inlet) as a dict. "
+        "Includes cell_A/Q/y/h/q/fr/slot_width, cell_velocity (Q/max(A, 1e-12)), "
+        "cell_depth (cell_y - cell_invert), geometry, metadata, and counts.");
+
+    // Fix P0#2 / P3#17 (audit 2026-07-22): removed
+    // `swe2d_pipe1d_upload_inlet_prescribed_Q` binding.  The class-2 INLET_BC
+    // path is no longer used for capture — class-4 SURFACE_2D_INLET faces
+    // (built via swe2d_build_unified_mesh inlet_face_* params) capture from
+    // the 2D cell using HEC-22 weir/orifice.  No Python caller uploads to
+    // d_ghost_inlet_Q.
+    // Also removed: swe2d_pipe1d_upload_outfall_bc (dead — production uses pre-step
+    // ghost WSE update), swe2d_pipe1d_upload_outfall_surface_faces (dead — class-1
+    // kernel reads ghost_idx, not owner_R).
+
+    m.def("swe2d_pipe1d_upload_pipe_end_surface_faces",
+        [](uintptr_t dev_ptr,
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> coupled_2d_cells) -> void
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            if (!dev || !dev->pipe1d.d_face_class || !dev->pipe1d.d_face_owner_R)
+                throw std::runtime_error("pipe1d mesh not initialized");
+
+            const int32_t n_faces = dev->pipe1d.n_faces;
+            if (n_faces <= 0) return;
+
+            std::vector<int32_t> h_face_class(n_faces);
+            CUDA_CHECK(cudaMemcpy(h_face_class.data(), dev->pipe1d.d_face_class,
+                                  n_faces * sizeof(int32_t), cudaMemcpyDeviceToHost));
+
+            std::vector<int32_t> class3_indices;
+            for (int32_t k = 0; k < n_faces; ++k) {
+                if (h_face_class[k] == 3) class3_indices.push_back(k);
+            }
+
+            std::vector<int32_t> h_face_owner_R(n_faces);
+            CUDA_CHECK(cudaMemcpy(h_face_owner_R.data(), dev->pipe1d.d_face_owner_R,
+                                  n_faces * sizeof(int32_t), cudaMemcpyDeviceToHost));
+
+            const int32_t* cells = coupled_2d_cells.data();
+            const int32_t n_cells = static_cast<int32_t>(coupled_2d_cells.size());
+            const int32_t n_match = std::min(n_cells, static_cast<int32_t>(class3_indices.size()));
+            for (int32_t i = 0; i < n_match; ++i) {
+                h_face_owner_R[class3_indices[i]] = cells[i];
+            }
+
+            CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_face_owner_R, h_face_owner_R.data(),
+                                  n_faces * sizeof(int32_t), cudaMemcpyHostToDevice));
+        },
+        py::arg("dev_ptr"),
+        py::arg("coupled_2d_cells"),
+        "Patch face_owner_R for SURFACE_2D_PIPE_END (class-3) faces with the "
+        "actual 2D surface cell indices.  Face creation order (link iteration, "
+        "from_node then to_node) matches the pipe-end SoA order.");
+
+    m.def("swe2d_pipe1d_upload_junction_overflow_2d_cells",
+        [](uintptr_t dev_ptr,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> coupled_2d_cells) -> void
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            if (!dev || !dev->pipe1d.d_face_class || !dev->pipe1d.d_face_owner_R)
+                throw std::runtime_error("pipe1d mesh not initialized");
+
+            const int32_t n_faces = dev->pipe1d.n_faces;
+            if (n_faces <= 0) return;
+
+            std::vector<int32_t> h_face_class(n_faces);
+            CUDA_CHECK(cudaMemcpy(h_face_class.data(), dev->pipe1d.d_face_class,
+                                  n_faces * sizeof(int32_t), cudaMemcpyDeviceToHost));
+
+            // Class-5 faces follow manhole-cell iteration order at pipe1d.cu:1486.
+            std::vector<int32_t> class5_indices;
+            for (int32_t k = 0; k < n_faces; ++k) {
+                if (h_face_class[k] == 5) class5_indices.push_back(k);
+            }
+
+            std::vector<int32_t> h_face_owner_R(n_faces);
+            CUDA_CHECK(cudaMemcpy(h_face_owner_R.data(), dev->pipe1d.d_face_owner_R,
+                                  n_faces * sizeof(int32_t), cudaMemcpyDeviceToHost));
+
+            const int32_t* cells = coupled_2d_cells.data();
+            const int32_t n_cells = static_cast<int32_t>(coupled_2d_cells.size());
+            const int32_t n_match = std::min(n_cells, static_cast<int32_t>(class5_indices.size()));
+            for (int32_t i = 0; i < n_match; ++i) {
+                h_face_owner_R[class5_indices[i]] = cells[i];
+            }
+
+            CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_face_owner_R, h_face_owner_R.data(),
+                                  n_faces * sizeof(int32_t), cudaMemcpyHostToDevice));
+        },
+        py::arg("dev_ptr"),
+        py::arg("coupled_2d_cells"),
+        "Patch face_owner_R for SURFACE_2D_JUNCTION_OVERFLOW (class-5) faces.  "
+        "Order matches manhole-cell iteration at pipe1d.cu:1486.");
+
+    // REMOVED Phase 2.1:
+//   swe2d_pipe1d_readback_pipe_end_A_open_table  — A_open tables live on the
+//     per-face arrays; no separate readback needed.
+
+    m.def("swe2d_pipe1d_get_cell_count",
+        [](uintptr_t dev_ptr) -> int32_t {
+            if (!dev_ptr) return 0;
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            return dev->pipe1d.n_pipe_cells;
+        },
+        py::arg("dev_ptr"),
+        "Return number of pipe cells.");
 
     m.def("swe2d_solver_get_device_capsule",
         [](const std::shared_ptr<PySolver>& ps) -> py::object {
@@ -1968,8 +3010,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_node0,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_node1,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_type,
-           py::array_t<double, py::array::c_style | py::array::forcecast> bc_val)
-           -> std::shared_ptr<PyMesh>
+            py::array_t<double, py::array::c_style | py::array::forcecast> bc_val,
+            py::str crs_wkt = py::str(""))
+            -> std::shared_ptr<PyMesh>
         {
             if (node_x.size() != node_y.size() || node_x.size() != node_z.size()) {
                 throw std::invalid_argument("node_x, node_y, node_z must have the same length");
@@ -1998,6 +3041,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n_bc > 0 ? bc_val.data()   : nullptr,
                 n_bc);
 
+            pm->mesh.crs_wkt = std::string(py::str(crs_wkt));
+
             std::string err = swe2d_validate_mesh(pm->mesh);
             if (!err.empty()) {
                 throw std::runtime_error("Mesh validation failed: " + err);
@@ -2009,6 +3054,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("cell_nodes"),
         py::arg("bc_edge_node0"), py::arg("bc_edge_node1"),
         py::arg("bc_edge_type"),  py::arg("bc_edge_val"),
+        py::arg("crs_wkt") = py::str(""),
         "Build an unstructured triangular mesh from node and element arrays.\n\n"
         "Parameters\n----------\n"
         "node_x, node_y, node_z : ndarray float64, shape (N,)\n"
@@ -2038,7 +3084,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_node0,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_node1,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_type,
-           py::array_t<double, py::array::c_style | py::array::forcecast> bc_val)
+           py::array_t<double, py::array::c_style | py::array::forcecast> bc_val,
+           py::str crs_wkt = py::str(""))
            -> std::shared_ptr<PyMesh>
         {
             if (node_x.size() != node_y.size() || node_x.size() != node_z.size()) {
@@ -2076,6 +3123,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n_bc > 0 ? bc_val.data()   : nullptr,
                 n_bc);
 
+            pm->mesh.crs_wkt = std::string(py::str(crs_wkt));
+
             std::string err = swe2d_validate_mesh(pm->mesh);
             if (!err.empty()) {
                 throw std::runtime_error("Mesh validation failed: " + err);
@@ -2087,6 +3136,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("cell_face_offsets"), py::arg("cell_face_nodes"),
         py::arg("bc_edge_node0"), py::arg("bc_edge_node1"),
         py::arg("bc_edge_type"), py::arg("bc_edge_val"),
+        py::arg("crs_wkt") = py::str(""),
         "Build an unstructured polygon mesh from node and CSR cell topology arrays.\n\n"
         "Parameters\n----------\n"
         "cell_face_offsets : ndarray int32, shape (M+1,)\n"
@@ -2506,6 +3556,11 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             auto ps = std::make_shared<PySolver>();
             ps->mesh_owner = pm;
             ps->solver = swe2d_create(pm->mesh, h0.data(), hu0_ptr, hv0_ptr, n_mann_cell_ptr, cfg);
+            // Set the global coupling device pointer so pipe1d step can access
+            // both the 2D solver state (dev->d_h) and the pipe1d state (dev->pipe1d).
+            if (ps->solver && ps->solver->dev) {
+                swe2d_gpu_set_coupling_device_global(ps->solver->dev);
+            }
             return ps;
         },
         py::arg("mesh"),
@@ -2659,6 +3714,48 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("n_cells"),
         "Readback cumulative rain and excess (mm) per cell from the GPU rain CN state.");
 
+    // ── TEMP DIAGNOSTIC (2026-07-22): readback d_ext_struct_flux_* buffers
+    // so we can see what the pipe1d step actually wrote for the 2D-side
+    // exchange at each 2D cell.  Each entry is the per-step mass flux
+    // (L³/T) accumulated since the last zero.  Useful for diagnosing
+    // whether SURFACE_2D faces are connecting to the expected 2D cells
+    // and whether the magnitude is sensible vs the 2D-side inflow/outflow
+    // observed in the 2D depth field.
+    m.def("swe2d_readback_ext_struct_flux",
+        [](uintptr_t dev_ptr, int32_t n_cells) -> py::dict
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            py::array_t<double> h_arr(n_cells);
+            py::array_t<double> hu_arr(n_cells);
+            py::array_t<double> hv_arr(n_cells);
+            if (dev) {
+                if (dev->d_ext_struct_flux_h && n_cells > 0) {
+                    CUDA_CHECK(cudaMemcpy(h_arr.mutable_data(), dev->d_ext_struct_flux_h,
+                        static_cast<size_t>(n_cells) * sizeof(double),
+                        cudaMemcpyDeviceToHost));
+                }
+                if (dev->d_ext_struct_flux_hu && n_cells > 0) {
+                    CUDA_CHECK(cudaMemcpy(hu_arr.mutable_data(), dev->d_ext_struct_flux_hu,
+                        static_cast<size_t>(n_cells) * sizeof(double),
+                        cudaMemcpyDeviceToHost));
+                }
+                if (dev->d_ext_struct_flux_hv && n_cells > 0) {
+                    CUDA_CHECK(cudaMemcpy(hv_arr.mutable_data(), dev->d_ext_struct_flux_hv,
+                        static_cast<size_t>(n_cells) * sizeof(double),
+                        cudaMemcpyDeviceToHost));
+                }
+            }
+            py::dict d;
+            d["h"]  = h_arr;
+            d["hu"] = hu_arr;
+            d["hv"] = hv_arr;
+            return d;
+        },
+        py::arg("dev_ptr"),
+        py::arg("n_cells"),
+        "TEMP DIAGNOSTIC: readback d_ext_struct_flux_{h,hu,hv} — the per-2D-cell "
+        "mass and momentum flux written by the pipe1d↔2D exchange (units L³/T).");
+
     // ── Get max tracking ───────────────────────────────────────────
     m.def("swe2d_get_max_tracking",
         [](const std::shared_ptr<PySolver>& ps)
@@ -2675,6 +3772,40 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         py::arg("solver"),
         "Return per-cell max (h, hu, hv) across entire simulation.");
+
+    m.def("swe2d_readback_state",
+        [](const std::shared_ptr<PySolver>& ps, int32_t n_cells) -> py::dict
+        {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+#ifdef HYDRA_HAS_CUDA
+            auto* dev = ps->solver->dev;
+            if (!dev) throw std::runtime_error("GPU not initialized");
+            py::array_t<double> h_arr(n_cells);
+            py::array_t<double> hu_arr(n_cells);
+            py::array_t<double> hv_arr(n_cells);
+            if (n_cells > 0) {
+                std::memset(h_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(hu_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(hv_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                if (dev->d_h) CUDA_CHECK(cudaMemcpy(h_arr.mutable_data(), dev->d_h,
+                    static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+                if (dev->d_hu) CUDA_CHECK(cudaMemcpy(hu_arr.mutable_data(), dev->d_hu,
+                    static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+                if (dev->d_hv) CUDA_CHECK(cudaMemcpy(hv_arr.mutable_data(), dev->d_hv,
+                    static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+            }
+            py::dict d;
+            d["h"] = h_arr;
+            d["hu"] = hu_arr;
+            d["hv"] = hv_arr;
+            return d;
+#else
+            throw std::runtime_error("CUDA not available");
+#endif
+        },
+        py::arg("solver"),
+        py::arg("n_cells"),
+        "Readback 2D solver GPU state (h, hu, hv) from device to host.");
 
     // ── Destroy ───────────────────────────────────────────────────────────────
     m.def("swe2d_destroy",
@@ -2831,10 +3962,13 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")
         .def("__repr__", [](const PyMesh& pm) {
-            return "<SWE2DMeshHandle nodes=" + std::to_string(pm.mesh.n_nodes)
-                 + " cells=" + std::to_string(pm.mesh.n_cells)
-                 + " edges=" + std::to_string(pm.mesh.n_edges) + ">";
+            return "<SWE2DMeshHandle n_nodes=" + std::to_string(pm.mesh.n_nodes)
+                   + " n_cells=" + std::to_string(pm.mesh.n_cells)
+                   + " n_edges=" + std::to_string(pm.mesh.n_edges) + ">";
         })
+        .def_property_readonly("crs_wkt", [](const PyMesh& pm) -> py::str {
+            return py::str(pm.mesh.crs_wkt);
+        }, "Coordinate reference system WKT string, or empty.")
         // ── Python accessor properties for post-hoc line resampling ─────
         .def_property_readonly("node_x", [](const PyMesh& pm) {
             return py::array_t<double>(
@@ -3052,7 +4186,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         d["d_h"] = (uintptr_t)dev->d_h;
         d["d_cell_zb"] = (uintptr_t)dev->d_cell_zb;
         d["pipe1d_d_A"] = (uintptr_t)dev->pipe1d.d_A;
-        d["pipe1d_d_node_depth"] = (uintptr_t)dev->pipe1d.d_node_depth;
+        // (removed Phase 2.1): pipe1d_d_node_depth — per-node depth retired.
         return d;
     }, "Diagnostic: dump drain_ws state");
 }

@@ -22,7 +22,7 @@ from typing import Tuple
 
 import numpy as np
 
-__all__ = ["parse_time_hours", "parse_hydrograph_text"]
+__all__ = ["parse_time_hours", "parse_duration_seconds", "parse_hydrograph_text"]
 
 
 def parse_time_hours(token: str) -> float:
@@ -72,6 +72,38 @@ def parse_time_hours(token: str) -> float:
         return float(t)
     except ValueError as exc:
         raise ValueError(f"invalid time token '{t}': {exc}") from exc
+
+
+def parse_duration_seconds(token: str) -> float:
+    """Parse a time-duration token into **seconds** with positive validation.
+
+    Thin wrapper around :func:`parse_time_hours` that converts to seconds
+    and rejects zero/negative durations.  This is the single shared path
+    for run-duration and output-interval parsing across the controller,
+    adapter, and any future caller; no caller should inline its own.
+
+    Accepted formats (same as :func:`parse_time_hours`):
+        * ``"0.5"`` (or any float-as-string — interpreted as **hours**)
+        * ``"1:30"`` (HH:MM)
+        * ``"1:30:30"`` (HH:MM:SS)
+
+    Args:
+        token: Raw time string from a workbench widget or request.
+
+    Returns:
+        Duration in **seconds** as a Python ``float``.
+
+    Raises:
+        ValueError: If ``token`` is empty, unparseable, or the
+            resulting value is not strictly positive (``<= 0``).
+    """
+    t = str(token).strip()
+    if not t:
+        raise ValueError("run duration must be > 0")
+    hrs = parse_time_hours(t)
+    if hrs <= 0.0:
+        raise ValueError(f"run duration must be > 0, got {hrs} h")
+    return hrs * 3600.0
 
 
 def parse_hydrograph_text(text: str) -> Tuple[np.ndarray, np.ndarray]:

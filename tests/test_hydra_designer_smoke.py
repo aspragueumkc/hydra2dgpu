@@ -1,3 +1,4 @@
+import unittest
 """Smoke test: rename a real objectName in a real view file via patch_builder.
 
 This guards against future refactors silently breaking the end-to-end flow.
@@ -126,3 +127,20 @@ def test_rename_collides_with_existing_objectname():
     ok, conflict = validate_object_name_unique("rain_rate_spin", existing)
     assert ok is False
     assert conflict == VIEW_FILE
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

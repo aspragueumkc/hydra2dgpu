@@ -1,7 +1,6 @@
 # Documentation Index
 
-Central entry point for all HYDRA 2D GPU documentation. Pick the guide that
-matches your role and task.
+Central entry point for all HYDRA 2D GPU documentation. Pick the guide that matches your role and task.
 
 ---
 
@@ -32,19 +31,37 @@ Start here if you're contributing code or extending the plugin.
 | [RESULTS_GEOPACKAGE_SCHEMA.md](RESULTS_GEOPACKAGE_SCHEMA.md) | Output GPKG tables, BLOB formats |
 | [SOLVER_ORDER_AND_STENCIL.md](SOLVER_ORDER_AND_STENCIL.md) | Spatial/temporal order, stencil, non-orthogonality |
 | [ADVANCED_SPATIAL_SCHEMES.md](ADVANCED_SPATIAL_SCHEMES.md) | Barth-Jespersen, true WENO3, MP5 — math, references, properties |
+| [RUN_SPEC_SCHEMA.md](RUN_SPEC_SCHEMA.md) | Canonical `swe2d-run/2` JSON input schema |
 
-### Implementation Plans
+## Active Plans & Specs
 
-Authoritative plans for ongoing and upcoming work. Each plan links to the technical guides it references.
+Authoritative plans and specs currently in flight. Authoritative history (completed, superseded) lives in [docs/archive/INDEX.md](archive/INDEX.md).
 
-| Document | Scope |
-|----------|-------|
-| [IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md](IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md) | Schemes 5/6/8: Barth-Jespersen, true WENO3, MP5 — kernel design, mesh-assembly extensions, rollout |
-| [superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md](superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md) | Design spec: math, stencil tables, kernel interface, CFL enforcement |
-| [superpowers/plans/2026-07-10-advanced-spatial-schemes.md](superpowers/plans/2026-07-10-advanced-spatial-schemes.md) | Implementation plan: rollout order, config migration, testing strategy |
-| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller.md) | Single-kernel-entry refactor: collapse GUI/CLI into one `SWE2DRunController` + `ProgressSink` protocol; closes MP5 CFL clamping |
-| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-1.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-1.md) | Revision 1: GUI is source of truth, CLI replays it via JSON; replay JSON persisted to `swe2d_run_replays` table; round-trip test is the contract |
-| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-2.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-2.md) | Revision 2: consolidate three JSON producers (snapshot, save-config, CLI replay) + two legacy GPKG tables (`swe2d_simulation_configs`, `swe2d_run_logs`) into one canonical pair (to_replay_json / from_replay_json → `swe2d_run_replays` table) |
+### Active Plans
+
+| Document | Created | Scope |
+|----------|---------|-------|
+| [CLI-First Refactor Implementation Plan](plans/2026-07-24-cli-first-refactor.md) | 2026-07-24 | Land canonical CLI pipeline (spec→RunContext→executor→results); GUI reduced to view |
+| [MCP Phase 5 — Display Attach Implementation Plan](plans/2026-07-24-hydra-mcp-p5.md) | 2026-07-24 | MCP Phase 5 — display-attach to live QGIS via bridge token polling |
+| [HYDRA MCP Phase 1 — Production Modeling Tools Plan](plans/2026-07-24-hydra-mcp-phase1.md) | 2026-07-24 | MCP Phase 1 — Tier A production modeling tools (model+mesh+BC+run+results) |
+| [HYDRA MCP Server Implementation Plan](plans/2026-07-24-hydra-mcp-server.md) | 2026-07-24 | Ship full HYDRA MCP server (Tier A modeling + Tier B GUI + Tier C design) |
+| [MCP Phase 3 — Behavioral GUI Testing Implementation Plan](plans/2026-07-24-mcp-phase3-behavioral-gui-testing.md) | 2026-07-24 | MCP Phase 3 — QTest-driven behavioral GUI tools (click/key/run/screenshot) |
+| [HYDRA MCP Server Plan — Agent-Assisted Production Use, Testing & Design](plans/HYDRA_MCP_SERVER_PLAN.md) | 2026-07-24 | Original 6-phase MCP server plan (agent-assisted production use + GUI testing) |
+| [Docs Lifecycle Migration Implementation Plan](plans/2026-07-25-docs-lifecycle-migration.md) | 2026-07-25 | THIS PLAN — restructure docs/{plans,specs}/ + docs/archive/ with frontmatter |
+| [GPU-Direct Viewer Implementation Plan](plans/2026-07-26-gpu-direct-viewer.md) | 2026-07-26 | Phase 1 — LiveSnapshotReader + GPUViewerDialog + MCP tools (`gpu_viewer_open` / `_set_field` / `_read_snapshot` / `_screenshot`) — **superseded by Phase 2** |
+| [GPU-Direct Viewer Phase 2 — CLI Headless Renderer](plans/2026-07-26-gpu-direct-viewer-phase2-cli.md) | 2026-07-26 | CUDA color kernel + `hydra_viewer` CLI (`single` / `multi` / `live` modes → PNG) — **superseded by Phase 3** |
+| [GPU-Direct Viewer Phase 3 — CUDA-OpenGL Interop](plans/2026-07-26-gpu-direct-viewer-phase3-interop.md) | 2026-07-26 | Driver-API interop (`cuGraphicsGLRegisterImage` in `libcuda.so`) + `GPUViewerGLWidget` (QOpenGLWidget) + dialog wiring for zero-D2H GUI render — **superseded by Phase 4** |
+| [GPU-Direct Viewer Phase 4 — HUD + Diagnostic Ring](plans/2026-07-26-gpu-direct-viewer-phase4-hud.md) | 2026-07-26 | `DiagRecord` device ring buffer (`swe2d_gpu_push_diag` / `_read_latest_diag`) + HUD render kernel with embedded 5×7 font + on-screen diagnostic overlay — **superseded by Phase 5** |
+| [GPU-Direct Viewer Phase 5 — NVENC Recording](plans/2026-07-26-gpu-direct-viewer-phase5-nvenc.md) | 2026-07-26 | Direct NVENC H.264 hardware encoding + custom 200-line MPEG-TS muxer (zero D2H for the encoded bitstream; live-streaming capable: pause/buffer/seek/FF/RW) |
+
+### Active Specs
+
+| Document | Created | Scope |
+|----------|---------|-------|
+| [CLI-First Refactor — Design Spec](specs/2026-07-24-cli-first-refactor-design.md) | 2026-07-24 | CLI-first canonical pipeline design (single builder + executor) |
+| [HYDRA MCP Server — Design Spec](specs/2026-07-24-hydra-mcp-server-design.md) | 2026-07-24 | Single MCP server design — Tier A modeling + Tier B GUI + Tier C design |
+| [Docs Lifecycle Design — Active vs Complete/Superseded](specs/2026-07-25-docs-lifecycle-design.md) | 2026-07-25 | THIS SPEC — single docs lifecycle convention + YAML frontmatter metadata |
+| [Agent Memory Architecture — Design Spec](specs/2026-07-26-agent-memory-architecture-design.md) | 2026-07-26 | Hybrid (canonical Git memory + local vector index) agent/LLM memory layer |
 
 ## For C++ / CUDA Engineers
 
@@ -97,6 +114,17 @@ graphify path "SWE2DDeviceState" "SWE2DCouplingController"
 graphify explain "KernelGraphCache"
 ```
 
+## Agent Memory
+
+Curated, Git-tracked memory that any agent or human can read, diff, and review.
+The CLI is `tools/memory.py`; the local vector index lives in `.memory/`
+(gitignored, rebuildable). See the `hydra-agent-memory` skill.
+
+| Document | When to Read |
+|----------|--------------|
+| [Memory Index](memory/INDEX.md) | Active topics, listed by file |
+| [Agent Memory Architecture Spec](specs/2026-07-26-agent-memory-architecture-design.md) | Schema, capture flow, retrieval, lifecycle |
+
 ---
 
 ## Quick Links
@@ -107,3 +135,9 @@ graphify explain "KernelGraphCache"
 - **C++ kernel work?** → [cpp/ARCHITECTURE.md](cpp/ARCHITECTURE.md)
 - **Schema question?** → [MODEL_GEOPACKAGE_SCHEMA.md](MODEL_GEOPACKAGE_SCHEMA.md)
 - **Architecture deep-dive?** → [SWE2D_GPU_ARCHITECTURE_REPORT.md](SWE2D_GPU_ARCHITECTURE_REPORT.md)
+
+---
+
+## Historical Catalog
+
+Completed and superseded plans, specs, audits, session logs, and reference notes are cataloged at [docs/archive/INDEX.md](archive/INDEX.md).

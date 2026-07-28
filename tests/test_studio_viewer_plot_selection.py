@@ -219,8 +219,8 @@ class TestPlotViewWidgetSelectionToolbar(unittest.TestCase):
         struct_data = {
             "id": 3,
             "type": "structure",
-            "station_m": 125.0,
-            "elev_m": 50.0,
+"station": 125.0,
+                "elev_m": 50.0,
         }
         widget._selected_elements = {struct_id: struct_data}
 

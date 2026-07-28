@@ -93,6 +93,17 @@ class SWE2DRuntimeStepExecutor:
             # structure/drainage sources on-device.  Accumulate rain and any
             # internal-flow source directly on the GPU without overwriting the
             # coupled contributions.
+            #
+            # Zero d_external_source_mps at the START of each step.  The
+            # kernel uses atomicAdd to accumulate, so without this reset
+            # per-step rates compound quadratically across timesteps (the
+            # pre-Phase 2.4 path zeroed it inside the coupling write; F8
+            # removed that wrapper call and lost the reset).
+            if hasattr(backend, "set_external_sources_native"):
+                try:
+                    backend.set_external_sources_native(None)
+                except Exception:
+                    logger.warning("Failed to zero d_external_source_mps at step start", exc_info=True)
             if cell_source_model_step is not None:
                 cell_arr = np.asarray(cell_source_model_step, dtype=np.float64)
                 if cell_arr.size > 0 and np.any(cell_arr != 0.0):

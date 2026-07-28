@@ -80,6 +80,76 @@ large depth changes are detected. The `max_coupling_substeps` parameter
 acts as a safety valve — if the controller requests more substeps than
 this limit, the simulation logs a warning.
 
+## Advanced Coupling Parameters
+
+The drainage module supports advanced coupling control through these parameters
+(available in Parameters → Drainage Network):
+
+| Parameter | Default | Range | Purpose |
+|-----------|---------|-------|---------|
+| **Coupling substeps** | 1 | 1–256 | Number of 1D sub-steps per 2D coupling call. Use 2–4 for stiff networks with oscillatory 2D-1D interface behavior. |
+| **Max adaptive substeps** | 64 | 1–1024 | Upper limit for adaptive controller. Increase if simulation logs "max substeps exceeded" warnings. |
+| **Implicit coupling iterations** | 2 | 1–8 | Predictor-corrector iterations for implicit coupling. Higher values improve convergence but increase runtime. |
+| **Implicit coupling relaxation** | 0.5 | 0.1–1.0 | Under-relaxation factor for implicit coupling. Reduce to 0.3–0.4 for very stiff networks to improve stability. |
+| **Recon method** | 1 | 0, 1, 2, 3, 6 | Spatial reconstruction scheme: 0=First-order, 1=MUSCL-MinMod (default), 2=MUSCL-MC, 3=MUSCL-Van Leer, 6=WENO3. Higher-order reduces numerical diffusion but may cause oscillations. |
+
+### Tuning Guidelines
+
+**When to increase coupling_substeps:**
+- Oscillatory behavior at inlet/outfall cells
+- Large depth differences between adjacent cells
+- Rapidly changing boundary conditions
+
+**When to increase implicit iterations:**
+- Poor convergence in DYNAMIC mode
+- Residual warnings in solver logs
+- Mass balance errors increase over time
+
+**When to change recon method:**
+- First-order (0): Most stable, most numerical diffusion. Use for debugging.
+- MUSCL-MinMod (1): Default balance of accuracy and stability.
+- MUSCL-MC (2): More accurate for smooth flows.
+- WENO3 (6): Best accuracy for smooth transients, but expensive and may oscillate.
+
+### Stability Checklist
+
+If you see instability:
+
+1. **Increase coupling_substeps** to 2–4
+2. **Reduce implicit coupling relaxation** to 0.3–0.4
+3. **Check CFL condition**: `dt * sqrt(g * max_depth) / min_cell_length < 0.5`
+4. **Switch recon method** to First-order (0) temporarily
+5. **Verify loss coefficients** aren't excessive (>5.0)
+6. **Check for dry cells**: Very shallow cells can cause numerical issues
+
+## Performance Optimization
+
+### Mode Selection Impact
+
+| Mode | Relative Speed | Memory | Use Case |
+|------|----------------|--------|----------|
+| **EGL** | 1× (baseline) | Low | Storm drains, pressurized flow |
+| **DIFFUSION** | ~1.2× | Low | Gravity sewers, open channels |
+| **DYNAMIC** | 10–100× (network-dependent) | Medium | Surge, transients, backwater |
+
+### GPU Memory Usage
+
+Per-cell memory (~336 bytes with current implementation):
+- 10,000 cells → ~3.4 MB
+- 100,000 cells → ~34 MB
+- 1,000,000 cells → ~340 MB
+
+### Runtime Estimation
+
+Approximate runtime (modern RTX 3060):
+```
+runtime ≈ (n_cells * coupling_substeps * n_timesteps) / 1e6  [seconds]
+```
+
+Example: 50,000 cells, 2 substeps, 1000 timesteps → ~100 seconds
+
+---
+
 ## Tuning Tips
 
 1. **Start with EGL** — it's the fastest and most stable. Only switch to
@@ -97,6 +167,9 @@ this limit, the simulation logs a warning.
 
 5. **Dynamic flow relaxation** (default 1.0) can be reduced (e.g. 0.7) to
    damp oscillatory link flow updates in DYNAMIC mode.
+
+6. **For complex networks**: Start with EGL + First-order recon, then gradually
+   increase coupling_substeps and switch to MUSCL-MinMod once stable.
 
 ---
 

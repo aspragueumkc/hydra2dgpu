@@ -15,11 +15,12 @@ logger = logging.getLogger(__name__)
 import json
 import os
 import sqlite3
-import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional
 
 from qgis.PyQt import QtCore, QtWidgets
+
+from swe2d.workbench.services.batch_manager import BatchManager, BatchConfig, SimState
 
 
 _COL_SIM_ID = 0
@@ -210,26 +211,30 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     """
 
     def __init__(self, parent=None, base_params: Optional[Dict[str, Any]] = None,
-                 mesh_gpkg: str = "", results_gpkg: str = ""):
+                 mesh_gpkg: str = "", batch_manager: Optional[BatchManager] = None):
         super().__init__(parent)
         self.setWindowTitle("Batch Simulation")
         self.resize(900, 500)
 
         self._base_params = dict(base_params or {})
         self._mesh_gpkg = str(mesh_gpkg)
-        self._results_gpkg = str(results_gpkg)
+        self._mesh_name = ""
         self._param_sets: List[Dict[str, Any]] = []
-        self._processes: List[Optional[subprocess.Popen]] = []
-        self._status_files: List[str] = []
-        self._next_idx = 0
-        self._active = 0
-        self._completed = 0
-        self._failed = 0
-        self._running = False
+        self._batch_manager = batch_manager
 
         self._build_ui()
-        # Populate the mesh combo from the auto-filled GPKG path
-        self._refresh_mesh_list()
+
+        # Auto-populate mesh selector from the current model if available
+        parent_view = self.parent()
+        if parent_view is not None:
+            model_gpkg = str(getattr(parent_view, "_model_gpkg_path", "") or "")
+            mesh_name = str(
+                (getattr(parent_view, "_mesh_data", None) or {}).get("mesh_name", "")
+                or ""
+            )
+            if model_gpkg and mesh_name and os.path.isfile(model_gpkg):
+                self._set_mesh(model_gpkg, mesh_name)
+
         self._add_row()
 
     # ── UI Construction ───────────────────────────────────────────────
@@ -237,48 +242,25 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
-        # GPKG selection
-        gpkg_layout = QtWidgets.QHBoxLayout()
-        gpkg_layout.addWidget(QtWidgets.QLabel("GeoPackage:"))
-        self._gpkg_path_edit = QtWidgets.QLineEdit(self._mesh_gpkg)
-        self._gpkg_path_edit.setPlaceholderText("Select or enter path to GeoPackage...")
-        gpkg_layout.addWidget(self._gpkg_path_edit)
-        self._gpkg_browse_btn = QtWidgets.QPushButton("Browse...")
-        self._gpkg_browse_btn.setToolTip("Browse for a GeoPackage file.")
-        self._gpkg_browse_btn.clicked.connect(self._browse_gpkg)
-        gpkg_layout.addWidget(self._gpkg_browse_btn)
-        self._gpkg_clear_btn = QtWidgets.QPushButton("Clear")
-        self._gpkg_clear_btn.setToolTip("Clear the GPKG path (no auto-population)")
-        self._gpkg_clear_btn.clicked.connect(lambda: self._gpkg_path_edit.clear())
-        gpkg_layout.addWidget(self._gpkg_clear_btn)
-        layout.addLayout(gpkg_layout)
-
-        # Mesh selector (populated from GPKG when path changes)
+        # Mesh selection
         mesh_layout = QtWidgets.QHBoxLayout()
         mesh_layout.addWidget(QtWidgets.QLabel("Mesh:"))
-        self._mesh_combo = QtWidgets.QComboBox()
-        self._mesh_combo.setToolTip(
-            "Select a mesh from the GPKG above and click 'Apply to Selected' "
-            "to set the mesh on all selected rows, or edit per-row in the JSON editor."
+        self._mesh_display_edit = QtWidgets.QLineEdit()
+        self._mesh_display_edit.setReadOnly(True)
+        self._mesh_display_edit.setPlaceholderText("Select a mesh...")
+        mesh_layout.addWidget(self._mesh_display_edit, 1)
+        self._select_mesh_btn = QtWidgets.QPushButton("Select Mesh...")
+        self._select_mesh_btn.setToolTip(
+            "Choose a GeoPackage and select a mesh from it."
         )
-        self._mesh_combo.setEnabled(False)
-        mesh_layout.addWidget(self._mesh_combo, 1)
-        self._apply_mesh_btn = QtWidgets.QPushButton("Apply to Selected")
-        self._apply_mesh_btn.setToolTip(
-            "Set the selected mesh name on all currently selected table rows"
-        )
-        self._apply_mesh_btn.setEnabled(False)
-        self._apply_mesh_btn.clicked.connect(self._apply_mesh_to_selected)
-        mesh_layout.addWidget(self._apply_mesh_btn)
-        self._refresh_mesh_btn = QtWidgets.QPushButton("Refresh")
-        self._refresh_mesh_btn.setToolTip("Re-read mesh list from the GPKG")
-        self._refresh_mesh_btn.setEnabled(False)
-        self._refresh_mesh_btn.clicked.connect(lambda: self._refresh_mesh_list())
-        mesh_layout.addWidget(self._refresh_mesh_btn)
+        self._select_mesh_btn.clicked.connect(self._select_mesh)
+        mesh_layout.addWidget(self._select_mesh_btn)
+        self._apply_mesh_all_btn = QtWidgets.QPushButton("Apply to All")
+        self._apply_mesh_all_btn.setToolTip("Set the selected mesh name on ALL rows")
+        self._apply_mesh_all_btn.setEnabled(False)
+        self._apply_mesh_all_btn.clicked.connect(self._apply_mesh_to_all)
+        mesh_layout.addWidget(self._apply_mesh_all_btn)
         layout.addLayout(mesh_layout)
-
-        # Wire GPKG path changes to refresh the mesh list
-        self._gpkg_path_edit.textChanged.connect(self._on_gpkg_path_changed)
 
         # Toolbar
         toolbar = QtWidgets.QHBoxLayout()
@@ -300,11 +282,15 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._edit_sel_btn = QtWidgets.QPushButton("Edit Selected")
         self._edit_sel_btn.setToolTip("Edit the selected row's JSON in a proper multi-line editor")
         self._edit_sel_btn.clicked.connect(self._edit_selected_row)
+        self._view_log_btn = QtWidgets.QPushButton("View Log")
+        self._view_log_btn.setToolTip("View log for the selected simulation")
+        self._view_log_btn.clicked.connect(self._open_log_panel)
         toolbar.addWidget(self._add_row_btn)
         toolbar.addWidget(self._remove_row_btn)
         toolbar.addWidget(self._clear_btn)
         toolbar.addSpacing(20)
         toolbar.addWidget(self._edit_sel_btn)
+        toolbar.addWidget(self._view_log_btn)
         toolbar.addWidget(self._export_btn)
         toolbar.addWidget(self._import_btn)
         toolbar.addStretch()
@@ -332,13 +318,15 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             "Import run settings from a results GeoPackage and add as rows"
         )
         self._from_gpkg_btn.clicked.connect(self._import_from_gpkg)
-        self._apply_mesh_all_btn = QtWidgets.QPushButton("Apply Mesh to All")
-        self._apply_mesh_all_btn.setToolTip("Set the selected mesh name on ALL rows")
-        self._apply_mesh_all_btn.setEnabled(False)
-        self._apply_mesh_all_btn.clicked.connect(self._apply_mesh_to_all)
+        self._apply_mesh_selected_btn = QtWidgets.QPushButton("Apply to Selected")
+        self._apply_mesh_selected_btn.setToolTip(
+            "Set the selected mesh name on all currently selected table rows"
+        )
+        self._apply_mesh_selected_btn.setEnabled(False)
+        self._apply_mesh_selected_btn.clicked.connect(self._apply_mesh_to_selected)
         data_toolbar.addWidget(self._snapshot_btn)
         data_toolbar.addWidget(self._from_gpkg_btn)
-        data_toolbar.addWidget(self._apply_mesh_all_btn)
+        data_toolbar.addWidget(self._apply_mesh_selected_btn)
         data_toolbar.addStretch()
         layout.addLayout(data_toolbar)
 
@@ -360,12 +348,175 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._cancel_btn.setEnabled(False)
         controls.addWidget(self._run_btn)
         controls.addWidget(self._cancel_btn)
-        self._status_btn = QtWidgets.QPushButton("Check Batch Status")
-        self._status_btn.setToolTip("Check and log the status of all batch simulations.")
-        self._status_btn.setEnabled(True)
-        self._status_btn.clicked.connect(self._check_batch_status)
-        controls.addWidget(self._status_btn)
         layout.addLayout(controls)
+
+    # ── Modeless Lifecycle ───────────────────────────────────────────────
+
+    def closeEvent(self, event):
+        """Hide instead of destroy if a batch is running."""
+        if self._batch_manager is not None and self._batch_manager.is_running():
+            event.ignore()
+            self.hide()
+        else:
+            event.accept()
+
+    def showEvent(self, event):
+        """Reconnect signals and refresh state when dialog is shown."""
+        super().showEvent(event)
+        self.connect_batch_signals()
+        self._refresh_table_from_manager()
+
+    def hideEvent(self, event):
+        """Disconnect signals when dialog is hidden."""
+        super().hideEvent(event)
+        self.disconnect_batch_signals()
+
+    # ── BatchManager Signal Wiring ───────────────────────────────────────
+
+    def connect_batch_signals(self):
+        """Connect to BatchManager signals for live updates."""
+        bm = self._batch_manager
+        if not bm:
+            return
+        bm.sim_started.connect(self._on_sim_started)
+        bm.sim_progress.connect(self._on_sim_progress)
+        bm.sim_completed.connect(self._on_sim_completed)
+        bm.sim_failed.connect(self._on_sim_failed)
+        bm.log_message.connect(self._on_log_message)
+        bm.batch_finished.connect(self._on_batch_finished)
+
+    def disconnect_batch_signals(self):
+        """Disconnect from BatchManager signals."""
+        bm = self._batch_manager
+        if not bm:
+            return
+        try:
+            bm.sim_started.disconnect(self._on_sim_started)
+            bm.sim_progress.disconnect(self._on_sim_progress)
+            bm.sim_completed.disconnect(self._on_sim_completed)
+            bm.sim_failed.disconnect(self._on_sim_failed)
+            bm.log_message.disconnect(self._on_log_message)
+            bm.batch_finished.disconnect(self._on_batch_finished)
+        except (TypeError, RuntimeError):
+            pass
+
+    def _find_row_by_sim_id(self, sim_id: str) -> int:
+        """Find the table row for a given sim_id."""
+        for i in range(self._table.rowCount()):
+            item = self._table.item(i, _COL_SIM_ID)
+            if item and item.text() == sim_id:
+                return i
+        return -1
+
+    def _on_sim_started(self, sim_id: str):
+        row = self._find_row_by_sim_id(sim_id)
+        if row >= 0:
+            item = self._table.item(row, _COL_STATUS)
+            if item:
+                item.setText("running")
+
+    def _on_sim_progress(self, sim_id: str, percent: float, status_text: str):
+        row = self._find_row_by_sim_id(sim_id)
+        if row >= 0:
+            progress_item = self._table.item(row, _COL_PROGRESS)
+            if progress_item:
+                progress_item.setText(f"{percent:.0f}% {status_text}")
+
+    def _on_sim_completed(self, sim_id: str, results_path: str):
+        row = self._find_row_by_sim_id(sim_id)
+        if row >= 0:
+            item = self._table.item(row, _COL_STATUS)
+            if item:
+                item.setText("completed")
+            progress_item = self._table.item(row, _COL_PROGRESS)
+            if progress_item:
+                progress_item.setText("100%")
+
+    def _on_sim_failed(self, sim_id: str, error: str):
+        row = self._find_row_by_sim_id(sim_id)
+        if row >= 0:
+            item = self._table.item(row, _COL_STATUS)
+            if item:
+                item.setText("failed")
+            progress_item = self._table.item(row, _COL_PROGRESS)
+            if progress_item:
+                progress_item.setText(error[:100])
+
+    def _on_log_message(self, sim_id: str, line: str):
+        """Append log line to the main workbench log."""
+        parent_log = getattr(self.parent(), "_log", None)
+        if parent_log:
+            parent_log(f"batch> [{sim_id}] {line}")
+
+    def _on_batch_finished(self, cancelled: bool, completed: int, failed: int):
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        total = completed + failed
+        msg = f"Completed: {completed}/{total}\nFailed: {failed}"
+        if cancelled:
+            msg = "(Cancelled)\n" + msg
+        QtWidgets.QMessageBox.information(self, "Batch Complete", msg)
+
+    def _refresh_table_from_manager(self):
+        """Populate table from BatchManager state (for reopening)."""
+        if not self._batch_manager:
+            return
+        status = self._batch_manager.get_status()
+        for sim_id, state in status.items():
+            row = self._find_row_by_sim_id(sim_id)
+            if row >= 0:
+                status_item = self._table.item(row, _COL_STATUS)
+                if status_item:
+                    status_item.setText(state.status)
+                progress_item = self._table.item(row, _COL_PROGRESS)
+                if progress_item:
+                    if state.status == "completed":
+                        progress_item.setText("100%")
+                    elif state.status == "failed":
+                        progress_item.setText((state.error or "")[:100])
+                    elif state.status == "running":
+                        progress_item.setText(f"{state.progress:.0f}% {state.status_text}")
+
+    # ── Mesh Selection ─────────────────────────────────────────────────
+
+    def _select_mesh(self):
+        """Open a file picker, then a mesh picker, and store the result."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select GeoPackage",
+            "",
+            "GeoPackage (*.gpkg *.gpkgx);;All Files (*)",
+        )
+        if not path:
+            return
+        path = str(path).strip()
+        if not os.path.isfile(path):
+            QtWidgets.QMessageBox.warning(
+                self, "Select Mesh", f"GeoPackage not found:\n{path}"
+            )
+            return
+        from swe2d.workbench.dialogs.mesh_picker_dialog import MeshPickerDialog
+        picker = MeshPickerDialog(path, parent=self)
+        if picker.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        mesh_name = picker.selected_mesh_name()
+        if not mesh_name:
+            return
+        self._set_mesh(path, mesh_name)
+
+    def _set_mesh(self, gpkg_path: str, mesh_name: str) -> None:
+        """Store the selected mesh and update the read-only display."""
+        self._mesh_gpkg = str(gpkg_path).strip()
+        self._mesh_name = str(mesh_name).strip()
+        display = f"{self._mesh_name}"
+        if self._mesh_gpkg:
+            display += f"  ({os.path.basename(self._mesh_gpkg)})"
+        self._mesh_display_edit.setText(display)
+        self._mesh_display_edit.setToolTip(
+            f"{self._mesh_name}\n{self._mesh_gpkg}"
+        )
+        self._apply_mesh_all_btn.setEnabled(bool(self._mesh_name))
+        self._apply_mesh_selected_btn.setEnabled(bool(self._mesh_name))
 
     # ── Row Management ────────────────────────────────────────────────
 
@@ -467,20 +618,19 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     # ── Snapshot Current Setup ────────────────────────────────────────
 
     def _snapshot_current_setup(self):
-        """Read the parent dialog's current widget values and add a new row (replay JSON format).
+        """Read the parent dialog's current widget values and add a new row.
 
-        Uses ``collect_widget_state_for_save()`` from the parent to read actual
-        current widget values — the same collection used by GUI save, ensuring
-        the snapshot matches what would be saved to GPKG or JSON.
+        Reuses the same ``build_replay_payload`` builder as the main dialog's
+        Export Config to JSON action, so the snapshot format is identical.
         """
         import datetime
         parent = self.parent()
         if parent is None:
-            QtWidgets.QMessageBox.warning(self, "Snapshot", "No parent dialog to snapshot from.")
+            QtWidgets.QMessageBox.warning(
+                self, "Snapshot", "No parent dialog to snapshot from."
+            )
             return
 
-        # Use the same widget collection as GUI save — reads live widget values,
-        # not stale instance variables.
         collect_fn = getattr(parent, "collect_widget_state_for_save", None)
         if collect_fn is None:
             QtWidgets.QMessageBox.warning(
@@ -491,95 +641,53 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         try:
             widget_state = collect_fn()
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Snapshot Error", f"Failed to collect widget state:\n{exc}")
+            QtWidgets.QMessageBox.warning(
+                self, "Snapshot Error", f"Failed to collect widget state:\n{exc}"
+            )
             return
         if not isinstance(widget_state, dict):
             return
 
-        mesh_name = str(self._mesh_combo.currentData() or "")
-        if not mesh_name:
-            gpkg = self._gpkg_path()
-            if gpkg and os.path.isfile(gpkg):
-                try:
-                    conn = sqlite3.connect(gpkg)
+        # Fallback: if no mesh name is selected but a GPKG is set, use the
+        # latest mesh name from the GPKG so the snapshot isn't created with
+        # an empty mesh name.
+        if not self._mesh_name and self._mesh_gpkg and os.path.isfile(self._mesh_gpkg):
+            try:
+                with sqlite3.connect(self._mesh_gpkg) as conn:
                     row = conn.execute(
                         "SELECT mesh_name FROM swe2d_baked_mesh ORDER BY created_utc DESC LIMIT 1"
                     ).fetchone()
-                    if row:
-                        mesh_name = str(row[0])
-                    conn.close()
-                except Exception:
-                    pass
-        mesh_gpkg = self._gpkg_path()
+                    if row and row[0]:
+                        self._mesh_name = str(row[0])
+                        self._set_mesh(self._mesh_gpkg, self._mesh_name)
+            except Exception:
+                pass
 
-        # Convert versioned widget_state to flat params using the shared mapper.
-        # Pass mesh_gpkg + mesh_name so units can be computed from CRS.
-        from swe2d.runtime.run_context_builder import widget_state_to_flat_params
-        flat_params = widget_state_to_flat_params(
-            widget_state,
-            mesh_gpkg=mesh_gpkg,
-            mesh_name=mesh_name,
+        run_id = datetime.datetime.now().astimezone().strftime(
+            "swe2d_%Y%m%dT%H%M%S%z"
         )
-        # Pull out the units block (computed from mesh CRS) before storing in params.
-        # Only include it in the entry if it was actually resolved; otherwise omit
-        # so the runner computes units from mesh CRS at runtime.
-        units_block = flat_params.pop("_units_block", None)
-
-        # Override results GPKG path: the widget state captures the parent form's
-        # path, which may be stale. Use the batch dialog's own GPKG path.
-        batch_gpkg = self._gpkg_path()
-
-        # run_duration_s is already parsed to seconds by widget_state_to_flat_params
-        run_dur = float(flat_params.get("run_duration_s", 0.0) or 0.0)
-
-        run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
-        crs_wkt = ""
-        parent_view = self.parent()
-        if parent_view is not None:
-            mesh_data = getattr(parent_view, "_mesh_data", None) or {}
-            crs_wkt = str(mesh_data.get("crs_wkt", "") or "")
-
-        entry = {
-            "schema_version": "swe2d-replay/1",
-            "run_id": run_id,
-            "mesh": {
-                "gpkg_path": mesh_gpkg or "",
-                "mesh_name": mesh_name,
-                "crs_wkt": crs_wkt,
-            },
-            "params": flat_params,
-            # Top-level results_gpkg_path is what build_run_context_from_dict reads
-            "results_gpkg_path": batch_gpkg,
-            "data_sources": widget_state.get("_data_sources", {}),
-            "results": {},
-            "widget_state": widget_state,
-            "run_duration_s": run_dur,
-        }
-        # Include units only when CRS was successfully resolved from the mesh GPKG
-        if units_block:
-            entry["units"] = units_block
-
-        # Use the shared collect_data_source_config() to avoid duplicating
-        # layer-combo reading logic across save paths.  Wrap in a try-except
-        # so failures are logged instead of crashing the snapshot.
-        data_sources = {}
-        ds_collector = getattr(parent, "collect_data_source_config", None)
-        if ds_collector is not None:
-            try:
-                data_sources = ds_collector() or {}
-            except Exception as exc:
-                _log = getattr(parent, "_log", None)
-                if _log:
-                    _log(f"[batch] collect_data_source_config failed: {exc}")
-                else:
-                    logger.warning("batch snapshot: collect_data_source_config failed: %s", exc)
-        # Fallback: structures need special handling (not in collect_data_source_config)
-        struct_cfg = getattr(parent, "_build_hydraulic_structure_config", lambda: None)()
-        if struct_cfg is not None:
-            data_sources["structures"] = struct_cfg.to_dict()
-
-        if data_sources:
-            entry["data_sources"] = data_sources
+        build_fn = getattr(parent, "build_replay_payload", None)
+        if build_fn is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Snapshot",
+                "Parent dialog does not implement build_replay_payload.",
+            )
+            return
+        try:
+            entry = build_fn(
+                widget_state=widget_state,
+                mesh_name=self._mesh_name,
+                run_duration_s=0.0,
+                mesh_gpkg_path=self._mesh_gpkg,
+                run_id=run_id,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Snapshot Error", f"Failed to build replay payload:\n{exc}"
+            )
+            return
+        if not isinstance(entry, dict):
+            return
 
         self._add_row_from_entry(entry)
         log = getattr(parent, "_log", None)
@@ -598,7 +706,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             if not path:
                 return
             gpkg = path
-            self._gpkg_path_edit.setText(gpkg)
+            self._set_mesh(gpkg, self._mesh_name)
 
         if not os.path.isfile(gpkg):
             QtWidgets.QMessageBox.warning(self, "Import", f"GeoPackage not found:\n{gpkg}")
@@ -735,54 +843,13 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Import Error", str(exc))
 
-    def _on_gpkg_path_changed(self):
-        """Refresh the mesh combo when the GPKG path text changes."""
-        self._refresh_mesh_list()
-
-    def _refresh_mesh_list(self):
-        """Query the GPKG for available mesh names and populate the combo."""
-        gpkg = self._gpkg_path()
-        if not gpkg or not os.path.isfile(gpkg):
-            self._mesh_combo.clear()
-            self._mesh_combo.setEnabled(False)
-            self._apply_mesh_btn.setEnabled(False)
-            self._apply_mesh_all_btn.setEnabled(False)
-            self._refresh_mesh_btn.setEnabled(False)
-            return
-        try:
-            conn = sqlite3.connect(gpkg)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT DISTINCT mesh_name FROM swe2d_baked_mesh "
-                "WHERE mesh_name IS NOT NULL AND mesh_name != '' "
-                "ORDER BY created_utc DESC"
-            )
-            rows = cur.fetchall()
-            conn.close()
-            self._mesh_combo.clear()
-            if not rows:
-                self._mesh_combo.setEnabled(False)
-                self._apply_mesh_btn.setEnabled(False)
-                self._apply_mesh_all_btn.setEnabled(False)
-                self._refresh_mesh_btn.setEnabled(True)
-                return
-            for (name,) in rows:
-                self._mesh_combo.addItem(str(name), str(name))
-            self._mesh_combo.setEnabled(True)
-            self._apply_mesh_btn.setEnabled(True)
-            self._apply_mesh_all_btn.setEnabled(True)
-            self._refresh_mesh_btn.setEnabled(True)
-        except Exception:
-            self._mesh_combo.clear()
-            self._mesh_combo.setEnabled(False)
-            self._apply_mesh_btn.setEnabled(False)
-            self._apply_mesh_all_btn.setEnabled(False)
-            self._refresh_mesh_btn.setEnabled(True)
-
     def _apply_mesh_to_selected(self):
         """Set the selected mesh name on all currently selected table rows."""
-        mesh = self._mesh_combo.currentData()
+        mesh = self._mesh_name
         if not mesh:
+            QtWidgets.QMessageBox.information(
+                self, "Apply Mesh", "Select a mesh first."
+            )
             return
         rows = set(i.row() for i in self._table.selectedIndexes())
         if not rows:
@@ -793,7 +860,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
     def _apply_mesh_to_all(self):
         """Set the selected mesh name on ALL rows."""
-        mesh = self._mesh_combo.currentData()
+        mesh = self._mesh_name
         if not mesh:
             return
         for r in range(self._table.rowCount()):
@@ -810,22 +877,25 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             params = dict(self._base_params)
         if not isinstance(params, dict):
             params = {}
-        params["mesh"] = str(mesh_name)
+        existing_mesh = params.get("mesh")
+        if isinstance(existing_mesh, dict):
+            existing_mesh["mesh_name"] = str(mesh_name)
+        else:
+            params["mesh"] = str(mesh_name)
         item.setText(json.dumps(params, indent=2))
 
-    def _browse_gpkg(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select GeoPackage", "", "GeoPackage (*.gpkg *.gpkgx);;All Files (*)")
-        if path:
-            self._gpkg_path_edit.setText(path)
-
     def _gpkg_path(self) -> str:
-        return str(self._gpkg_path_edit.text()).strip()
+        return str(self._mesh_gpkg or "").strip()
 
     # ── Batch Execution ───────────────────────────────────────────────
 
     def _run_batch(self):
-        if self._running:
+        if self._batch_manager is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Batch Run", "Batch manager not available."
+            )
+            return
+        if self._batch_manager.is_running():
             return
         param_sets = self._collect_param_sets()
         if not param_sets:
@@ -836,90 +906,98 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Batch Run", "GeoPackage not found. Select a valid file.")
             return
 
-        self._running = True
+        config = BatchConfig(
+            max_workers=self._max_workers_spin.value(),
+            results_dir=tempfile.mkdtemp(prefix="hydra_batch_"),
+            mesh_path=gpkg,
+        )
+
         self._run_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
-        self._status_btn.setEnabled(True)
-        self._param_sets = param_sets
-        self._completed = 0
-        self._failed = 0
-        self._orchestrator = None
 
-        from swe2d.cli.batch_runner import BatchOrchestrator
-
-        def _on_progress(done: int, total: int) -> None:
-            parent_log = getattr(self.parent(), "_log", None)
-            if parent_log:
-                parent_log(f"batch> {done}/{total} simulations complete")
-
-        def _on_completed(result: dict) -> None:
-            self._completed += 1
-            idx = next(
-                i for i, ps in enumerate(self._param_sets)
-                if str(ps.get("id", f"sim_{i}")) == result["id"]
-            )
-            item = self._table.item(idx, _COL_STATUS)
-            if item:
-                item.setText("completed")
-
-        def _on_failed(result: dict) -> None:
-            self._failed += 1
-            idx = next(
-                i for i, ps in enumerate(self._param_sets)
-                if str(ps.get("id", f"sim_{i}")) == result["id"]
-            )
-            status_item = self._table.item(idx, _COL_STATUS)
-            if status_item:
-                status_item.setText("failed")
-            progress_item = self._table.item(idx, _COL_PROGRESS)
-            if progress_item:
-                progress_item.setText(result.get("stderr", "").strip()[:100])
-            parent_log = getattr(self.parent(), "_log", None)
-            if parent_log:
-                sid = result["id"]
-                for line in result.get("stderr", "").strip().split("\n"):
-                    parent_log(f"batch> [{sid} ERROR] {line}")
-                for line in result.get("stdout", "").strip().split("\n"):
-                    if line.strip():
-                        parent_log(f"batch> [{sid} stdout] {line}")
-
-        self._orchestrator = BatchOrchestrator(
-            param_sets=param_sets,
-            workdir=tempfile.mkdtemp(prefix="hydra_batch_"),
-            mesh_gpkg=gpkg,
-            max_workers=self._max_workers_spin.value(),
-            on_progress=_on_progress,
-            on_completed=_on_completed,
-            on_failed=_on_failed,
-        )
-
-        # Mark all param sets as "running" immediately
-        for i in range(len(param_sets)):
-            item = self._table.item(i, _COL_STATUS)
-            if item:
-                item.setText("running")
-
-        self._orchestrator.run()
-
-        self._running = False
-        self._run_btn.setEnabled(True)
-        self._cancel_btn.setEnabled(False)
-        total = len(param_sets)
-        QtWidgets.QMessageBox.information(
-            self, "Batch Complete",
-            f"Completed: {self._completed}/{total}\nFailed: {self._failed}",
-        )
-
-    def _check_batch_status(self):
-        parent_log = getattr(self.parent(), "_log", None)
-        if not parent_log:
-            return
-        total = len(self._param_sets)
-        parent_log(f"batch> status: {self._completed + self._failed}/{total} simulations complete")
+        self._batch_manager.start_batch(param_sets, config)
 
     def _cancel_batch(self):
-        if self._orchestrator is not None:
-            self._orchestrator.cancel()
-        self._running = False
-        self._run_btn.setEnabled(True)
-        self._cancel_btn.setEnabled(False)
+        if self._batch_manager is not None:
+            self._batch_manager.cancel_batch()
+
+    def _open_log_panel(self):
+        """Open a log dock widget for the selected row."""
+        rows = set(i.row() for i in self._table.selectedIndexes())
+        if not rows:
+            return
+        row = min(rows)
+        sim_id_item = self._table.item(row, _COL_SIM_ID)
+        if not sim_id_item:
+            return
+        sim_id = sim_id_item.text()
+
+        bm = self._batch_manager
+        if not bm:
+            return
+        status = bm.get_status()
+        state = status.get(sim_id)
+        if not state or not state.log_file:
+            return
+
+        dock = LogDockWidget(sim_id, state.log_file, parent=self)
+        if state.status in ("completed", "failed"):
+            dock.load_full_log()
+        else:
+            dock.start_auto_refresh()
+        self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, dock)
+        dock.show()
+
+
+class LogDockWidget(QtWidgets.QDockWidget):
+    """Dock widget that displays tail of a per-sim log file."""
+
+    def __init__(self, sim_id: str, log_path: str, parent=None):
+        super().__init__(f"Log: {sim_id}", parent)
+        self._sim_id = sim_id
+        self._log_path = log_path
+        self._log_view = QtWidgets.QPlainTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setMaximumBlockCount(500)
+        font = QtWidgets.QFont("Monospace")
+        font.setStyleHint(QtWidgets.QFont.TypeWriter)
+        self._log_view.setFont(font)
+        self.setWidget(self._log_view)
+
+        self._refresh_timer = QtCore.QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_log)
+        self._last_pos = 0
+
+    def start_auto_refresh(self):
+        """Start auto-refreshing the log tail every 1s."""
+        self._last_pos = 0
+        self._refresh_log()
+        self._refresh_timer.start(1000)
+
+    def stop_auto_refresh(self):
+        self._refresh_timer.stop()
+
+    def _refresh_log(self):
+        """Read new lines from the log file and append."""
+        try:
+            if not os.path.isfile(self._log_path):
+                return
+            with open(self._log_path, "r") as f:
+                f.seek(self._last_pos)
+                new_lines = f.readlines()
+                self._last_pos = f.tell()
+            for line in new_lines:
+                self._log_view.appendPlainText(line.rstrip("\n"))
+        except Exception:
+            pass
+
+    def load_full_log(self):
+        """Load the entire log file (for completed/failed sims)."""
+        try:
+            if not os.path.isfile(self._log_path):
+                self._log_view.setPlainText("(no log file found)")
+                return
+            with open(self._log_path, "r") as f:
+                self._log_view.setPlainText(f.read())
+        except Exception as e:
+            self._log_view.setPlainText(f"(error reading log: {e})")

@@ -25,6 +25,8 @@ from swe2d.services.gpkg_persistence_service import (
     load_baked_line_profile,
     load_baked_timesteps,
     collect_baked_runs_from_gpkg,
+    persist_baked_pipe_cell_ts,
+    load_baked_pipe_cell_ts,
 )
 
 
@@ -123,16 +125,16 @@ class TestBakedGpkgPersistence(unittest.TestCase):
 
     def test_baked_line_ts_persist_and_load(self):
         t_s = np.array([0.0, 10.0], dtype=np.float64)
-        depth_m = np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float64)
-        velocity_ms = np.zeros_like(depth_m)
-        wse_m = np.ones_like(depth_m)
-        bed_m = np.zeros_like(depth_m)
-        flow_cms = np.zeros_like(depth_m)
-        wet_frac = np.ones_like(depth_m)
-        fr = np.ones_like(depth_m) * 0.03
+        depth = np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float64)
+        velocity = np.zeros_like(depth)
+        wse = np.ones_like(depth)
+        bed = np.zeros_like(depth)
+        flow = np.zeros_like(depth)
+        wet_frac = np.ones_like(depth)
+        fr = np.ones_like(depth) * 0.03
         persist_baked_line_ts(self.gpkg_path, self.run_id, 1, "line_1",
-                              t_s, depth_m, velocity_ms, wse_m, bed_m,
-                              flow_cms, wet_frac, fr, log_fn=self._log)
+                              t_s, depth, velocity, wse, bed,
+                              flow, wet_frac, fr, log_fn=self._log)
         loaded = load_baked_line_timeseries(self.gpkg_path, self.run_id, 1)
         self.assertIsNotNone(loaded)
         self.assertIn("t_s", loaded)
@@ -156,8 +158,8 @@ class TestBakedGpkgPersistence(unittest.TestCase):
                                    log_fn=self._log)
         loaded = load_baked_line_profile(self.gpkg_path, self.run_id, 1, 5.0)
         self.assertIsNotNone(loaded)
-        self.assertIn("depth_m", loaded)
-        np.testing.assert_array_almost_equal(loaded["depth_m"], depth_m[0])
+        self.assertIn("depth", loaded)
+        np.testing.assert_array_almost_equal(loaded["depth"], depth_m[0])
 
     # ── Utility functions ───────────────────────────────────────────────
 
@@ -186,6 +188,56 @@ class TestBakedGpkgPersistence(unittest.TestCase):
         runs = collect_baked_runs_from_gpkg(self.gpkg_path)
         self.assertGreater(len(runs), 0)
         self.assertTrue(any(r["run_id"] == self.run_id for r in runs))
+
+
+    def test_pipe_cell_ts_legacy_schema_migration(self):
+        """Writing pipe-cell data to a legacy 7-column table auto-migrates it."""
+        import sqlite3
+
+        # Create the legacy 7-column table (pre-geometry schema)
+        conn = sqlite3.connect(self.gpkg_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_baked_pipe_cell_ts (
+                run_id TEXT,
+                link_id TEXT,
+                cell_sub_idx INTEGER,
+                metric TEXT,
+                n_timesteps INTEGER,
+                times_blob BLOB,
+                values_blob BLOB,
+                PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
+        """)
+        conn.commit()
+        conn.close()
+
+        items = [{
+            "link_id": "L1",
+            "cell_sub_idx": 0,
+            "metric": "depth",
+            "times": np.array([0.0, 1.0], dtype=np.float64),
+            "values": np.array([0.5, 0.6], dtype=np.float64),
+            "cell_invert": 10.0,
+            "cell_width": 1.0,
+            "cell_height": 1.0,
+            "cell_shape_type": 0,
+        }]
+        # Must not raise "table has 7 columns but 11 values were supplied"
+        persist_baked_pipe_cell_ts(self.gpkg_path, self.run_id, items, log_fn=self._log)
+
+        conn = sqlite3.connect(self.gpkg_path)
+        loaded = load_baked_pipe_cell_ts(conn, self.run_id)
+        conn.close()
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["link_id"], "L1")
+        self.assertEqual(loaded[0]["cell_sub_idx"], 0)
+        self.assertEqual(loaded[0]["metric"], "depth")
+        np.testing.assert_array_almost_equal(loaded[0]["times"], items[0]["times"])
+        np.testing.assert_array_almost_equal(loaded[0]["values"], items[0]["values"])
+        self.assertAlmostEqual(loaded[0]["cell_invert"], 10.0)
+        self.assertAlmostEqual(loaded[0]["cell_width"], 1.0)
+        self.assertAlmostEqual(loaded[0]["cell_height"], 1.0)
+        self.assertEqual(loaded[0]["cell_shape_type"], 0)
 
 
 if __name__ == "__main__":

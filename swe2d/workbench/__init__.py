@@ -6,7 +6,7 @@ from swe2d.workbench.services.non_gui_qgis_service import (
     parse_feature_float,
     resolve_layer_field_name,
 )
-from swe2d.workbench.services.non_gui_runtime_service import (
+from swe2d.core.non_gui_runtime_service import (
     boundary_edge_owner_cells,
     execute_run_timestep_loop,
     parse_obj_scale_value,

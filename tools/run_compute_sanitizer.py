@@ -47,6 +47,8 @@ GPU_TESTS = [
     ("drainage_network", "tests.test_swe2d_gpu_drainage_network"),
     ("coupling_kernel", "tests.test_swe2d_gpu_coupling_kernel"),
     ("full_solver_structures", "tests.test_swe2d_gpu_full_solver_structures"),
+    ("viewer_interop", "tests.test_swe2d_gpu_viewer_interop"),
+    ("viewer_interop_egl", "tests.test_swe2d_gpu_viewer_interop_egl"),
 ]
 
 SANITIZER_TOOLS = ["memcheck", "racecheck", "initcheck", "synccheck"]
@@ -115,6 +117,10 @@ def _run_sanitizer(
     print(f"  Log:  {out_path}")
     print(f"{'='*60}\n")
 
+    child_env = os.environ.copy()
+    if test_name in ("viewer_interop", "viewer_interop_egl"):
+        child_env["HYDRA_REQUIRE_CUDA_GL_INTEROP"] = "1"
+
     try:
         result = subprocess.run(
             cmd,
@@ -122,6 +128,7 @@ def _run_sanitizer(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=child_env,
         )
         output = result.stdout + "\n" + result.stderr
 

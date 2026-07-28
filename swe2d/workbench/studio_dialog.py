@@ -28,16 +28,20 @@ from swe2d.workbench.services import unit_conversion_service as _unit_svc
 from swe2d.workbench.services.text_parser_service import parse_time_hours
 from swe2d.services import mesh_computation_service as _mesh_svc
 from swe2d.workbench.services import widget_persistence_service as _wp_svc
-from swe2d.workbench.services.runtime_source_application_service import (
+from swe2d.workbench.services.gpkg_operations_service import (
+    resolve_gpkg_table_name as _resolve_gpkg_table_name,
+)
+from swe2d.core.runtime_source_application_service import (
     _apply_external_sources_logic,
 )
-from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
 
 from swe2d.workbench.bridges.project_settings_bridge import (
     WORKBENCH_STATE_KEY,
     load_project_json,
     write_project_json,
 )
+
+MESH_STATE_KEY = "mesh_state_json"
 from swe2d.workbench.signal_helpers import connect_lambda, safe_disconnect, safe_teardown
 from swe2d.mesh.gmsh_backend import _gmsh_available
 from swe2d.workbench.views.studio_host_methods import (
@@ -80,15 +84,6 @@ try:
 except ImportError:
     SWE2DBackend = None
     swe2d_gpu_available = lambda: False
-
-try:
-    from swe2d.runtime.backend import (
-        TemporalScheme,
-        SpatialDiscretization,
-        SolverModelOptions,
-    )
-except ImportError:
-    TemporalScheme = SpatialDiscretization = SolverModelOptions = None
 
 def _try_import_matplotlib_qt():
     """Try importing matplotlib Qt backend with fallback."""
@@ -155,26 +150,26 @@ _studio_active_dialog: Optional["SWE2DWorkbenchStudioDialog"] = None
 # ── Controls tab constants (mirrored from swe2d/results/panel.py) ──────
 
 _CTRL_TS_VARIABLES = [
-    ("Flow", "flow_cms"),
-    ("Depth", "depth_m"),
-    ("Velocity", "velocity_ms"),
-    ("Water Surface", "wse_m"),
-    ("Bed Elevation", "bed_m"),
+    ("Flow", "flow"),
+    ("Depth", "depth"),
+    ("Velocity", "velocity"),
+    ("Water Surface", "wse"),
+    ("Bed Elevation", "bed"),
 ]
 
 _CTRL_PROF_VARIABLES = [
     ("WSE + Bed", "wse_bed"),
-    ("EGL", "egl_m"),
-    ("Depth", "depth_m"),
-    ("Velocity", "velocity_ms"),
+    ("EGL", "egl"),
+    ("Depth", "depth"),
+    ("Velocity", "velocity"),
     ("Froude", "fr"),
     ("Normal Flow", "flow_qn"),
 ]
 
 _CTRL_PROFILE_FILL_OPTIONS = [
     ("None", "none"),
-    ("Depth", "depth_m"),
-    ("Velocity", "velocity_ms"),
+    ("Depth", "depth"),
+    ("Velocity", "velocity"),
     ("Froude", "fr"),
     ("Normal Flow", "flow_qn"),
 ]
@@ -277,7 +272,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         for logger_name in [
             "swe2d.mesh.meshing",
             "swe2d.boundary_and_forcing.boundary_qgis_adapter",
-            "swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter",
+            "swe2d.core.spatial_forcing_qgis_adapter",
         ]:
             logging.getLogger(logger_name).addHandler(_handler)
 
@@ -680,17 +675,29 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         name = str(name).strip()
 
         try:
+            _crs = str(mesh_data.get("crs_wkt", "") or "")
             from swe2d.services.mesh_persistence_service import save_baked_mesh
-            n_cells = save_baked_mesh(mesh_data, path, name)
+            n_cells = save_baked_mesh(mesh_data, path, name, crs_wkt=_crs)
+            mesh_data["_gpkg_path"] = path
+            mesh_data["mesh_name"] = name
             QtWidgets.QMessageBox.information(
                 self, "Save Mesh",
                 f"Mesh '{name}' saved to {os.path.basename(path)} ({n_cells} cells).",
             )
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
+            import traceback as _tb
+            self._log(
+                f"[ERROR] Save Mesh failed for '{name}' into {os.path.basename(path)}: "
+                f"{type(exc).__name__}: {exc}\n{_tb.format_exc()}"
+            )
+            QtWidgets.QMessageBox.critical(
+                self, "Save Mesh Error",
+                f"{type(exc).__name__}: {exc}\n\nSee the runtime log for the full traceback.",
+            )
 
     def _load_mesh_from_gpkg(self) -> None:
         """Open file dialog to select GPKG, then load a baked mesh from it."""
+        import traceback as _tb
         from qgis.PyQt import QtWidgets
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select GeoPackage with Mesh", "",
@@ -702,9 +709,14 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             from swe2d.services.mesh_persistence_service import list_baked_mesh_names
             mesh_names = list_baked_mesh_names(path)
         except Exception as exc:
+            self._log(
+                f"[ERROR] Could not read {os.path.basename(path)}: "
+                f"{type(exc).__name__}: {exc}\n{_tb.format_exc()}"
+            )
             QtWidgets.QMessageBox.warning(
                 self, "Load Mesh Error",
-                f"Could not read {os.path.basename(path)}: {exc}",
+                f"Could not read {os.path.basename(path)}: {type(exc).__name__}: {exc}\n\n"
+                f"See the runtime log for the full traceback.",
             )
             return
         if not mesh_names:
@@ -724,6 +736,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             if mesh_data is None or mesh_data.get("node_x") is None:
                 QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
                 return
+            mesh_data["_gpkg_path"] = path
             self._mesh_data = mesh_data
             self._reset_runtime_snapshot_overlay_cache("mesh loaded from GPKG")
             self._result_data = None
@@ -735,12 +748,20 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             except RuntimeError:
                 pass
             try:
+                self._update_mesh_canvas_layer()
                 self._refresh_plot()
             except RuntimeError:
                 pass
             self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))
+            self._log(
+                f"[ERROR] Load Mesh failed for '{name}' from {os.path.basename(path)}: "
+                f"{type(exc).__name__}: {exc}\n{_tb.format_exc()}"
+            )
+            QtWidgets.QMessageBox.critical(
+                self, "Load Mesh Error",
+                f"{type(exc).__name__}: {exc}\n\nSee the runtime log for the full traceback.",
+            )
 
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
@@ -762,11 +783,61 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Open the run log viewer dialog."""
         self._controller.open_run_log_viewer()
 
+    def _open_gpu_direct_viewer(self) -> None:
+        """Open the standalone GPU Direct Viewer dialog.
+
+        Uses ``swe2d.workbench.views.gpu_viewer_dialog.GPUViewerDialog``
+        which wraps a ``GPUViewerGLWidget`` reading live ``d_h`` directly
+        from ``SWE2DDeviceState`` via the dev_ptr path (zero D2H for the
+        colorization pipeline, no snapshot ring buffer dependency).
+
+        The dialog keep-alive list is owned by the controller so the
+        Python GC doesn't drop the dialog while the user is interacting
+        with it.  Multiple opens are allowed (each becomes a separate
+        dialog).
+        """
+        if not self._backend_ready_for_run_preflight():
+            self._show_install_dialog()
+            return
+        try:
+            from swe2d.workbench.views.gpu_viewer_dialog import (
+                GPUViewerDialog,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "GPU Direct Viewer import failed: %s", exc,
+            )
+            QtWidgets.QMessageBox.warning(
+                self,
+                "HYDRA2DGPU",
+                f"GPU Direct Viewer import failed: {exc}",
+            )
+            return
+        mesh_data: dict = {}
+        if self._topology_tab_view is not None:
+            mesh = getattr(self, "_mesh_data", None)
+            if mesh:
+                mesh_data = mesh
+        try:
+            self._controller.open_gpu_direct_viewer(
+                mesh_data=mesh_data,
+                parent=self,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "GPU Direct Viewer open failed: %s", exc,
+            )
+            QtWidgets.QMessageBox.warning(
+                self,
+                "HYDRA2DGPU",
+                f"GPU Direct Viewer failed to open: {exc}",
+            )
+
     def _open_topology_region_table(self) -> None:
         """Open topology region attribute table dialog."""
         from qgis.PyQt import QtWidgets
         from swe2d.workbench.dialogs.topo_attr_table_dialog import TopologyAttributeTableDialog
-        from swe2d.workbench.services.constants_service import CELL_TYPE_OPTIONS as _ctypes
+        from swe2d.core.constants_service import CELL_TYPE_OPTIONS as _ctypes
 
         lyr = self._combo_layer(self._topology_tab_view.topo_regions_combo, "vector")
         if lyr is None:
@@ -1220,6 +1291,49 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, title, start_dir, filter_str)
         return str(path or "")
 
+    # ── WorkbenchMainViewProtocol accessors ──────────────────────────
+    # These three methods implement the WorkbenchMainViewProtocol in
+    # swe2d/workbench/views/view_protocols.py. They give cross-cutting
+    # controllers (e.g. ProfileController) typed access to dialog-wide
+    # state without reaching through to Qt widgets.
+
+    def get_active_gpkg_path(self) -> str:
+        """Return the path of the currently-active model GPKG, or '' if none.
+
+        ``_model_gpkg_path`` is initialised in
+        ``swe2d/workbench/startup_state.py`` and updated by the mesh
+        controller when a 2D model GeoPackage is loaded. If the
+        attribute is missing (older callers / race), fall back to ''.
+        """
+        path = getattr(self, "_model_gpkg_path", "") or ""
+        return str(path).strip()
+
+    def get_active_run_id(self) -> str:
+        """Return the most recent / active run_id, or '' if none.
+
+        The current run id is held by the RunController instance. We
+        read it through a typed accessor — never reach into the
+        controller's private attributes from outside. If no run has
+        been executed yet, return '' and let the Network Profile
+        dialog auto-pick the latest run from the GPKG itself.
+        """
+        run_ctrl = getattr(self, "_controller", None)
+        if run_ctrl is None:
+            return ""
+        try:
+            return str(getattr(run_ctrl, "_current_run_id", "") or "").strip()
+        except Exception:
+            return ""
+
+    def get_qgis_iface(self) -> Any:
+        """Return the QgisInterface for canvas / map tool access (or None).
+
+        The dialog's QGIS interface is stored as the public attribute
+        ``self.iface`` (set in ``__init__``). It can be None when the
+        dialog is exercised in unit tests without a live QGIS instance.
+        """
+        return getattr(self, "iface", None)
+
     def get_save_file_name(self, title, start_dir, filter_str):
         from qgis.PyQt import QtWidgets
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, title, start_dir, filter_str)
@@ -1508,6 +1622,36 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             write_project_json_fn=write_project_json,
             log_fn=self._log,
         )
+        self._persist_mesh_state()
+
+    def _persist_mesh_state(self) -> None:
+        """Persist mesh reference to project if a mesh is loaded."""
+        mesh_data = getattr(self, "_mesh_data", None)
+        if mesh_data is None:
+            return
+        gpkg_path = mesh_data.get("_gpkg_path", "")
+        mesh_name = mesh_data.get("mesh_name", "")
+        if not gpkg_path or not mesh_name:
+            return
+        if not os.path.exists(gpkg_path):
+            self._log(f"[persist] mesh GPKG not found: {gpkg_path}")
+            return
+        try:
+            payload = {
+                "version": 1,
+                "gpkg_path": gpkg_path,
+                "mesh_name": mesh_name,
+            }
+            write_project_json(
+                have_qgis_core=_HAVE_QGIS_CORE,
+                qgs_project_cls=QgsProject,
+                key=MESH_STATE_KEY,
+                payload=payload,
+                log_callback=self._log,
+            )
+            self._log(f"[persist] mesh state saved: {mesh_name} from {os.path.basename(gpkg_path)}")
+        except Exception as exc:
+            self._log(f"[ERROR] persist mesh state failed: {exc}")
 
     def _restore_project_workbench_state(self, *_args):
         """Restore workbench widget state from project."""
@@ -1520,6 +1664,46 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             load_project_json_fn=load_project_json,
             log_fn=self._log,
         )
+        self._restore_mesh_state()
+
+    def _restore_mesh_state(self) -> None:
+        """Restore mesh from project state if GPKG and mesh exist."""
+        payload = load_project_json(
+            have_qgis_core=_HAVE_QGIS_CORE,
+            qgs_project_cls=QgsProject,
+            key=MESH_STATE_KEY,
+            default=None,
+            log_callback=self._log,
+        )
+        if payload is None:
+            return
+        if not isinstance(payload, dict):
+            return
+        version = payload.get("version", 0)
+        if version != 1:
+            self._log(f"[restore] mesh state version {version} not supported")
+            return
+        gpkg_path = payload.get("gpkg_path", "")
+        mesh_name = payload.get("mesh_name", "")
+        if not gpkg_path or not mesh_name:
+            return
+        if not os.path.exists(gpkg_path):
+            self._log(f"[restore] mesh GPKG not found: {gpkg_path}")
+            return
+        try:
+            from swe2d.services.mesh_persistence_service import load_baked_mesh
+            mesh_data = load_baked_mesh(gpkg_path, mesh_name)
+            mesh_data["_gpkg_path"] = gpkg_path
+            self._mesh_data = mesh_data
+            self._reset_runtime_snapshot_overlay_cache("mesh restored from GPKG")
+            self._log(f"[restore] mesh '{mesh_name}' restored from {os.path.basename(gpkg_path)}")
+            try:
+                self._update_mesh_canvas_layer()
+                self._refresh_plot()
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            self._log(f"[ERROR] restore mesh failed: {exc}")
 
     def _refresh_plot(self):
         """Refresh the plot viewer with current mesh and results data."""
@@ -1773,8 +1957,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _collect_bc_layer_hydrographs(self, edge_n0: np.ndarray, edge_n1: np.ndarray) -> Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]:
         """Collect boundary condition hydrographs from BC layer."""
-        from swe2d.boundary_and_forcing.boundary_qgis_adapter import collect_bc_layer_hydrographs_qgis as _logic
-        from swe2d.workbench.services.constants_service import BC_TS_FLOW as _BC_TS_FLOW, BC_TS_STAGE as _BC_TS_STAGE
+        from swe2d.core.boundary_qgis_adapter import collect_bc_layer_hydrographs_qgis as _logic
+        from swe2d.core.constants_service import BC_TS_FLOW as _BC_TS_FLOW, BC_TS_STAGE as _BC_TS_STAGE
         from qgis.core import QgsVectorLayer, QgsGeometry, QgsPointXY
         return _logic(
             mesh_data=self._mesh_data,
@@ -1797,7 +1981,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _collect_bc_layer_edge_groups(self, edge_n0: np.ndarray, edge_n1: np.ndarray) -> Dict[int, str]:
         """Collect boundary edge group labels from BC layer."""
-        from swe2d.boundary_and_forcing.boundary_qgis_adapter import collect_bc_layer_edge_groups_qgis as _logic
+        from swe2d.core.boundary_qgis_adapter import collect_bc_layer_edge_groups_qgis as _logic
         from qgis.core import QgsGeometry, QgsPointXY
         return _logic(
             mesh_data=self._mesh_data,
@@ -1828,7 +2012,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _build_spatial_manning_array(self) -> Optional[np.ndarray]:
         """Build a spatial Manning's n array from a raster layer."""
-        from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import build_spatial_manning_array_qgis as _logic
+        from swe2d.core.spatial_forcing_qgis_adapter import build_spatial_manning_array_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
@@ -1854,7 +2038,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _bc_code_label(self, code: int) -> str:
         """Return the human-readable label for a boundary condition code."""
-        from swe2d.workbench.services.constants_service import BC_VALUE_MAP as _BC_VALUE_MAP
+        from swe2d.core.constants_service import BC_VALUE_MAP as _BC_VALUE_MAP
         for label, val in _BC_VALUE_MAP.items():
             if int(val) == code:
                 return label
@@ -1866,13 +2050,13 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _build_internal_flow_forcing(self) -> Optional[Dict[str, object]]:
         """Build internal flow forcing configuration from QGIS layers."""
-        from swe2d.boundary_and_forcing.internal_flow_qgis_adapter import build_internal_flow_forcing_qgis as _logic
+        from swe2d.core.internal_flow_qgis_adapter import build_internal_flow_forcing_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
             internal_flow_layer_combo=getattr(self._model_tab_view, "internal_flow_layer_combo", None),
             combo_layer_fn=self._combo_layer,
-            requested_field_name=str(getattr(self._model_tab_view, "internal_flow_field_edit", None).text() or "q_cms") if hasattr(self._model_tab_view, "internal_flow_field_edit") and self._model_tab_view.internal_flow_field_edit is not None else "q_cms",
+            requested_field_name="src_value",
             iter_project_layers_fn=self._iter_project_layers,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
             parse_hydrograph_text_fn=self._parse_hydrograph_text,
@@ -1891,7 +2075,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _build_thiessen_rain_cn_forcing(self):
         """Build Thiessen polygon rain/CN forcing from gauge layers."""
-        from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import build_thiessen_rain_cn_forcing_qgis as _logic
+        from swe2d.core.spatial_forcing_qgis_adapter import build_thiessen_rain_cn_forcing_qgis as _logic
         from swe2d.boundary_and_forcing.rainfall_hydrology import (
             Gauge as _Gauge,
             ThiessenRainCNForcing as _ThiessenRainCNForcing,
@@ -1992,6 +2176,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             dynamic_relaxation=self._model_tab_view.get_drainage_dynamic_relaxation(),
             implicit_iters=self._model_tab_view.get_drainage_implicit_iters(),
             implicit_relax=self._model_tab_view.get_drainage_implicit_relax(),
+            friction_method=self._model_tab_view.get_pipe_friction_method(),
+            surcharge_method=self._model_tab_view.get_pipe_surcharge_method(),
+            recon_method=self._model_tab_view.get_pipe_recon_method(),
+            time_integrator=self._model_tab_view.get_pipe_time_integrator(),
+            friction_alpha=self._model_tab_view.get_pipe_friction_alpha(),
             log_fn=self._log,
         )
 
@@ -2022,7 +2211,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                     f"section.")
             self._log("[Structures] no structures layer selected in combo")
             return None
-        from swe2d.workbench.services.structure_config_service import (
+        from swe2d.core.structure_config_service import (
             build_hydraulic_structure_config_from_layer as _logic,
         )
         cfg = _logic(
@@ -2068,7 +2257,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         edge_groups: Optional[Dict[int, str]] = None,
     ) -> np.ndarray:
         """Distribute total flow BC values to unit discharge per edge."""
-        from swe2d.workbench.services.runtime_source_application_service import (
+        from swe2d.core.runtime_source_application_service import (
             _distribute_total_flow_to_unit_q_logic,
         )
         progressive = bool(getattr(self._model_tab_view, "inflow_progressive_chk", None) is not None
@@ -2119,20 +2308,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             momentum_cap_celerity_mult=float(mtab.momentum_cap_celerity_mult_spin.value()),
         )
 
-    def _sample_line_metrics(self, sample_map, t_accum, h_s, hu_s, hv_s, cell_solver_z):
-        """Sample line metrics (time-series and profile) from solver state."""
-        return _sample_line_metrics_logic(
-            sample_map=sample_map,
-            t_accum=t_accum,
-            h_s=h_s,
-            hu_s=hu_s,
-            hv_s=hv_s,
-            cell_solver_z=cell_solver_z,
-            gravity=self._gravity,
-            h_min=self._model_tab_view.get_h_min(),
-            mesh_data=self._mesh_data,
-        )
-
     def _dispatch_run_request(self, request):
         """Execute a run request via the controller."""
         self._last_run_request = request
@@ -2170,7 +2345,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _apply_bc_layer_overrides(self, edge_n0, edge_n1, bc_type, bc_val, default_relax=0.0):
         """Apply boundary condition overrides from BC vector layer."""
-        from swe2d.boundary_and_forcing.boundary_qgis_adapter import apply_bc_layer_overrides_qgis as _logic
+        from swe2d.core.boundary_qgis_adapter import apply_bc_layer_overrides_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data, have_qgis_core=_HAVE_QGIS_CORE,
             bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
@@ -2205,58 +2380,235 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 return float(spin.value())
         return 0.03
 
-    def _mesh_cell_polygons(self) -> List:
-        """Build QgsGeometry polygons for every mesh cell (needed by line sampling)."""
-        if self._mesh_data is None:
+    def _sample_line_records_from_layer(
+        self, line_layer: Any
+    ) -> List[Dict[str, object]]:
+        """Extract enabled QGIS line features into canonical plain records.
+
+        The View owns layer and feature reads; the canonical sampling service
+        receives only identifiers, flags, and coordinate arrays.
+        """
+        if line_layer is None:
             return []
-        node_x = np.asarray(self._mesh_data["node_x"], dtype=np.float64)
-        node_y = np.asarray(self._mesh_data["node_y"], dtype=np.float64)
-        out: List = []
-        if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
-            offs = np.asarray(self._mesh_data["cell_face_offsets"], dtype=np.int32)
-            faces = np.asarray(self._mesh_data["cell_face_nodes"], dtype=np.int32)
-            for i in range(offs.size - 1):
-                s = int(offs[i])
-                e = int(offs[i + 1])
-                ids = faces[s:e]
-                if ids.size < 3:
-                    out.append(QgsGeometry())
+
+        fields = set(line_layer.fields().names())
+        id_field = "line_id" if "line_id" in fields else None
+        name_field = "name" if "name" in fields else None
+        enabled_field = "enabled" if "enabled" in fields else None
+        records: List[Dict[str, object]] = []
+
+        for feature in line_layer.getFeatures():
+            feature_id = feature.id()
+            try:
+                geometry = feature.geometry()
+                if geometry is None or geometry.isEmpty():
                     continue
-                ring = [QgsPointXY(float(node_x[n]), float(node_y[n])) for n in ids]
-                ring.append(ring[0])
-                out.append(QgsGeometry.fromPolygonXY([ring]))
-            return out
-        tris = np.asarray(self._mesh_data["cell_nodes"], dtype=np.int32).reshape((-1, 3))
-        for tri in tris:
-            ring = [
-                QgsPointXY(float(node_x[int(tri[0])]), float(node_y[int(tri[0])])),
-                QgsPointXY(float(node_x[int(tri[1])]), float(node_y[int(tri[1])])),
-                QgsPointXY(float(node_x[int(tri[2])]), float(node_y[int(tri[2])])),
-            ]
-            ring.append(ring[0])
-            out.append(QgsGeometry.fromPolygonXY([ring]))
-        return out
+                points = list(geometry.asPolyline())
+                if not points:
+                    parts = geometry.asMultiPolyline()
+                    points = list(parts[0]) if len(parts) == 1 else []
+                if len(points) < 2:
+                    self._log(
+                        f"[LineSampling] Skipping feature {feature_id!r}: "
+                        "line geometry has fewer than two points"
+                    )
+                    continue
+                point_array = np.asarray(
+                    [[float(point.x()), float(point.y())] for point in points],
+                    dtype=np.float64,
+                )
+
+                if id_field is None:
+                    line_id = int(feature_id)
+                else:
+                    line_id = int(feature[id_field])
+                line_name = ""
+                if name_field is not None:
+                    raw_name = feature[name_field]
+                    line_name = str(raw_name) if raw_name not in (None, "") else ""
+                enabled = True
+                if enabled_field is not None:
+                    enabled = int(feature[enabled_field]) > 0
+            except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+                self._log(
+                    f"[LineSampling] Skipping feature {feature_id!r}: {exc}"
+                )
+                continue
+
+            records.append(
+                {
+                    "line_id": line_id,
+                    "line_name": line_name,
+                    "enabled": bool(enabled),
+                    "points": point_array,
+                }
+            )
+        return records
 
     def _build_line_sampling_map(self) -> List[Dict[str, object]]:
-        """Build line sampling map from the sample lines layer (delegates to service)."""
-        from swe2d.services.line_sampling_service import build_line_sampling_map
-        sample_lines_combo = getattr(self._model_tab_view, "sample_lines_layer_combo", None)
-        line_layer = self._combo_layer(sample_lines_combo, "vector") if sample_lines_combo is not None else None
-        if line_layer is None:
-            self._log("[LineSampling] No sample lines layer selected — line results will be empty.")
-        else:
-            n_features = line_layer.featureCount() if hasattr(line_layer, "featureCount") else "?"
-            self._log(f"[LineSampling] Using sample lines layer: {line_layer.name()} ({n_features} features)")
-        smap = build_line_sampling_map(
-            mesh_data=self._mesh_data,
-            line_layer=line_layer,
-            log_fn=self._log,
-            mesh_cell_polygons_fn=self._mesh_cell_polygons,
-            mesh_cell_centroids_fn=self._mesh_cell_centroids,
-            mesh_cell_areas_fn=self._mesh_cell_areas,
+        """Build the canonical line sampling map from the selected layer."""
+        from swe2d.mesh.mesh_runtime_logic import (
+            mesh_cell_records_from_mesh_data,
         )
-        self._log(f"[LineSampling] Built sampling map with {len(smap)} line(s)")
-        return smap
+        from swe2d.services.line_sampling_service import (
+            build_canonical_line_sampling_map,
+        )
+
+        sample_lines_combo = getattr(
+            self._model_tab_view, "sample_lines_layer_combo", None
+        )
+        line_layer = (
+            self._combo_layer(sample_lines_combo, "vector")
+            if sample_lines_combo is not None
+            else None
+        )
+        if line_layer is None:
+            self._log(
+                "[LineSampling] No sample lines layer selected "
+                "— line results will be empty."
+            )
+            return []
+
+        n_features = (
+            line_layer.featureCount()
+            if hasattr(line_layer, "featureCount")
+            else "?"
+        )
+        self._log(
+            f"[LineSampling] Using sample lines layer: {line_layer.name()} "
+            f"({n_features} features)"
+        )
+        sample_lines = self._sample_line_records_from_layer(line_layer)
+        mesh_cells = mesh_cell_records_from_mesh_data(self._mesh_data)
+        sample_map = build_canonical_line_sampling_map(
+            sample_lines=sample_lines,
+            mesh_cells=mesh_cells,
+        )
+        self._log(
+            f"[LineSampling] Built sampling map with {len(sample_map)} line(s)"
+        )
+        return sample_map
+
+    def _update_mesh_canvas_layer(self) -> None:
+        """Render mesh cells as polygons + nodes as dots on the QGIS map canvas.
+
+        Creates (or replaces) two in-memory layers attached to the project:
+          - ``hydra_mesh_cells`` — cell polygon outlines, hairline black
+          - ``hydra_mesh_nodes`` — node points, 1 mm black dots
+
+        Called from ``_refresh_plot()`` whenever the viewer mesh is set.
+        Layers persist in the project until the next mesh load.
+        """
+        if self._mesh_data is None or not _HAVE_QGIS_CORE:
+            return
+        node_x = np.asarray(self._mesh_data.get("node_x", np.empty(0)), dtype=np.float64)
+        node_y = np.asarray(self._mesh_data.get("node_y", np.empty(0)), dtype=np.float64)
+        node_z = np.asarray(self._mesh_data.get("node_z", np.empty(0)), dtype=np.float64)
+        if node_x.size == 0 or node_y.size == 0 or node_z.size == 0:
+            return
+
+        from qgis.core import (
+            QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsGeometry,
+            QgsPointXY, QgsSimpleLineSymbolLayer, QgsMarkerSymbol,
+            QgsLineSymbol, QgsRendererCategory, QgsCategorizedSymbolRenderer,
+        )
+        from qgis.PyQt.QtCore import QVariant
+        from qgis.PyQt.QtGui import QColor
+        from qgis.core import (
+            QgsCoordinateReferenceSystem,
+            QgsFillSymbol, QgsSimpleLineSymbolLayer, QgsUnitTypes,
+        )
+
+        # Derive CRS: prefer mesh crs_wkt, fall back to project CRS, then EPSG:3419
+        _crs_wkt = str(self._mesh_data.get("crs_wkt", "") or "")
+        if _crs_wkt:
+            _crs = QgsCoordinateReferenceSystem.fromWkt(_crs_wkt)
+        else:
+            _crs = QgsProject.instance().crs()
+        _crs_auth = _crs.authid() if _crs.isValid() else "EPSG:3419"
+
+        # Remove previous hydra mesh layers
+        _existing = QgsProject.instance().mapLayersByName("hydra_mesh_cells") + \
+                    QgsProject.instance().mapLayersByName("hydra_mesh_nodes")
+        for _l in _existing:
+            QgsProject.instance().removeMapLayer(_l.id())
+
+        # ── Cell polygon layer ──────────────────────────────────────────
+        cell_layer = QgsVectorLayer(f"Polygon?crs={_crs_auth}", "hydra_mesh_cells", "memory")
+        cell_layer.setObjectName("hydra_mesh_cells")
+        _dp = cell_layer.dataProvider()
+        _dp.addAttributes([
+            QgsField("cell_index", QVariant.Int),
+            QgsField("cell_bed_z", QVariant.Double),
+        ])
+        cell_layer.updateFields()
+
+        offs = self._mesh_data.get("cell_face_offsets")
+        faces = self._mesh_data.get("cell_face_nodes")
+        if offs is not None and faces is not None:
+            offs = np.asarray(offs, dtype=np.int32)
+            faces = np.asarray(faces, dtype=np.int32)
+            _f = QgsFeature()
+            for ci in range(offs.size - 1):
+                s, e = int(offs[ci]), int(offs[ci + 1])
+                ids = faces[s:e]
+                if ids.size < 3:
+                    continue
+                _f.setGeometry(QgsGeometry.fromPolygonXY([[
+                    QgsPointXY(float(node_x[n]), float(node_y[n])) for n in ids
+                ]]))
+                _z = float(np.nanmean(node_z[ids]))
+                _f.setAttributes([int(ci), _z])
+                _dp.addFeature(_f)
+        else:
+            tris = np.asarray(self._mesh_data.get("cell_nodes", np.empty(0)), dtype=np.int32)
+            if tris.size > 0:
+                tris = tris.reshape((-1, 3))
+                _f = QgsFeature()
+                for ci in range(tris.shape[0]):
+                    t = tris[ci]
+                    _f.setGeometry(QgsGeometry.fromPolygonXY([[
+                        QgsPointXY(float(node_x[int(t[0])]), float(node_y[int(t[0])])),
+                        QgsPointXY(float(node_x[int(t[1])]), float(node_y[int(t[1])])),
+                        QgsPointXY(float(node_x[int(t[2])]), float(node_y[int(t[2])])),
+                    ]]))
+                    _z = float(np.nanmean(node_z[t]))
+                    _f.setAttributes([int(ci), _z])
+                    _dp.addFeature(_f)
+
+        cell_layer.updateExtents()
+        # Style: fill symbol with hairline black outline, transparent fill
+        _sym = QgsFillSymbol()
+        _sym.deleteSymbolLayer(0)  # remove default fill layer
+        _stroke = QgsSimpleLineSymbolLayer(color=QColor(35, 35, 35), width=0.0)
+        _stroke.setWidthUnit(QgsUnitTypes.RenderMillimeters)
+        _sym.appendSymbolLayer(_stroke)
+        cell_layer.renderer().setSymbol(_sym)
+        QgsProject.instance().addMapLayer(cell_layer)
+
+        # ── Node point layer ────────────────────────────────────────────
+        node_layer = QgsVectorLayer(f"Point?crs={_crs_auth}", "hydra_mesh_nodes", "memory")
+        node_layer.setObjectName("hydra_mesh_nodes")
+        _dp2 = node_layer.dataProvider()
+        _dp2.addAttributes([
+            QgsField("node_index", QVariant.Int),
+            QgsField("node_z", QVariant.Double),
+        ])
+        node_layer.updateFields()
+        _f2 = QgsFeature()
+        for ni in range(node_x.size):
+            _f2.setGeometry(QgsGeometry.fromPointXY(
+                QgsPointXY(float(node_x[ni]), float(node_y[ni]))
+            ))
+            _f2.setAttributes([int(ni), float(node_z[ni])])
+            _dp2.addFeature(_f2)
+
+        node_layer.updateExtents()
+        # Style: 1 mm black dot
+        _msym = QgsMarkerSymbol.createSimple({"size": "1", "size_unit": "MM"})
+        _msym.setColor(QColor(0, 0, 0))
+        node_layer.renderer().setSymbol(_msym)
+        QgsProject.instance().addMapLayer(node_layer)
 
     def _interp_hydrograph(self, hg, t_sec):
         """Interpolate a hydrograph at a given time."""
@@ -2285,7 +2637,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _build_spatial_cn_array(self):
         """Build a spatial curve number array from a CN layer."""
-        from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import build_spatial_cn_array_qgis as _logic
+        from swe2d.core.spatial_forcing_qgis_adapter import build_spatial_cn_array_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data, have_qgis_core=_HAVE_QGIS_CORE,
             cn_layer_combo=getattr(self._model_tab_view, "cn_layer_combo", None),
@@ -2550,42 +2902,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
         from qgis.core import QgsProject as _QgsProject
 
-
-        def _resolve_gpkg_table(gpkg_path: str, layer_name: str) -> str:
-            """Look up the actual GPKG feature table name from gpkg_contents.
-
-            QGIS layer names (from ``layername=`` URI param) are often lowercased
-            or otherwise normalised, while the actual GPKG ``table_name`` in
-            ``gpkg_contents`` uses the real casing (e.g. ``SWE2D_BC_Lines``).
-            This function queries the GPKG to find the canonical table name.
-            """
-            import sqlite3
-            try:
-                conn = sqlite3.connect(gpkg_path)
-                cur = conn.cursor()
-                # Try identifier column first (actual table_name)
-                cur.execute(
-                    'SELECT table_name FROM gpkg_contents WHERE identifier=?',
-                    (layer_name,),
-                )
-                row = cur.fetchone()
-                if row:
-                    conn.close()
-                    return row[0]
-                # Fallback: case-insensitive match on identifier
-                cur.execute(
-                    'SELECT table_name FROM gpkg_contents WHERE LOWER(identifier)=?',
-                    (layer_name.lower(),),
-                )
-                row = cur.fetchone()
-                if row:
-                    conn.close()
-                    return row[0]
-                conn.close()
-            except Exception:
-                pass
-            return layer_name  # Fall back to what we had
-
         def _get_layer_info(combo):
             """Return (table_name, gpkg_path) from a QGIS layer combo.
 
@@ -2605,14 +2921,13 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             if "|layername=" in src:
                 gpkg_path, _, raw_name = src.partition("|layername=")
                 gpkg_path = gpkg_path.strip()
-                table = _resolve_gpkg_table(gpkg_path, raw_name.strip())
+                table = _resolve_gpkg_table_name(gpkg_path, raw_name.strip())
                 return (table, gpkg_path)
             return (str(layer.name()).strip(), "")
 
         def _dict_with_gpkg(table: str, gpkg_path: str, **extra) -> dict:
             d = {"table": table, **extra}
-            mgp = getattr(self, "_model_gpkg_path", None)
-            if gpkg_path and gpkg_path != mgp:
+            if gpkg_path:
                 d["gpkg"] = gpkg_path
             return d
 
@@ -2646,7 +2961,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             if ni_tbl:
                 drainage["node_inlets_layer"] = ni_tbl
             drain_gpkg = dn_gpkg or ""
-            if drain_gpkg and drain_gpkg != getattr(self, "_model_gpkg_path", ""):
+            if drain_gpkg:
                 drainage["gpkg"] = drain_gpkg
             out["drainage"] = drainage
 
@@ -2663,6 +2978,30 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
         return out
 
+    def build_replay_payload(
+        self,
+        widget_state: dict,
+        mesh_name: str,
+        run_duration_s: float,
+        mesh_gpkg_path: str = "",
+        run_id: str = "",
+    ) -> dict:
+        """Build a CLI-replay JSON payload from the current widget state.
+
+        Delegates to the workbench RunController so child dialogs (e.g.
+        Batch Simulation) can produce the same JSON as Export Config to JSON.
+        """
+        ctrl = getattr(self, "_controller", None)
+        if ctrl is not None:
+            return ctrl.build_replay_payload(
+                widget_state=widget_state,
+                mesh_name=mesh_name,
+                run_duration_s=run_duration_s,
+                mesh_gpkg_path=mesh_gpkg_path,
+                run_id=run_id,
+            )
+        return {}
+
     def collect_widget_state_for_save(self) -> dict:
         """Delegate to the workbench RunController so child dialogs (e.g. batch)
         can use the same widget-collection API as GUI save paths.
@@ -2674,6 +3013,21 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if ctrl is not None:
             return ctrl.collect_widget_state_for_save()
         return {}
+
+    def _on_mcp_bridge_action(self, action: QtWidgets.QAction) -> None:
+        """Start or restart the HYDRA MCP bridge from the workbench menu."""
+        try:
+            from tools.hydra_mcp.qgis_bridge import restart_hydra_mcp_bridge
+            bridge = restart_hydra_mcp_bridge()
+            if bridge is not None and bridge.is_alive():
+                self._log(f"[MCP] bridge ready: {bridge.socket_name}")
+                action.setText("Restart Hydra MCP Bridge")
+            else:
+                self._log("[ERROR] MCP bridge failed to start")
+                action.setText("Start Hydra MCP Bridge")
+        except Exception as exc:
+            self._log(f"[ERROR] MCP bridge error: {exc}")
+            action.setText("Start Hydra MCP Bridge")
 
     def _log_exception(self, context: str, exc: Exception) -> None:
         """Log an exception with traceback to the runtime log."""

@@ -205,6 +205,11 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         lambda: dlg._controller.open_run_log_viewer(),
     )
     add_action(
+        "HYDRA2DMenuOpenNetworkProfileAction",
+        "Network Profile Viewer",
+        lambda: dlg._profile_controller.open_network_profile_viewer(),
+    )
+    add_action(
         "HYDRA2DMenuOpenGpkgExplorerAction",
         "Open GeoPackage Explorer",
         lambda: dlg._topology_controller.open_model_gpkg_explorer(),
@@ -222,7 +227,24 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         "Export Current Results as GeoTIFF…",
         lambda: dlg._overlay_controller.export_high_perf_overlay_to_geotiff(),
     )
+    # ── Agent / MCP bridge ──────────────────────────────────────────
     menu.addSeparator()
+    try:
+        from tools.hydra_mcp.qgis_bridge import _HYDRA_MCP_BRIDGE_INSTANCE
+        _mcp_bridge_alive = (
+            _HYDRA_MCP_BRIDGE_INSTANCE is not None
+            and _HYDRA_MCP_BRIDGE_INSTANCE.is_alive()
+        )
+    except Exception:
+        _mcp_bridge_alive = False
+    _mcp_bridge_text = (
+        "Restart Hydra MCP Bridge" if _mcp_bridge_alive else "Start Hydra MCP Bridge"
+    )
+    _mcp_bridge_action = add_action(
+        "HYDRA2DMenuMcpBridgeAction",
+        _mcp_bridge_text,
+        lambda: dlg._on_mcp_bridge_action(_mcp_bridge_action),
+    )
 
     # ── Help ────────────────────────────────────────────────────────
     add_action(

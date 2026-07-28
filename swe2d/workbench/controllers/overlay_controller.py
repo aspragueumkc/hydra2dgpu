@@ -47,6 +47,25 @@ def mesh_fingerprint_from_arrays(
     return h.hexdigest()
 
 
+def _field_label_for_tooltip(field_key: str, length_unit: str = "m") -> str:
+    """Build a human-readable field label with units for overlay tooltips."""
+    mapping = {
+        "depth":       f"Depth ({length_unit})",
+        "speed":       f"Velocity ({length_unit}/s)",
+        "wse":         f"Water Surface Elevation ({length_unit})",
+        "froude":      "Froude Number",
+        "courant":     "Courant Number",
+        "shear_stress":"Shear Stress (Pa)",
+        "rain_intensity":      "Rain Intensity (mm/hr)" if length_unit != "ft" else "Rain Intensity (in/hr)",
+        "cumulative_rain":     "Cumulative Rain (mm)" if length_unit != "ft" else "Cumulative Rain (in)",
+        "cumulative_excess":   "Cumulative Excess (mm)" if length_unit != "ft" else "Cumulative Excess (in)",
+        "cumulative_loss":     "Cumulative Loss (mm)" if length_unit != "ft" else "Cumulative Loss (in)",
+        "mannings_n":  "Manning's n",
+        "curve_number":"Curve Number",
+    }
+    return mapping.get(str(field_key).lower(), str(field_key).title())
+
+
 # ── OverlayController ────────────────────────────────────────────────────
 
 
@@ -339,6 +358,27 @@ class OverlayController:
             return
         item.setVisible(True)
         item.set_frame(qimage, extent, opacity)
+
+        # Pass raw scalar grid to overlay item for tooltip display
+        raw_grid = frame.get("grid")
+        raw_mask = frame.get("grid_mask")
+        if raw_grid is not None and raw_mask is not None:
+            field_key = str(frame.get("field_key", frame.get("mode", "")))
+            vmin = float(frame.get("vmin", 0.0))
+            vmax = float(frame.get("vmax", 1.0))
+            length_unit = str(frame.get("length_unit_name", "m"))
+            # Build human-readable field label
+            field_label = _field_label_for_tooltip(field_key, length_unit)
+            item.set_raw_data(
+                grid=raw_grid,
+                grid_mask=raw_mask,
+                field_key=field_key,
+                field_label=field_label,
+                vmin=vmin,
+                vmax=vmax,
+                length_unit=length_unit,
+            )
+
         try:
             canvas = view._resolve_map_canvas()
             canvas.refresh()

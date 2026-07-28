@@ -293,8 +293,8 @@ class TestDeleteRunPartial(unittest.TestCase):
                 persist_baked_line_ts(
                     gpkg, rid, 1, "Line1",
                     times=np.array([0.0, 1.0], dtype=np.float64),
-                    depth_m=h, velocity_ms=h, wse_m=h, bed_m=h,
-                    flow_cms=h, wet_frac=h, fr=h,
+                    depth=h, velocity=h, wse=h, bed=h,
+                    flow=h, wet_frac=h, fr=h,
                 )
 
             conn = sqlite3.connect(gpkg)

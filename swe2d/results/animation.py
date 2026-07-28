@@ -11,13 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 import numpy as np
-try:
-    from qgis.PyQt import QtCore
-    from qgis.PyQt.QtCore import pyqtSignal
-except Exception:
-    logger.warning("qgis.PyQt unavailable — falling back to PyQt5", exc_info=True)
-    from PyQt5 import QtCore
-    from PyQt5.QtCore import pyqtSignal
+from qgis.PyQt import QtCore
+from qgis.PyQt.QtCore import pyqtSignal
 
 
 class ResultsAnimationController(QtCore.QObject):

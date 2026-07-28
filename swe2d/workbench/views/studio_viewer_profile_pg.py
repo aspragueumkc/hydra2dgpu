@@ -43,7 +43,7 @@ except ImportError:
 
 def _unit_labels(length_unit: str = "") -> dict:
     from swe2d import units as _u
-    lu = str(length_unit or _u.length_unit_name() or "m").strip().lower()
+    lu = str(length_unit or _u.length_unit_name()).strip().lower()
     if lu == "ft":
         return {"len": "ft", "flow": "ft³/s", "vel": "ft/s"}
     return {"len": "m", "flow": "m³/s", "vel": "m/s"}
@@ -52,13 +52,13 @@ def _unit_labels(length_unit: str = "") -> dict:
 def _label_for_var(var_key: str, length_unit: str = "") -> str:
     u = _unit_labels(length_unit)
     table = {
-        "flow_cms":      f"Flow ({u['flow']})",
-        "depth_m":       f"Depth ({u['len']})",
-        "wse_m":         f"WSE ({u['len']})",
-        "velocity_ms":   f"Velocity ({u['vel']})",
-        "station_m":     f"Station ({u['len']})",
-        "bed_m":         f"Bed ({u['len']})",
-        "egl_m":         f"EGL Error ({u['len']})",
+        "flow":          f"Flow ({u['flow']})",
+        "depth":         f"Depth ({u['len']})",
+        "wse":           f"WSE ({u['len']})",
+        "velocity":      f"Velocity ({u['vel']})",
+        "station":       f"Station ({u['len']})",
+        "bed":           f"Bed ({u['len']})",
+        "egl":           f"EGL Error ({u['len']})",
     }
     return table.get(str(var_key), str(var_key))
 
@@ -153,15 +153,15 @@ _TIME_UNIT = "hr"
 
 _PROFILE_VAR_ITEMS = [
     ("WSE + Bed", "wse_bed"),
-    ("Depth", "depth_m"),
-    ("Velocity", "velocity_ms"),
-    ("EGL Error", "egl_m"),
+    ("Depth", "depth"),
+    ("Velocity", "velocity"),
+    ("EGL Error", "egl"),
 ]
 
 _FILL_ITEMS = [
     ("None", "none"),
-    ("Depth", "depth_m"),
-    ("Velocity", "velocity_ms"),
+    ("Depth", "depth"),
+    ("Velocity", "velocity"),
     ("Flow", "flow_qn"),
 ]
 
@@ -172,6 +172,9 @@ _CMAP_ITEMS = [
     ("Inferno", "inferno"),
     ("Coolwarm", "coolwarm"),
 ]
+
+# Reverse mapping: fill data key → display label for tooltips
+_FILL_LABEL_MAP = {key: label for label, key in _FILL_ITEMS}
 
 
 _ELEMENT_TYPES = [
@@ -264,6 +267,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Element type selector
         row1.addWidget(QtWidgets.QLabel("Type:"))
         self._etype_combo = _make_combo(120)
+        self._etype_combo.setObjectName("profile_etype_combo")
         self._etype_combo.setToolTip("Element type for profile data: Line, Structure, or Drainage.")
         for label, key in _ELEMENT_TYPES:
             self._etype_combo.addItem(label, key)
@@ -274,6 +278,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Element ID selector (lines or coupling objects)
         row1.addWidget(QtWidgets.QLabel("Elem:"))
         self._element_id_combo = _make_combo(140)
+        self._element_id_combo.setObjectName("profile_element_id_combo")
         self._element_id_combo.setToolTip("Select the specific element ID to profile.")
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
         row1.addWidget(self._element_id_combo)
@@ -282,6 +287,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Variable / Metric selector
         row1.addWidget(QtWidgets.QLabel("Var:"))
         self._var_combo = _make_combo(120)
+        self._var_combo.setObjectName("profile_var_combo")
         self._var_combo.setToolTip("Profile variable: WSE+Bed, Depth, Velocity, or EGL Error.")
         self._var_combo.currentIndexChanged.connect(self._on_var_changed)
         row1.addWidget(self._var_combo)
@@ -294,6 +300,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # Show structures toggle
         self._show_struct_chk = QtWidgets.QCheckBox("Struct")
+        self._show_struct_chk.setObjectName("profile_show_struct_chk")
         self._show_struct_chk.setChecked(True)
         self._show_struct_chk.setToolTip("Show structure annotations (flow labels) on the profile.")
         self._show_struct_chk.toggled.connect(self._on_show_struct_changed)
@@ -301,6 +308,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # Data table toggle
         self.show_table_toggle = QtWidgets.QCheckBox("Table")
+        self.show_table_toggle.setObjectName("profile_show_table_chk")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.setToolTip("Show/hide the profile data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
@@ -310,6 +318,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Fill selector (profile only)
         row2.addWidget(QtWidgets.QLabel("Fill:"))
         self._fill_combo = _make_combo(100)
+        self._fill_combo.setObjectName("profile_fill_combo")
         self._fill_combo.setToolTip("Variable for color-filled profile shading: Depth, Velocity, or Flow.")
         for label, key in _FILL_ITEMS:
             self._fill_combo.addItem(label, key)
@@ -320,6 +329,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Colormap selector (profile only)
         row2.addWidget(QtWidgets.QLabel("Cmap:"))
         self._cmap_combo = _make_combo(100)
+        self._cmap_combo.setObjectName("profile_cmap_combo")
         self._cmap_combo.setToolTip("Colormap used for profile fill shading.")
         for label, key in _CMAP_ITEMS:
             self._cmap_combo.addItem(label, key)
@@ -331,6 +341,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # Save button
         save_btn = QtWidgets.QPushButton("💾")
+        save_btn.setObjectName("profile_save_btn")
         save_btn.setFixedSize(24, 24)
         save_btn.setToolTip("Save plot / data")
         save_menu = QtWidgets.QMenu(save_btn)
@@ -357,9 +368,16 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._plot_widget.setMenuEnabled(False)
 
         # Crosshair
-        self._hover_label = pg.TextItem("", anchor=(0, 1), color=(0, 0, 0))
+        self._hover_label = pg.TextItem("", anchor=(0, 0), color=(0, 0, 0))
         self._hover_label.setZValue(100)
         self._hover_label.setVisible(False)
+        try:
+            self._hover_label.setFill(pg.mkBrush(QtGui.QColor(255, 255, 255, 230)))
+        except Exception:
+            try:
+                self._hover_label.setBackground(QtGui.QColor(255, 255, 255, 230))
+            except Exception:
+                pass
         self._plot_widget.addItem(self._hover_label)
 
         self._hover_vline = pg.InfiniteLine(
@@ -387,6 +405,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # ── Data table ──
         self._table_widget = QtWidgets.QTableWidget()
+        self._table_widget.setObjectName("profile_table_widget")
         self._table_widget.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
         )
@@ -450,12 +469,27 @@ class PGProfileWidget(QtWidgets.QWidget):
         mesh_data: Optional[Dict[str, np.ndarray]] = None,
         result_data: Any = None,
         h_min: float = 1.0e-6,
+        model_gpkg_path: str = "",
+        length_unit: str = "",
     ) -> None:
-        """Set data sources and refresh."""
+        """Set data sources and refresh.
+
+        Args:
+            mesh_data: Mesh arrays for line-based profiles.
+            result_data: SWE2DResultsData object for coupling / line results.
+            h_min: Minimum water depth for plotting.
+            model_gpkg_path: Path to the model GPKG (has swe2d_drainage_links /
+                swe2d_drainage_nodes for static geometry). Falls back to the
+                coupling GPKG path when not provided.
+            length_unit: Explicit length unit string ('m' or 'ft'). Falls back
+                to swe2d.units.length_unit_name() when not provided.
+        """
         if mesh_data is not None:
             self._mesh_data = mesh_data
         if result_data is not None:
             self._result_data = result_data
+            self._model_gpkg_path = str(model_gpkg_path or "").strip()
+            self._length_unit_override = str(length_unit or "").strip()
             self._populate_etype()
             # Pre-load coupling records
             first_enabled = None
@@ -519,9 +553,7 @@ class PGProfileWidget(QtWidgets.QWidget):
                 find_nearest_timestep, load_profile,
                 load_structure_flows_at_time,
             )
-            from swe2d import units as _u
-
-            lu = getattr(data, "_length_unit", "")
+            lu = self._resolve_unit()
             len_label = _unit_labels(lu)["len"]
             self._plot_widget.setLabel("bottom", f"Station ({len_label})")
             if var_key == "wse_bed":
@@ -556,14 +588,14 @@ class PGProfileWidget(QtWidgets.QWidget):
                     continue
                 color = _c2q(rec.color)
                 run_color_t = rec.color
-                station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
+                station = prof_data.get("station", prof_data.get("station_m", prof_data.get("dist_m", np.empty(0))))
                 if station.size == 0:
                     continue
 
                 if var_key == "wse_bed":
-                    wse = prof_data.get("wse_m", np.full_like(station, np.nan))
-                    bed = prof_data.get("bed_m", np.full_like(station, np.nan))
-                    depth = prof_data.get("depth_m", np.full_like(station, np.nan))
+                    wse = prof_data.get("wse", np.full_like(station, np.nan))
+                    bed = prof_data.get("bed", np.full_like(station, np.nan))
+                    depth = prof_data.get("depth", np.full_like(station, np.nan))
                     wet_arr = prof_data.get("wet", np.ones_like(station))
                     ok = np.isfinite(wse) & np.isfinite(bed)
                     if not np.any(ok):
@@ -621,6 +653,12 @@ class PGProfileWidget(QtWidgets.QWidget):
                                 seg_bed = pg.PlotDataItem([float(x_ok[i]), float(x_ok[i + 1])], [float(bed_ok[i]), float(bed_ok[i + 1])])
                                 seg_wse = pg.PlotDataItem([float(x_ok[i]), float(x_ok[i + 1])], [float(wse_fill[i]), float(wse_fill[i + 1])])
                                 seg_fill = pg.FillBetweenItem(curve1=seg_bed, curve2=seg_wse, brush=pg.mkBrush(QtGui.QColor(*rgb)))
+                                # Store fill value for tooltip lookup
+                                x_low = min(float(x_ok[i]), float(x_ok[i + 1]))
+                                x_high = max(float(x_ok[i]), float(x_ok[i + 1]))
+                                seg_fill._tooltip_x_low = x_low
+                                seg_fill._tooltip_x_high = x_high
+                                seg_fill._tooltip_fill_value = float(vmid)
                                 self._plot_widget.addItem(seg_fill)
                                 self._fill_items.append(seg_fill)
 
@@ -630,9 +668,9 @@ class PGProfileWidget(QtWidgets.QWidget):
                     self._plot_items.append(wse_line)
                     plotted += 1
                 else:
-                    if var_key == "egl_m":
-                        wse_arr = prof_data.get("wse_m")
-                        vel_arr = prof_data.get("velocity_ms")
+                    if var_key == "egl":
+                        wse_arr = prof_data.get("wse")
+                        vel_arr = prof_data.get("velocity")
                         if wse_arr is None or vel_arr is None:
                             continue
                         y = np.asarray(wse_arr, dtype=np.float64) + (np.asarray(vel_arr, dtype=np.float64) ** 2.0) / (2.0 * _u.gravity())
@@ -718,13 +756,22 @@ class PGProfileWidget(QtWidgets.QWidget):
             self._plot_widget.setLabel("bottom", f"Station ({u['len']})")
             self._plot_widget.setLabel("left", f"Elevation ({u['len']})")
 
-            # ── Geometry from _live_coupling (length) and _live_pipe_cell (invert, width) ──
-            # Link length — stored as a drainage_link/length row in _live_coupling
+            # ── Geometry from _live_coupling / _coupling_records (length) and _live_pipe_cell (invert, width) ──
+            # Link length — try _live_coupling first (live run), fall back to _coupling_records (GPKG)
+            length_m = 0.0
             coupling = data._live_coupling
             length_key = ("drainage_link", link_id, "length")
             length_d = coupling.get(length_key, {})
             length_arr = length_d.get("values", [])
-            length_m = float(length_arr[0]) if length_arr else 0.0
+            if length_arr:
+                length_m = float(length_arr[0])
+            else:
+                for rec in data.get_coupling_records():
+                    if (rec.get("component") == "drainage_link"
+                            and rec.get("object_id") == link_id
+                            and rec.get("metric") == "length"):
+                        length_m = float(rec.get("value", 0.0))
+                        break
 
             # Per-cell geometry from _live_pipe_cell (set on first write from C++ readback)
             pipe_cell = data._live_pipe_cell
@@ -757,11 +804,24 @@ class PGProfileWidget(QtWidgets.QWidget):
                 else:
                     crown_y[ki] = invert_y[ki] + cell_h  # rectangular/elliptical: height
 
-            # Station axis
-            x_stations = np.linspace(0.0, float(length_m), n_sub)
+            # Station axis: cell centers, not endpoints, so each sub-cell value
+            # is plotted at its true longitudinal station along the link.
+            x_stations = (np.arange(n_sub) + 0.5) * (float(length_m) / n_sub)
 
-            # Water surface at current time: depth from _live_pipe_cell
-            water_y = invert_y.copy()
+            # Map fill combo key to pipe-cell metric name
+            _DRAINAGE_FILL_MAP = {
+                "velocity": "velocity",
+                "depth": "depth",
+                "flow_qn": "flow",
+            }
+            fill_key = self._prof_fill_key
+            cmap_name = self._prof_cmap
+            use_fill_cmap = fill_key != "none"
+            drainage_fill_metric = _DRAINAGE_FILL_MAP.get(fill_key, fill_key)
+
+            # Water surface and fill metric at current time
+            water_y = np.full(n_sub, np.nan, dtype=np.float64)
+            fill_vals = np.full(n_sub, np.nan, dtype=np.float64)
             for k in sub_keys:
                 depth_d = pipe_cell.get(k, {})
                 t_arr = depth_d.get("times", [])
@@ -775,31 +835,82 @@ class PGProfileWidget(QtWidgets.QWidget):
                 if 0 <= sub_idx < n_sub:
                     water_y[sub_idx] = invert_y[sub_idx] + float(v_np[i_nearest])
 
+                    if use_fill_cmap:
+                        fill_k = (k[0], k[1], drainage_fill_metric)
+                        fill_d = pipe_cell.get(fill_k, {})
+                        fill_t_arr = fill_d.get("times", [])
+                        fill_v_arr = fill_d.get("values", [])
+                        if fill_t_arr and fill_v_arr:
+                            fill_t_np = np.asarray(fill_t_arr, dtype=np.float64)
+                            fill_v_np = np.asarray(fill_v_arr, dtype=np.float64)
+                            fill_i_nearest = int(np.argmin(np.abs(fill_t_np - t_sec)))
+                            fill_vals[sub_idx] = float(fill_v_np[fill_i_nearest])
+
             # Plot invert line (solid brown)
             invert_pen = pg.mkPen(color=QtGui.QColor(92, 64, 51), width=1.2)
             invert_plot = pg.PlotDataItem(x_stations, invert_y, pen=invert_pen, name="Invert")
             self._plot_widget.addItem(invert_plot)
             self._plot_items.append(invert_plot)
 
-            # Plot crown line (dashed grey)
+            # Plot crown line (solid grey)
             crown_pen = pg.mkPen(
                 color=QtGui.QColor(64, 64, 64),
                 width=0.9,
-                style=QtCore.Qt.PenStyle.DashLine,
             )
             crown_plot = pg.PlotDataItem(x_stations, crown_y, pen=crown_pen, name="Crown")
             self._plot_widget.addItem(crown_plot)
             self._plot_items.append(crown_plot)
 
-            # Water fill between invert and water surface
-            water_plot = pg.PlotDataItem(x_stations, water_y)
-            fill_item = pg.FillBetweenItem(
-                curve1=invert_plot,
-                curve2=water_plot,
-                brush=pg.mkBrush(QtGui.QColor(100, 149, 237, 96)),
-            )
-            self._plot_widget.addItem(fill_item)
-            self._fill_items.append(fill_item)
+            # Segment-by-segment water fill colored by selected metric
+            if use_fill_cmap:
+                fill_mask = np.isfinite(water_y) & np.isfinite(fill_vals)
+                seg_vals, seg_list = [], []
+                for i in range(n_sub - 1):
+                    if not (fill_mask[i] and fill_mask[i + 1]):
+                        continue
+                    vmid = 0.5 * (float(fill_vals[i]) + float(fill_vals[i + 1]))
+                    seg_list.append(i)
+                    seg_vals.append(vmid)
+                if seg_vals:
+                    sv = np.asarray(seg_vals, dtype=np.float64)
+                    sv_min, sv_max = float(np.nanmin(sv)), float(np.nanmax(sv))
+                    if sv_max <= sv_min:
+                        sv_max = sv_min + 1.0
+                    for idx, i in enumerate(seg_list):
+                        vmid = seg_vals[idx]
+                        t_norm = (vmid - sv_min) / (sv_max - sv_min)
+                        rgb = _cmap_color(cmap_name, float(np.clip(t_norm, 0.0, 1.0)))
+                        seg_bed = pg.PlotDataItem(
+                            [float(x_stations[i]), float(x_stations[i + 1])],
+                            [float(invert_y[i]), float(invert_y[i + 1])],
+                        )
+                        seg_wse = pg.PlotDataItem(
+                            [float(x_stations[i]), float(x_stations[i + 1])],
+                            [float(water_y[i]), float(water_y[i + 1])],
+                        )
+                        seg_fill = pg.FillBetweenItem(
+                            curve1=seg_bed,
+                            curve2=seg_wse,
+                            brush=pg.mkBrush(QtGui.QColor(*rgb)),
+                        )
+                        # Store fill value for tooltip lookup
+                        x_low = min(float(x_stations[i]), float(x_stations[i + 1]))
+                        x_high = max(float(x_stations[i]), float(x_stations[i + 1]))
+                        seg_fill._tooltip_x_low = x_low
+                        seg_fill._tooltip_x_high = x_high
+                        seg_fill._tooltip_fill_value = float(vmid)
+                        self._plot_widget.addItem(seg_fill)
+                        self._fill_items.append(seg_fill)
+            else:
+                # Uniform water fill when no metric selected
+                water_plot = pg.PlotDataItem(x_stations, water_y)
+                fill_item = pg.FillBetweenItem(
+                    curve1=invert_plot,
+                    curve2=water_plot,
+                    brush=pg.mkBrush(QtGui.QColor(100, 149, 237, 96)),
+                )
+                self._plot_widget.addItem(fill_item)
+                self._fill_items.append(fill_item)
 
             self._plot_widget.plotItem.autoRange()
 
@@ -812,20 +923,23 @@ class PGProfileWidget(QtWidgets.QWidget):
                 self._plot_widget.plotItem.autoRange()
                 return
 
-            lu = getattr(data, "_length_unit", "")
+            lu = self._resolve_unit()
             self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
 
             # For drainage_node show head / depth / volume on y-axis
             if etype == "drainage_node":
-                self._plot_widget.setLabel("left", "Head / Depth / Volume (m / m³)")
+                u = _unit_labels(lu)
+                self._plot_widget.setLabel("left", f"Head / Depth / Volume ({u['len']} / {u['flow']})")
             else:
                 self._plot_widget.setLabel("left", str(var_key))
 
-            # Lazy-load node geometry for drainage_node head+volume series
+            # Lazy-load node geometry for drainage_node head+volume series.
+            # Query the MODEL GPKG (has swe2d_drainage_nodes for static geometry),
+            # NOT the coupling GPKG (which may be a separate results-only file).
             node_surface_area: Optional[float] = None
             node_invert_elev: Optional[float] = None
             if etype == "drainage_node":
-                gpkg_path = getattr(data, "_coupling_gpkg_path", "") or ""
+                gpkg_path = getattr(self, "_model_gpkg_path", "") or getattr(data, "_coupling_gpkg_path", "") or ""
                 if gpkg_path:
                     try:
                         conn = sqlite3.connect(gpkg_path)
@@ -876,7 +990,7 @@ class PGProfileWidget(QtWidgets.QWidget):
                         t_hr, head_vals, pen=head_pen, name=f"{rec.display_label()} Head"
                     )
                     # Volume series (darker shade)
-                    vol_color = QtGui.QColor(color[0] // 2, color[1] // 2, color[2] // 2)
+                    vol_color = QtGui.QColor(rec.color[0] // 2, rec.color[1] // 2, rec.color[2] // 2)
                     vol_pen = pg.mkPen(color=vol_color, width=1.0)
                     self._plot_widget.plot(
                         t_hr, volume_vals, pen=vol_pen, name=f"{rec.display_label()} Vol"
@@ -925,6 +1039,15 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._populate_element_id_combo()
         self._repopulate_var_combo()
         self._show_profile_controls()
+        etype = str(self._etype_combo.currentData() or "line")
+        if etype == "drainage_link":
+            self._prof_fill_key = "velocity"
+            if self._fill_combo is not None:
+                idx = self._fill_combo.findData("velocity")
+                if idx >= 0:
+                    self._fill_combo.blockSignals(True)
+                    self._fill_combo.setCurrentIndex(idx)
+                    self._fill_combo.blockSignals(False)
         self.refresh()
 
     def _on_element_id_changed(self) -> None:
@@ -979,13 +1102,15 @@ class PGProfileWidget(QtWidgets.QWidget):
                 self._populate_table()
 
     def _on_mouse_moved(self, evt) -> None:
-        """Handle mouse hover — update crosshair and data readout."""
+        """Handle mouse hover — update crosshair, data readout, and tooltip."""
         if self._plot_widget is None or not self._plot_items:
+            QtWidgets.QToolTip.hideText()
             return
-        pos = evt[0]
+        pos = evt[0]  # QPointF in scene coordinates
         plot = self._plot_widget.plotItem
         vb = plot.vb
         if vb is None:
+            QtWidgets.QToolTip.hideText()
             return
         mouse_point = vb.mapSceneToView(pos)
         mx, my = mouse_point.x(), mouse_point.y()
@@ -997,6 +1122,9 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         closest_dist = float("inf")
         closest_text = ""
+        closest_tooltip = ""
+        closest_x = mx
+        closest_y = my
         for item in self._plot_items:
             x_data = item.xData
             y_data = item.yData
@@ -1007,14 +1135,53 @@ class PGProfileWidget(QtWidgets.QWidget):
             if dist < closest_dist:
                 closest_dist = dist
                 label = item.name() or "?"
-                closest_text = f"{label}: ({x_data[idx]:.4g}, {y_data[idx]:.4g})"
+                x_val = x_data[idx]
+                y_val = y_data[idx]
+                closest_x = float(x_val)
+                closest_y = float(y_val)
+                closest_text = f"{label}: ({x_val:.4g}, {y_val:.4g})"
+                # Build tooltip: station, value, and fill metric if applicable
+                u = _unit_labels()
+                tooltip_lines = [
+                    f"Station: {x_val:.4g} {u['len']}",
+                    f"{label}: {y_val:.4g} {u['len']}",
+                ]
+
+        # Add fill metric (colorramp-shaded value) to tooltip when available
+        fill_key = self._prof_fill_key
+        if closest_text and fill_key != "none":
+            for fi in self._fill_items:
+                try:
+                    x_low = getattr(fi, '_tooltip_x_low', None)
+                    x_high = getattr(fi, '_tooltip_x_high', None)
+                    fill_val = getattr(fi, '_tooltip_fill_value', None)
+                    if x_low is None or x_high is None or fill_val is None:
+                        continue
+                    if x_low <= closest_x <= x_high:
+                        fill_label = _FILL_LABEL_MAP.get(fill_key, fill_key)
+                        tooltip_lines.append(f"{fill_label}: {fill_val:.4g}")
+                        break
+                except Exception:
+                    continue
+
+        if tooltip_lines:
+            closest_tooltip = "\n".join(tooltip_lines)
 
         if closest_text:
             self._hover_label.setText(closest_text)
             self._hover_label.setVisible(True)
             self._hover_label.setPos(mx, my)
+            # Show QToolTip mapped from scene to global screen coordinates
+            if closest_tooltip:
+                views = self._plot_widget.scene().views()
+                if views:
+                    view = views[0]
+                    vp_pos = view.mapFromScene(pos)
+                    global_pos = view.viewport().mapToGlobal(vp_pos)
+                    QtWidgets.QToolTip.showText(global_pos, closest_tooltip, view.viewport())
         else:
             self._hover_label.setVisible(False)
+            QtWidgets.QToolTip.hideText()
 
     # ------------------------------------------------------------------
     # Combo population
@@ -1074,6 +1241,11 @@ class PGProfileWidget(QtWidgets.QWidget):
             except (ValueError, TypeError):
                 pass
 
+    def _resolve_unit(self) -> str:
+        """Return the effective length unit string."""
+        from swe2d import units as _u
+        return getattr(self, "_length_unit_override", "") or str(_u.length_unit_name())
+
     def _repopulate_var_combo(self) -> None:
         """Populate var/metric combo based on element type."""
         if self._var_combo is None:
@@ -1111,7 +1283,7 @@ class PGProfileWidget(QtWidgets.QWidget):
     def _show_profile_controls(self) -> None:
         """Show/hide profile-specific controls based on element type."""
         etype = str(self._etype_combo.currentData() or "line")
-        is_profile = etype == "line"
+        is_profile = etype in ("line", "drainage_link")
         if self._fill_combo is not None:
             self._fill_combo.setVisible(is_profile)
         if self._cmap_combo is not None:
@@ -1163,7 +1335,7 @@ class PGProfileWidget(QtWidgets.QWidget):
                     )
                 if not prof_data:
                     continue
-                station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
+                station = prof_data.get("station", prof_data.get("station_m", prof_data.get("dist_m", np.empty(0))))
                 n = int(station.size)
                 for i in range(n):
                     row: Dict[str, Any] = {"run": rec.display_label()}

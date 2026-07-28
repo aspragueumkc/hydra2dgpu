@@ -1,3 +1,4 @@
+import unittest
 """Round-trip tests for baked line time-series and profile persistence.
 
 These tests verify that every variable written to the GeoPackage by the
@@ -51,15 +52,15 @@ def test_baked_line_timeseries_roundtrip(tmp_path, run_id, line_id, line_name):
     loaded = load_baked_line_timeseries(gpkg_path, run_id, line_id)
 
     assert set(loaded.keys()) == {
-        "t_s", "depth_m", "velocity_ms", "wse_m", "bed_m",
-        "flow_cms", "wet_frac", "fr",
+        "t_s", "depth", "velocity", "wse", "bed",
+        "flow", "wet_frac", "fr",
     }
     np.testing.assert_array_equal(loaded["t_s"], times)
-    np.testing.assert_array_equal(loaded["depth_m"], depth)
-    np.testing.assert_array_equal(loaded["velocity_ms"], velocity)
-    np.testing.assert_array_equal(loaded["wse_m"], wse)
-    np.testing.assert_array_equal(loaded["bed_m"], bed)
-    np.testing.assert_array_equal(loaded["flow_cms"], flow)
+    np.testing.assert_array_equal(loaded["depth"], depth)
+    np.testing.assert_array_equal(loaded["velocity"], velocity)
+    np.testing.assert_array_equal(loaded["wse"], wse)
+    np.testing.assert_array_equal(loaded["bed"], bed)
+    np.testing.assert_array_equal(loaded["flow"], flow)
     np.testing.assert_array_equal(loaded["wet_frac"], wet_frac)
     np.testing.assert_array_equal(loaded["fr"], fr)
 
@@ -91,17 +92,17 @@ def test_baked_line_profile_roundtrip(tmp_path, run_id, line_id, line_name):
     loaded = load_baked_line_profile(gpkg_path, run_id, line_id, t_sec=0.0)
 
     expected_keys = {
-        "station_m", "wse_m", "bed_m", "depth_m",
-        "velocity_ms", "flow_qn", "fr", "wet",
+        "station", "wse", "bed", "depth",
+        "velocity", "flow_qn", "fr", "wet",
     }
     missing = expected_keys - set(loaded.keys())
     assert not missing, f"load_baked_line_profile is missing keys: {missing}"
 
-    np.testing.assert_array_equal(loaded["station_m"], station)
-    np.testing.assert_array_equal(loaded["depth_m"], depth[0])
-    np.testing.assert_array_equal(loaded["velocity_ms"], velocity[0])
-    np.testing.assert_array_equal(loaded["wse_m"], wse[0])
-    np.testing.assert_array_equal(loaded["bed_m"], bed[0])
+    np.testing.assert_array_equal(loaded["station"], station)
+    np.testing.assert_array_equal(loaded["depth"], depth[0])
+    np.testing.assert_array_equal(loaded["velocity"], velocity[0])
+    np.testing.assert_array_equal(loaded["wse"], wse[0])
+    np.testing.assert_array_equal(loaded["bed"], bed[0])
     np.testing.assert_array_equal(loaded["flow_qn"], flow_qn[0])
     np.testing.assert_array_equal(loaded["fr"], fr[0])
     np.testing.assert_array_equal(loaded["wet"], wet[0])
@@ -126,5 +127,22 @@ def test_baked_line_profile_nearest_timestep_selection(tmp_path, run_id, line_id
     )
 
     loaded = load_baked_line_profile(gpkg_path, run_id, line_id, t_sec=3500.0)
-    np.testing.assert_array_equal(loaded["depth_m"], depth[1])
-    np.testing.assert_array_equal(loaded["velocity_ms"], velocity[1])
+    np.testing.assert_array_equal(loaded["depth"], depth[1])
+    np.testing.assert_array_equal(loaded["velocity"], velocity[1])
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

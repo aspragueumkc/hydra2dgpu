@@ -12,7 +12,10 @@ import unittest
 
 import numpy as np
 
-from swe2d.services.gpkg_persistence_service import persist_baked_pipe_cell_ts
+from swe2d.services.gpkg_persistence_service import (
+    load_baked_pipe_cell_ts,
+    persist_baked_pipe_cell_ts,
+)
 
 
 class TestPipeCellCouplingOutput(unittest.TestCase):
@@ -119,6 +122,118 @@ class TestPipeCellCouplingOutput(unittest.TestCase):
                     times,
                     np.array([0.0, 30.0, 60.0], dtype=np.float64),
                 )
+
+
+    def test_gpkg_pipe_cell_geometry_roundtrip(self):
+        """Pipe-cell geometry columns (invert, width, height, shape) round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            gpkg = os.path.join(tmpdir, "test_geom.gpkg")
+            conn = sqlite3.connect(gpkg)
+            conn.execute("CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT)")
+            conn.commit()
+            conn.close()
+
+            items = []
+            for i, (metric, vals) in enumerate([
+                ("velocity", [0.5, 0.6]),
+                ("depth", [0.1, 0.2]),
+            ]):
+                items.append({
+                    "link_id": "L1",
+                    "cell_sub_idx": i,
+                    "metric": metric,
+                    "times": np.array([0.0, 1.0], dtype=np.float64),
+                    "values": np.array(vals, dtype=np.float64),
+                    "cell_invert": 1.5 + i,
+                    "cell_width": 2.0 + i,
+                    "cell_height": 3.0 + i,
+                    "cell_shape_type": i,
+                })
+
+            persist_baked_pipe_cell_ts(gpkg, "run_geom", items, log_fn=None)
+
+            conn = sqlite3.connect(gpkg)
+            loaded = load_baked_pipe_cell_ts(conn, "run_geom")
+            conn.close()
+
+            self.assertEqual(len(loaded), 2)
+            loaded.sort(key=lambda d: d["cell_sub_idx"])
+            for i, item in enumerate(loaded):
+                self.assertEqual(item["link_id"], "L1")
+                self.assertEqual(item["cell_sub_idx"], i)
+                self.assertAlmostEqual(item["cell_invert"], 1.5 + i)
+                self.assertAlmostEqual(item["cell_width"], 2.0 + i)
+                self.assertAlmostEqual(item["cell_height"], 3.0 + i)
+                self.assertEqual(item["cell_shape_type"], i)
+
+    def test_gpkg_pipe_cell_legacy_fallback(self):
+        """Loading from an old GeoPackage without geometry columns falls back to defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            gpkg = os.path.join(tmpdir, "test_legacy.gpkg")
+            conn = sqlite3.connect(gpkg)
+            conn.execute("CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT)")
+            conn.execute("""
+                CREATE TABLE swe2d_baked_pipe_cell_ts (
+                    run_id TEXT,
+                    link_id TEXT,
+                    cell_sub_idx INTEGER,
+                    metric TEXT,
+                    n_timesteps INTEGER,
+                    times_blob BLOB,
+                    values_blob BLOB,
+                    PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
+            """)
+            times = np.array([0.0, 1.0], dtype=np.float64)
+            values = np.array([0.5, 0.6], dtype=np.float64)
+            conn.execute(
+                "INSERT INTO swe2d_baked_pipe_cell_ts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("run_legacy", "L9", 3, "depth", len(times), times.tobytes(), values.tobytes()),
+            )
+            conn.commit()
+
+            loaded = load_baked_pipe_cell_ts(conn, "run_legacy")
+            conn.close()
+
+            self.assertEqual(len(loaded), 1)
+            item = loaded[0]
+            self.assertEqual(item["link_id"], "L9")
+            self.assertEqual(item["cell_sub_idx"], 3)
+            self.assertEqual(item["metric"], "depth")
+            np.testing.assert_array_equal(item["times"], times)
+            np.testing.assert_array_equal(item["values"], values)
+            self.assertAlmostEqual(item["cell_invert"], 0.0)
+            self.assertAlmostEqual(item["cell_width"], 1.0)
+            self.assertAlmostEqual(item["cell_height"], 1.0)
+            self.assertEqual(item["cell_shape_type"], 0)
+
+    def test_build_pipe_cell_items_includes_geometry(self):
+        """build_pipe_cell_items must carry through per-cell geometry fields."""
+        from swe2d.results.data import SWE2DResultsData
+
+        rd = SWE2DResultsData()
+        rd.init_pipe_cell_storage([("L1", 0, "depth")])
+        rd.append_pipe_cell_snapshot({
+            "link_id": "L1",
+            "cell_sub_idx": 0,
+            "metric": "depth",
+            "t_s": 0.0,
+            "value": 1.5,
+            "cell_invert": 10.0,
+            "cell_width": 2.0,
+            "cell_height": 2.5,
+            "cell_shape_type": 1,
+        })
+
+        items = rd.build_pipe_cell_items()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["link_id"], "L1")
+        self.assertEqual(item["cell_sub_idx"], 0)
+        self.assertEqual(item["metric"], "depth")
+        self.assertAlmostEqual(item["cell_invert"], 10.0)
+        self.assertAlmostEqual(item["cell_width"], 2.0)
+        self.assertAlmostEqual(item["cell_height"], 2.5)
+        self.assertEqual(item["cell_shape_type"], 1)
 
 
 if __name__ == "__main__":

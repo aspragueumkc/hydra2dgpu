@@ -14,6 +14,12 @@ import time
 import concurrent.futures
 from typing import Any, Dict, List, Optional, Callable
 
+from swe2d.cli.commands import (
+    build_run_command_for_params,
+    cleanup_temp_specs,
+    is_replay_spec,
+)
+
 
 _VALID_SCHEMES: frozenset = frozenset({0, 1, 2, 3, 4, 5, 6, 7})
 
@@ -169,36 +175,14 @@ def run_batch(
 
     def _run_one(param_set: Dict[str, Any]) -> str:
         sim_id = str(param_set.get("id", "unknown"))
-        if param_set.get("schema_version") == "swe2d-replay/1":
-            import tempfile
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False,
-            ) as tf:
-                json.dump(param_set, tf)
-                replay_file = tf.name
-            try:
-                cmd = [
-                    sys.executable, "-m", "swe2d.cli", "replay",
-                    "--replay-file", replay_file,
-                ]
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=7200
-                )
-            finally:
-                try:
-                    os.unlink(replay_file)
-                except OSError:
-                    pass
-        else:
-            params_json = json.dumps(param_set)
-            cmd = [
-                sys.executable, "-m", "swe2d.cli", "run",
-                mesh_gpkg, params_json,
-                "--results", results_gpkg,
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=7200
-            )
+        # Phase 3.4: single source of truth for the subprocess command.
+        cmd = build_run_command_for_params(
+            param_set,
+            results_gpkg=results_gpkg,
+        )
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=7200
+        )
         if result.returncode != 0:
             return f"{sim_id}: FAILED ({result.stderr.strip()[:200]})"
         return f"{sim_id}: OK"
@@ -229,82 +213,5 @@ def run_batch(
         if status_callback:
             status_callback(done, len(all_params), failed, elapsed)
     finally:
+        cleanup_temp_specs()
         _stop_mps_if_we_started(mps_started)
-
-
-class BatchOrchestrator:
-    """Owns subprocess pool lifecycle for batch simulation runs.
-
-    Accepts pre-built param_sets, constructs ``swe2d run`` commands, and
-    launches them via :func:`subprocess.Popen`.  Callbacks fire on
-    completion so the caller (dialog or CLI) can update its own state.
-    """
-
-    def __init__(
-        self,
-        param_sets: List[Dict[str, Any]],
-        workdir: str,
-        mesh_gpkg: str = "",
-        max_workers: int = 0,
-        on_progress: Optional[Callable[[int, int], None]] = None,
-        on_completed: Optional[Callable[[Dict[str, Any]], None]] = None,
-        on_failed: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ):
-        self._param_sets = param_sets
-        self._workdir = workdir
-        self._mesh_gpkg = mesh_gpkg
-        self._max_workers = max_workers if max_workers > 0 else min(len(param_sets), 4)
-        self._on_progress = on_progress
-        self._on_completed = on_completed
-        self._on_failed = on_failed
-        self._cancelled = False
-        self._active_procs: list = []
-
-    def run(self) -> List[Dict[str, Any]]:
-        """Execute all param sets and return a list of result dicts."""
-        results: List[Dict[str, Any]] = []
-        for idx, ps in enumerate(self._param_sets):
-            if self._cancelled:
-                break
-            sim_id = str(ps.get("id", f"sim_{idx}"))
-            params_json = json.dumps(ps)
-            cmd = [
-                sys.executable, "-m", "swe2d.cli", "run",
-                self._mesh_gpkg, params_json,
-            ]
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            self._active_procs.append(proc)
-            # Handle both real Popen (has poll()) and test fakes (has returncode).
-            if hasattr(proc, "poll"):
-                while proc.poll() is None:
-                    time.sleep(0.05)
-                rc = proc.returncode
-            else:
-                rc = proc.returncode
-            stdout_text = (proc.stdout.read() if hasattr(proc, "stdout") and proc.stdout else "")
-            stderr_text = (proc.stderr.read() if hasattr(proc, "stderr") and proc.stderr else "")
-            status = "completed" if rc == 0 else "failed"
-            result = {
-                "id": sim_id,
-                "status": status,
-                "returncode": rc,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-            }
-            results.append(result)
-            if self._on_progress:
-                self._on_progress(len(results), len(self._param_sets))
-            if rc == 0 and self._on_completed:
-                self._on_completed(result)
-            elif rc != 0 and self._on_failed:
-                self._on_failed(result)
-        return results
-
-    def cancel(self) -> None:
-        """Terminate any running subprocesses and stop the batch."""
-        self._cancelled = True
-        for proc in self._active_procs:
-            if proc.poll() is None:
-                proc.terminate()

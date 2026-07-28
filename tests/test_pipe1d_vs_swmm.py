@@ -44,7 +44,9 @@ def _pipe1d_q(depth_n0: float, depth_n1: float, slope: float,
                k_in: float = 0.0, k_out: float = 0.0,
                n_steps: int = 500, dt: float = 0.25,
                solver_mode: str = "diffusion_wave",
-               implicit_iters: int = 2) -> float:
+               implicit_iters: int = 2, g: float = 9.81,
+               k_mann: float = 1.0,
+               h_min: float = 1.0e-4) -> float:
     depth_arr = np.array([depth_n0, depth_n1], dtype=np.float64)
     runner = Pipe1DRunner()
     try:
@@ -66,11 +68,12 @@ def _pipe1d_q(depth_n0: float, depth_n1: float, slope: float,
         )
         runner.build_mesh(cfg)
         runner.set_node_depth(depth_arr)
-        runner.init_area_from_depth()
+        runner.init_area_from_depth(h_min=h_min)
         for _ in range(n_steps):
             runner.set_node_depth(depth_arr)
             runner.step(dt=dt, solver_mode=solver_mode,
-                        implicit_iters=implicit_iters)
+                        implicit_iters=implicit_iters, g=g,
+                        k_mann=k_mann, h_min=h_min)
         result = runner.readback()
         return float(result.cell_Q["c0"][0])
     finally:
@@ -273,8 +276,10 @@ class TestPipeFlowReversal(unittest.TestCase):
                 runner.step(dt=0.25, solver_mode="diffusion_wave")
 
             import hydra_swe2d as _m
-            state = _m.swe2d_pipe1d_readback_node_state(
-                runner._dev_ptr, runner._n_nodes, runner._n_cells)
+            # Migrated: ``swe2d_pipe1d_readback_node_state`` is gone;
+            # use the unified ``swe2d_pipe1d_readback_cell_state`` binding.
+            state = _m.swe2d_pipe1d_readback_cell_state(
+                runner._dev_ptr, runner._n_cells)
             cell_q = state["cell_Q"]
             for ci, q in enumerate(cell_q):
                 self.assertTrue(math.isfinite(q),

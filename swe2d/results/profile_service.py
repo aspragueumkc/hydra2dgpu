@@ -33,17 +33,17 @@ def extract_profile_arrays(
     """
     if not records:
         base = {
-            "station_m": np.empty(0, dtype=np.float64),
-            "wse_m": np.empty(0, dtype=np.float64),
-            "bed_m": np.empty(0, dtype=np.float64),
-            "depth_m": np.empty(0, dtype=np.float64),
+            "station": np.empty(0, dtype=np.float64),
+            "wse": np.empty(0, dtype=np.float64),
+            "bed": np.empty(0, dtype=np.float64),
+            "depth": np.empty(0, dtype=np.float64),
             "wet": np.empty(0, dtype=np.float64),
         }
         return base
 
     src = list(records)
     if sort_by_station:
-        src.sort(key=lambda r: float(r.get("station_m", 0.0)))
+        src.sort(key=lambda r: float(r.get("station", 0.0)))
 
     n = len(src)
     station = np.empty(n, dtype=np.float64)
@@ -54,13 +54,13 @@ def extract_profile_arrays(
 
     extra_keys: set = set()
     for i, rec in enumerate(src):
-        station[i] = float(rec.get("station_m", 0.0))
-        wse[i] = _safe_float(rec.get("wse_m"))
-        bed[i] = _safe_float(rec.get("bed_m"))
-        depth[i] = _safe_float(rec.get("depth_m"))
+        station[i] = float(rec.get("station", 0.0))
+        wse[i] = _safe_float(rec.get("wse"))
+        bed[i] = _safe_float(rec.get("bed"))
+        depth[i] = _safe_float(rec.get("depth"))
         wet[i] = _safe_float(rec.get("wet"))
         for k, v in rec.items():
-            if k in ("station_m", "wse_m", "bed_m", "depth_m", "wet"):
+            if k in ("station", "wse", "bed", "depth", "wet"):
                 continue
             try:
                 float(v)
@@ -69,10 +69,10 @@ def extract_profile_arrays(
                 pass
 
     result: Dict[str, np.ndarray] = {
-        "station_m": station,
-        "wse_m": wse,
-        "bed_m": bed,
-        "depth_m": depth,
+        "station": station,
+        "wse": wse,
+        "bed": bed,
+        "depth": depth,
         "wet": wet,
     }
     for k in sorted(extra_keys):

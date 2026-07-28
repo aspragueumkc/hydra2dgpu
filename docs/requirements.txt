@@ -12,6 +12,10 @@ netCDF4>=1.6
 # Optional: visualization
 matplotlib>=3.7
 
+# Testing — pytest-qt provides the qtbot fixture used by GPU viewer
+# widget tests (test_gpu_viewer_gl_widget.py, test_gpu_viewer_hud.py).
+pytest-qt>=4.0
+
 # Documentation
 pdoc>=14.0
 

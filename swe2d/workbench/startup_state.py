@@ -57,7 +57,14 @@ def initialize_workbench_startup_state(
     # Drain startup messages collected by __init__.py (e.g. multiprocessing
     # guard diagnostics) into the runtime log so the user can see them.
     try:
-        from hydra2dgpu import _startup_messages as _msgs
+        # The plugin folder is uppercase HYDRA2DGPU in production zip install
+        # (must match metadata.txt::name=) and lowercase hydra2dgpu in dev
+        # symlink. Try both — don't alias in sys.modules, that would shadow
+        # the `hydra_swe2d` C extension.
+        try:
+            from HYDRA2DGPU import _startup_messages as _msgs
+        except ImportError:
+            from hydra2dgpu import _startup_messages as _msgs
 
         for _tag, _msg in _msgs:
             dialog._runtime_log_lines.append(_msg)
@@ -102,8 +109,6 @@ def initialize_workbench_startup_state(
     dialog._have_mpl = figure_canvas is not None and figure is not None
     dialog._run_orchestrator = None
     dialog._run_controller = None
-    dialog._run_data_builder = None
-    dialog._run_options_builder = None
     dialog._backend_initializer = None
     dialog._run_finalizer = None
     dialog._run_lifecycle = None

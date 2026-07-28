@@ -33,6 +33,23 @@ extern int32_t s_culvert_table_n_hw;
 extern int32_t s_culvert_table_n_tw;
 extern SWE2DDeviceState* s_coupling_dev;
 
+// Called from swe2d_gpu_step with real 2D arrays for SURFACE_2D_* faces.
+// Pipe1D godunov call passes nullptr 2D arrays (class-3/4/5 exit early there).
+extern void swe2d_gpu_apply_unified_face_flux(
+    struct SWE2DDeviceState*, double, double, double*, double*, cudaStream_t,
+    const double*, const double*, const double*, const double*,
+    double*, double*, double*, double*, int32_t, double, double,
+    const double*, const double*);
+
+// ── SPEC §2.4 — Cross-section geometry constants and device-function forward
+//    declarations.  The geometry helpers (xsect_getAofY etc.) are defined in
+//    pipe1d.cu and linked into the same CUDA module via separable compilation.
+#include "swe2d_xsect_constants.h"
+using namespace swe2d;
+
+__device__ double xsect_getAofY_pressurised(int shape_type, const double params[3],
+                                            double y, double wMax, int surcharge_method);
+
 // Manning unit-conversion constant stored in GPU constant memory.
 // k_mann = 1.0   for SI units (meters)
 // k_mann = 1.486 for US Customary units (feet)
@@ -2368,22 +2385,6 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
 
-    // Skip fully isolated dry cells when there is no local source term.
-    // If a positive rain/source term exists, allow a source-only wet-up update.
-    // Also include face-based culvert flux (ext_struct_flux_h) which carries
-    // mass from the face-flux path — without this, a dry downstream cell
-    // receiving water through a culvert face would be skipped because
-    // external_source_mps is 0 (culvert flow goes through ext_struct_flux_h).
-    if (d_active && !d_active[c]) {
-        double src =
-            (cell_source_mps ? cell_source_mps[c] : 0.0) +
-            (external_source_mps ? external_source_mps[c] : 0.0);
-        if (ext_struct_flux_h) {
-            src += fmax(0.0, ext_struct_flux_h[c]);  // only positive (incoming) flux
-        }
-        if (!(isfinite(src) && src > 0.0)) return;
-    }
-
     // Modes 1 and 3: skip degenerate cells entirely (flux was dropped or redirected).
     if (d_degen_mask && d_degen_mask[c] && degen_mode != 2) return;
 
@@ -2397,6 +2398,23 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
         inv_a = cell_inv_area[c];
         const double max_inv_a = fmax(max_inv_area, 1.0);
         if (inv_a > max_inv_a) inv_a = max_inv_a;
+    }
+
+    // Skip fully isolated dry cells when there is no local source term.
+    // If a positive rain/source term exists, allow a source-only wet-up update.
+    // Also include face-based culvert / pipe-end flux (ext_struct_flux_h) which
+    // carries mass from the face-flux path — without this, a dry downstream cell
+    // receiving water through a face would be skipped because
+    // external_source_mps is 0 (the flux goes through ext_struct_flux_h).
+    if (d_active && !d_active[c]) {
+        double src =
+            (cell_source_mps ? cell_source_mps[c] : 0.0) +
+            (external_source_mps ? external_source_mps[c] : 0.0);
+        if (ext_struct_flux_h) {
+            // ext_struct_flux_h is m³/s — convert to m/s via inv_a = 1/area
+            src += fmax(0.0, ext_struct_flux_h[c]) * inv_a;
+        }
+        if (!(isfinite(src) && src > 0.0)) return;
     }
 
     double fh = 0.0;
@@ -2455,25 +2473,27 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
         const double dt_sub = dt / static_cast<double>(nsub);
         for (int k = 0; k < nsub; ++k) {
             h_trial += dt_sub * src;
-            if (ext_struct_flux_h) {
-                h_trial += dt_sub * ext_struct_flux_h[c] * inv_a;
-            }
             if (h_trial < 0.0) h_trial = 0.0;
             // Friction is handled separately in the IMEX split.
         }
     } else {
         h_trial += dt * src;
-        if (ext_struct_flux_h) {
-            h_trial += dt * ext_struct_flux_h[c] * inv_a;
-        }
     }
 
     if (!isfinite(h_trial)) h_trial = 0.0;
 
+    // Cap advective (FVM + regular source) depth increase for numerical stability.
     if (max_rel_depth_increase > 0.0) {
         const double h_ref = fmax(h_old, h_min);
         const double h_step_cap = h_old + max_rel_depth_increase * h_ref;
         if (h_trial > h_step_cap) h_trial = h_step_cap;
+    }
+
+    // Pipe/structural face flux (not capped — pipe1d/culvert solvers use their
+    // own stability integration and may deliver large volumes to a dry cell in
+    // a single coupled timestep).
+    if (ext_struct_flux_h) {
+        h_trial += dt * ext_struct_flux_h[c] * inv_a;
     }
     if (depth_cap > 0.0 && h_trial > depth_cap) h_trial = depth_cap;
 
@@ -3000,23 +3020,12 @@ __global__ void pack_diag_kernel(
     d_out[2] = d_n_wet ? static_cast<double>(d_n_wet[0]) : -1.0;
 }
 
-/** GPU kernel: fold per-cell drainage rates into external source accumulator.
- * 1 thread per cell.  Adds d_drainage_q[c] / cell_area[c] to d_external_source_mps[c].
- * d_drainage_q carries volumetric flux (m³/s); d_external_source_mps holds depth rate (m/s).
- * @global */
-__global__ __launch_bounds__(256, 4) void swe2d_fold_drainage_q_kernel(
-    int32_t n_cells,
-    const double* __restrict__ d_drainage_q,
-    const double* __restrict__ d_cell_area,
-    double* __restrict__ d_external_source_mps)
-{
-    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
-    if (c >= n_cells) return;
-    double q = d_drainage_q[c];
-    if (!isfinite(q) || q == 0.0) return;
-    // Divide by cell area to convert m³/s → m/s before accumulating into source term
-    atomicAdd(&d_external_source_mps[c], q / fmax(d_cell_area[c], 1e-12));
-}
+// NOTE: swe2d_fold_drainage_q_kernel was removed in Phase F5 (gap G5).
+// The legacy fold that wrote d_drainage_q / cell_area into d_external_source_mps
+// is superseded: source-sink coupling now writes d_ext_struct_flux_h directly
+// (see plan §3.2 in docs/pipe1d_face_indexed_refactor_plan.md).  The persistent
+// d_drainage_q buffer itself is retained because it is used as an upload
+// staging buffer by swe2d_accumulate_external_source_kernel below.
 
 /** GPU kernel: accumulate host-provided source rates into d_external_source_mps.
  * 1 thread per cell.  Adds rain_src_host[c] to d_external_source_mps[c].
@@ -3140,6 +3149,25 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     atomicAdd(&source_rate[cd],  q_eff / ad);
 }
 
+// NOTE: swe2d_culvert_face_flux_kernel is INTENTIONALLY retained (Phase F5 / gap G5).
+// It handles the 2D-to-2D culvert face-flux path:
+//   donor_cell[i], receiver_cell[i]  → indices into the SWE2D 2D cell array
+//   face_nx[i], face_ny[i], face_width[i]  → 2D face geometry
+//   structure_flow[si]  → precomputed culvert discharge Q_c (m³/s)
+//
+// The unified pipe1D face kernel (swe2d_unified_face_flux_kernel in pipe1d.cu)
+// implements class 6 (CULVERT) for pipe-to-pipe culvert faces inside the pipe1D
+// internal face mesh.  That is a SEPARATE path (pipe1D-internal culverts) and
+// does NOT subsume this 2D-to-2D culvert coupling.  This kernel writes a
+// hydrostatic-pressure three-component face flux directly to d_ext_struct_flux_h
+// (and _hu, _hv), which swe2d_update_kernel consumes; the pipe1D class-6 path
+// writes to face_F_h[k] and atomicAdds ±Q_struct into the same buffers.
+//
+// Launch sites (live, exercised by test_swe2d_gpu_full_solver_structures.py and
+// the Python coupling layer — see swe2d/runtime/coupling.py:1332):
+//   • swe2d_gpu_compute_coupling_full_on_device   (this file, ~line 7723)
+//   • swe2d_gpu_apply_culvert_face_flux           (this file, ~line 8031)
+
 /** GPU kernel: compute face-based culvert flux (mass + momentum) from pre-computed Q.
  * 1 thread per culvert face.  Converts culvert discharge Q_c into a three-component
  * FVM face flux with hydrostatic pressure term and depth-limiter for donor drying.
@@ -3239,6 +3267,23 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     atomicAdd(&ext_flux_hu[receiver], fhu);
     atomicAdd(&ext_flux_hv[receiver], fhv);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Pipe-face / 2D-face HLLC
+//
+// Solves the 1D-shallow-water ↔ 2D-shallow-water Riemann problem at the
+// boundary of a 1D drainage node (inlet, pipe_end, outfall, storage,
+// junction).  Left state is the 1D pipe cell at the open end (cross-section
+// area A_p, volumetric flow Q, depth above invert h_p, opening width w_p).
+// Right state is the 2D surface cell (depth h, momentum (hu, hv), bed z_b).
+// Output is the 3-component face flux (fh, fhu, fhv) accumulated into the
+// 2D solver's external-structure-flux buffers with correct donor/receiver
+// signs.
+//
+// Sign convention: the face normal points FROM the 1D node INTO the 2D cell.
+// A positive flux fh means mass leaves the 1D node and enters the 2D cell.
+// Momentum fhu, fhv carry the 2D-cell velocity component into the 2D cell.
+// ─────────────────────────────────────────────────────────────────────────
 
 /** GPU kernel: zero culvert structure flows to avoid double-counting when face-based coupling is active.
  * 1 thread per culvert.  Sets structure_flow[culvert_indices[j]] = 0.0.
@@ -4474,340 +4519,6 @@ __global__ void swe2d_drainage_pipe_end_qleave_kernel(
 
 // ── swe2d_drainage_pipe_end_bc/exchange kernels moved to pipe1d.cu ────────
 
-/// GPU kernel: compute capture/relief flow between surface cell and drainage inlet.
-/**
- * 1 thread per inlet.  Uses weir-type equation for capture (surface→node)
- * and relief (node→surface) with availability limiters on both sides.
- *
- * @global
- */
-__global__ __launch_bounds__(256, 4) void swe2d_drainage_inlet_exchange_kernel(
-    int32_t n_inlets,
-    int32_t n_cells,
-    const int32_t* __restrict__ inlet_cell,
-    const int32_t* __restrict__ inlet_node,
-    const double* __restrict__ inlet_crest_elev,
-    const double* __restrict__ inlet_width,
-    const double* __restrict__ inlet_coefficient,
-    const double* __restrict__ inlet_max_capture,
-    // HEC-22 geometry arrays
-    const int32_t* __restrict__ inlet_type,
-    const double* __restrict__ inlet_grate_len,
-    const double* __restrict__ inlet_grate_wid,
-    const int32_t* __restrict__ inlet_grate_kind,
-    const double* __restrict__ inlet_grate_open,
-    const double* __restrict__ inlet_curb_len,
-    const double* __restrict__ inlet_curb_ht,
-    const int32_t* __restrict__ inlet_curb_throat,
-    const double* __restrict__ inlet_slot_len,
-    const double* __restrict__ inlet_slot_wid,
-    // State arrays
-    const double* __restrict__ cell_wse,
-    const double* __restrict__ cell_area,
-    const double* __restrict__ cell_depth,
-    const double* __restrict__ node_invert_elev,
-    const double* __restrict__ node_max_depth,
-    const double* __restrict__ node_depth,
-    const double* __restrict__ node_surface_area,
-    double dt_s,
-    double gravity,
-    double head_deadband_m,
-    double* __restrict__ q_cell,
-    double* __restrict__ node_depth_delta,
-    double* __restrict__ limiter_event_count,
-    double* __restrict__ limiter_volume_m3)
-{
-    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n_inlets) return;
-    const int32_t c = inlet_cell[i];
-    const int32_t n = inlet_node[i];
-    if (c < 0 || c >= n_cells || n < 0) return;
-
-    const double wse_surface = cell_wse[c];
-    const double wse_node = node_invert_elev[n] + fmax(0.0, node_depth[n]);
-    const double crest = inlet_crest_elev[i];
-    const double q_cap = inlet_max_capture[i];
-    const double deadband = fmax(0.0, head_deadband_m);
-
-    // Driving head (capture: surface → node)
-    const double H = fmax(0.0, wse_surface - fmax(wse_node, crest) - deadband);
-    // Driving head (relief: node → surface)
-    const double H_relief = fmax(0.0, wse_node - fmax(wse_surface, crest) - deadband);
-
-    double q_capture = 0.0;
-    double Ao_total = 0.0;  // total opening area for relief orifice
-
-    // Always compute Ao_total (opening area) for relief orifice — needed
-    // even when H=0 so the relief path uses the correct orifice area.
-    const int itype = inlet_type ? inlet_type[i] : 0;
-    switch (itype) {
-    case 0: { // GRATE
-        const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
-        const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
-        const double P_grate = 2.0 * (Lg + Wg);
-        const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
-            ? inlet_grate_kind[i] : -1;
-        const double openFrac = (gkind >= 0)
-            ? SWE2D_GRATE_OPENING_RATIOS[gkind]
-            : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
-        Ao_total = Lg * Wg * openFrac;
-        if (H > 0.0) {
-            const double H_trans = (P_grate > 0.0) ? 1.79 * Ao_total / P_grate : 1e6;
-            if (H <= H_trans)
-                q_capture = 3.0 * P_grate * pow(H, 1.5);
-            else
-                q_capture = 0.67 * Ao_total * sqrt(2.0 * gravity * H);
-        }
-        break;
-    }
-    case 1: { // CURB
-        const double L = fmax(1e-6, inlet_curb_len ? inlet_curb_len[i] : 1.0);
-        const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
-        Ao_total = L * h;
-        if (H > 0.0) {
-            const double H_weir = h;
-            const double H_orif = 1.4 * h;
-            if (H <= H_weir) {
-                q_capture = 3.0 * L * pow(H, 1.5);
-            } else if (H >= H_orif) {
-                double H_eff = H - h * 0.5;
-                if (inlet_curb_throat && inlet_curb_throat[i] == 2)
-                    H_eff = H - h * 0.5 * 0.7071;
-                q_capture = 0.67 * h * L * sqrt(2.0 * gravity * fmax(1e-10, H_eff));
-            } else {
-                const double r = (H - H_weir) / (H_orif - H_weir);
-                const double Qw = 3.0 * L * pow(H_weir, 1.5);
-                const double Qo = 0.67 * h * L * sqrt(2.0 * gravity * (H_orif - h * 0.5));
-                q_capture = (1.0 - r) * Qw + r * Qo;
-            }
-        }
-        break;
-    }
-    case 2: { // SLOTTED
-        const double L = fmax(1e-6, inlet_slot_len ? inlet_slot_len[i] : 1.0);
-        const double w = fmax(1e-6, inlet_slot_wid ? inlet_slot_wid[i] : 0.05);
-        Ao_total = L * w;
-        if (H > 0.0) {
-            const double H_trans = 2.587 * w;
-            if (H <= H_trans)
-                q_capture = 2.48 * L * pow(H, 1.5);
-            else
-                q_capture = 0.8 * L * w * sqrt(2.0 * gravity * H);
-        }
-        break;
-    }
-    case 3: { // COMBO — grate + curb sweep
-        const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
-        const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
-        const double P_grate = 2.0 * (Lg + Wg);
-        const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
-            ? inlet_grate_kind[i] : -1;
-        const double openFrac = (gkind >= 0)
-            ? SWE2D_GRATE_OPENING_RATIOS[gkind]
-            : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
-        const double Ao_g = Lg * Wg * openFrac;
-        const double L_sweep = fmax(0.0, (inlet_curb_len ? inlet_curb_len[i] : 0.0) - Lg);
-        const double h_curb = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
-        Ao_total = Ao_g + L_sweep * h_curb;
-        if (H > 0.0) {
-            const double H_trans_g = (P_grate > 0.0) ? 1.79 * Ao_g / P_grate : 1e6;
-            const double qg = (H <= H_trans_g)
-                ? (3.0 * P_grate * pow(H, 1.5))
-                : (0.67 * Ao_g * sqrt(2.0 * gravity * H));
-            double qc = 0.0;
-            if (L_sweep > 0.0) {
-                if (H <= h_curb)
-                    qc = 3.0 * L_sweep * pow(H, 1.5);
-                else
-                    qc = 0.67 * h_curb * L_sweep * sqrt(2.0 * gravity * fmax(1e-10, H - h_curb * 0.5));
-            }
-            q_capture = qg + qc;
-        }
-        break;
-    }
-    case 4: // CUSTOM — legacy width*H hybrid
-    default: {
-        const double width = fmax(0.0, inlet_width[i]);
-        const double cd = fmax(0.0, inlet_coefficient[i]);
-        Ao_total = width * fmax(0.01, H > 0.0 ? H : 1.0);
-        if (H > 0.0) {
-            const double area = width * fmax(0.01, H);
-            q_capture = cd * area * sqrt(fmax(0.0, 2.0 * gravity * H));
-        }
-        break;
-    }
-    }
-
-    // Relief direction (node → surface): orifice through total opening area
-    double q_relief = 0.0;
-    if (H_relief > 0.0 && Ao_total > 0.0) {
-        q_relief = 0.67 * Ao_total * sqrt(2.0 * gravity * H_relief);
-    } else if (H_relief > 0.0) {
-        // Fallback: legacy relief using width
-        const double width = fmax(0.0, inlet_width[i]);
-        const double cd = fmax(0.0, inlet_coefficient[i]);
-        const double area = width * fmax(0.01, H_relief);
-        q_relief = cd * area * sqrt(fmax(0.0, 2.0 * gravity * H_relief));
-    }
-
-    // Apply max_capture cap
-    if (isfinite(q_cap) && q_cap > 0.0) {
-        q_capture = fmin(q_capture, q_cap);
-        q_relief = fmin(q_relief, q_cap);
-    }
-
-    // ── Availability limiters (unchanged) ──
-    const double node_area = fmax(1.0, node_surface_area[n]);
-    const double d_node = fmax(0.0, node_depth[n]);
-    const double rem_node_storage = fmax(0.0, node_max_depth[n] - d_node) * node_area;
-    const double avail_node_storage = fmax(0.0, d_node) * node_area;
-    const double q_cap_node_in = (dt_s > 0.0) ? rem_node_storage / dt_s : 0.0;
-    const double q_cap_node_out = (dt_s > 0.0) ? avail_node_storage / dt_s : 0.0;
-
-    if (q_capture > q_cap_node_in) {
-        if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-        if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_capture - q_cap_node_in) * dt_s);
-        q_capture = q_cap_node_in;
-    }
-
-    if (cell_depth && cell_area) {
-        const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
-        const double q_cap_surface = (dt_s > 0.0) ? avail_surface_vol / dt_s : 0.0;
-        if (q_capture > q_cap_surface) {
-            if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-            if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_capture - q_cap_surface) * dt_s);
-            q_capture = q_cap_surface;
-        }
-    }
-
-    if (q_relief > q_cap_node_out) {
-        if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-        if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_relief - q_cap_node_out) * dt_s);
-        q_relief = q_cap_node_out;
-    }
-
-    atomicAdd(&q_cell[c], q_relief - q_capture);
-    atomicAdd(&node_depth_delta[n], dt_s * (q_capture - q_relief) / node_area);
-}
-
-/// GPU kernel: exchange flow between outfall node and 2D surface cell.
-/**
- * 1 thread per outfall.  Handles surcharge (network→surface) and
- * backwater (surface→network) using orifice equation with availability
- * limiters.  Supports zero-storage daylight outfalls.
- *
- * @global
- */
-__global__ __launch_bounds__(256, 4) void swe2d_drainage_outfall_exchange_kernel(
-    int32_t n_outfalls,
-    int32_t n_cells,
-    const int32_t* __restrict__ outfall_cell,
-    const int32_t* __restrict__ outfall_node,
-    const double* __restrict__ outfall_invert_elev,
-    const double* __restrict__ outfall_diameter,
-    const double* __restrict__ outfall_coefficient,
-    const double* __restrict__ outfall_max_flow,
-    const int32_t* __restrict__ outfall_zero_storage,
-    const double* __restrict__ cell_wse,
-    const double* __restrict__ cell_area,
-    const double* __restrict__ cell_depth,
-    const double* __restrict__ node_max_depth,
-    double* __restrict__ node_depth,
-    const double* __restrict__ node_surface_area,
-    double dt_s,
-    double gravity,
-    double head_deadband_m,
-    double* __restrict__ q_cell,
-    double* __restrict__ node_depth_delta,
-    double* __restrict__ node_depth_work,
-    double* __restrict__ limiter_event_count,
-    double* __restrict__ limiter_volume_m3)
-{
-    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n_outfalls) return;
-    const int32_t c = outfall_cell[i];
-    const int32_t n = outfall_node[i];
-    if (c < 0 || c >= n_cells || n < 0) return;
-
-    const double d_pipe = fmax(0.0, outfall_diameter[i]);
-    const double area_pipe = (d_pipe > 0.0) ? (0.25 * M_PI * d_pipe * d_pipe) : 0.0;
-    if (area_pipe <= 0.0) return;
-
-    const double invert = outfall_invert_elev[i];
-    const double coeff = fmax(0.0, outfall_coefficient[i]);
-    const double q_cap = outfall_max_flow[i];
-    const bool zero_storage = (outfall_zero_storage[i] != 0);
-    const double deadband = fmax(0.0, head_deadband_m);
-
-    const double wse_surface = cell_wse[c];
-    double d_node = 0.0;
-    double node_area = 1.0;
-    double wse_node = invert;
-    if (!zero_storage) {
-        d_node = fmax(0.0, node_depth[n]);
-        node_area = fmax(1.0, node_surface_area[n]);
-        wse_node = invert + d_node;
-    } else {
-        // Free outfall: no storage, no backpressure. Force node depth to zero
-        // so the pipe solver sees free discharge at the pipe terminus.
-        node_depth[n] = 0.0;
-    }
-
-    if (wse_node > wse_surface + deadband && wse_node > invert) {
-        // Surcharge: network discharges to surface.
-        const double head = fmax(0.0, wse_node - wse_surface);
-        double q_out = coeff * area_pipe * sqrt(fmax(0.0, 2.0 * gravity * head));
-        if (isfinite(q_cap) && q_cap > 0.0) q_out = fmin(q_out, q_cap);
-        q_out = fmax(0.0, q_out);
-
-        if (!zero_storage) {
-            const double avail_node_vol = d_node * node_area;
-            const double q_cap_node = (dt_s > 0.0) ? (avail_node_vol / dt_s) : 0.0;
-            if (q_out > q_cap_node) {
-                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_out - q_cap_node) * dt_s);
-                q_out = q_cap_node;
-            }
-        }
-
-        atomicAdd(&q_cell[c], q_out);
-        if (!zero_storage) {
-            atomicAdd(&node_depth_delta[n], -dt_s * q_out / node_area);
-        }
-    } else if (wse_surface > wse_node + deadband && wse_surface > invert) {
-        // Backwater: surface drains into outfall node.
-        const double head = fmax(0.0, wse_surface - wse_node);
-        double q_in = coeff * area_pipe * sqrt(fmax(0.0, 2.0 * gravity * head));
-        if (isfinite(q_cap) && q_cap > 0.0) q_in = fmin(q_in, q_cap);
-        q_in = fmax(0.0, q_in);
-
-        if (!zero_storage) {
-            const double rem_node_vol = fmax(0.0, node_max_depth[n] - d_node) * node_area;
-            const double q_cap_node = (dt_s > 0.0) ? (rem_node_vol / dt_s) : 0.0;
-            if (q_in > q_cap_node) {
-                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_in - q_cap_node) * dt_s);
-                q_in = q_cap_node;
-            }
-        }
-
-        if (cell_depth && cell_area) {
-            const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
-            const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
-            if (q_in > q_cap_surface) {
-                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_in - q_cap_surface) * dt_s);
-                q_in = q_cap_surface;
-            }
-        }
-
-        atomicAdd(&q_cell[c], -q_in);
-        if (!zero_storage) {
-            atomicAdd(&node_depth_delta[n], dt_s * q_in / node_area);
-        }
-    }
-}
-
 /** GPU kernel: apply accumulated depth delta to drainage node depths.
  * 1 thread per node.  node_depth += node_depth_delta, clamped to [0,max].
  * @global */
@@ -5721,9 +5432,9 @@ void swe2d_gpu_step(
                     dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
                     dev->d_cell_source_mps,
                     dev->d_external_source_mps,
-                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
-                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
-                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr,
+                    dev->d_ext_struct_flux_h,
+                    dev->d_ext_struct_flux_hu,
+                    dev->d_ext_struct_flux_hv,
                     dev->d_max_h, dev->d_max_hu, dev->d_max_hv);
                 if (source_imex_split) {
                     swe2d_implicit_friction_kernel<<<grid_update, BLOCK, 0, dev->d_stream>>>(
@@ -6009,6 +5720,26 @@ void swe2d_gpu_step(
         dump_flux_summary("GPU", h_flux, hu_flux, hv_flux);
     }
 
+    // ── Unified face flux for pipe1D SURFACE_2D_* faces ──
+    // The pipe1d advance (apply_native_device_sources) already evaluated the
+    // SURFACE_2D exchange and wrote it to d_ext_struct_flux_* before this
+    // function runs (the coupling controller calls swe2d_pipe1d_step first,
+    // which evaluates the unified face flux with real 2D arrays via the
+    // solver_dev pointer, writing both ext_struct_flux and pipe d_A).
+    //
+    // The update kernel below reads d_ext_struct_flux_* and applies the
+    // exchange to h/hu/hv.  We must NOT zero or re-evaluate here — that
+    // would discard the pipe1d's exchange contribution and apply only the
+    // post-drain (under)exchange, losing mass.
+    //
+    // The ext_struct_flux buffers may not yet be allocated if there was no
+    // preceding pipe1d advance (test-only code path).  Allocate on demand:
+    if (dev->pipe1d.n_faces > 0
+        && dev->pipe1d.d_flux_Q_scratch
+        && dev->d_h && dev->d_cell_zb) {
+        swe2d_gpu_alloc_ext_struct_flux(dev, n_cells);
+    }
+
     // Kernel 2: Update
     {
         CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
@@ -6041,9 +5772,9 @@ void swe2d_gpu_step(
             dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
             dev->d_cell_source_mps,
             dev->d_external_source_mps,
-            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
-            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
-            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr,
+            dev->d_ext_struct_flux_h,
+            dev->d_ext_struct_flux_hu,
+            dev->d_ext_struct_flux_hv,
             dev->d_max_h, dev->d_max_hu, dev->d_max_hv);
         if (source_imex_split) {
             swe2d_implicit_friction_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
@@ -7606,11 +7337,18 @@ void swe2d_gpu_set_external_sources(
     int32_t n_cells)
 {
     if (!dev) return;
-    if (!dev->d_external_source_mps || n_cells <= 0 || n_cells != dev->n_cells) {
+    if (!dev->d_external_source_mps || dev->n_cells <= 0) {
         return;
     }
 
-    if (source_mps) {
+    // Zero the buffer when called with NULL or n_cells=0 (used by the Python
+    // swe2d_solver_set_external_sources binding to clear the source field).
+    // Pre-Phase 2.4, swe2d_gpu_compute_coupling_full_on_device zeroed this
+    // buffer before each coupling write — F8 removed that wrapper and the
+    // per-step reset went with it, causing accumulate_external_sources_native
+    // contributions to compound quadratically across timesteps.
+    const int32_t actual_n = (source_mps != nullptr && n_cells > 0) ? n_cells : dev->n_cells;
+    if (source_mps && n_cells > 0 && n_cells == dev->n_cells) {
         CUDA_CHECK(cudaMemcpyAsync(
             dev->d_external_source_mps,
             source_mps,
@@ -7618,10 +7356,13 @@ void swe2d_gpu_set_external_sources(
             cudaMemcpyHostToDevice,
             dev->d_stream));
     } else {
+        // source is null OR n_cells != n_cells (caller signaling "clear me") —
+        // zero the full buffer with dev->n_cells so we always restart fresh.
+        (void)actual_n;
         CUDA_CHECK(cudaMemsetAsync(
             dev->d_external_source_mps,
             0,
-            static_cast<size_t>(n_cells) * sizeof(double),
+            static_cast<size_t>(dev->n_cells) * sizeof(double),
             dev->d_stream));
     }
 }
@@ -7862,73 +7603,10 @@ __global__ void swe2d_coupling_wse_from_state_kernel(
     d_cell_wse[c] = h + zb;
 }
 
-// ── Pipe-end boundary-condition application (must run before pipe1d_step) ─
-void swe2d_gpu_apply_pipe_end_bc(SWE2DDeviceState* dev, int32_t n_cells)
-{
-    if (!dev) dev = s_coupling_dev;
-    if (!dev) return;
-    if (n_cells <= 0) n_cells = dev->n_cells;
-    if (n_cells <= 0) return;
-
-    auto& sf_ws = dev->sf_ws;
-    auto& dw = dev->drain_ws;
-    auto& p = dev->pipe1d;
-    cudaStream_t stream = dev->d_stream;
-    constexpr int BLOCK = 256;
-
-    if (dw.n_pipe_ends <= 0 || !dw.d_p_cell || !dw.d_p_node
-        || !dw.d_p_invert || !dw.d_p_depth_bc || !dw.d_p_node_area) {
-        return;
-    }
-
-    // Ensure node_qleave is zeroed; the BC kernel uses it to choose the loss
-    // coefficient direction and falls back to WSE vs node head when it is ~0.
-    if (dw.d_node_qleave && p.n_nodes > 0) {
-        CUDA_CHECK(cudaMemsetAsync(dw.d_node_qleave, 0,
-            static_cast<size_t>(p.n_nodes) * sizeof(double), stream));
-    }
-
-    // Ensure d_cell_wse is allocated before the BC kernel runs.
-    // The preload function (swe2d_gpu_preload_coupling_cell_area) normally
-    // allocates this, but may not have been called yet on the first timestep
-    // in a drainage-only simulation (no structures).  Lazily allocate here
-    // to avoid a NULL-pointer crash in the BC kernel.
-    sf_ensure_buf(sf_ws.d_cell_wse, sf_ws.cell_capacity, n_cells);
-
-    // Compute surface WSE from current 2D state.
-    if (dev->d_h && dev->d_cell_zb) {
-        int grid_wse = (n_cells + BLOCK - 1) / BLOCK;
-        swe2d_coupling_wse_from_state_kernel<<<grid_wse, BLOCK, 0, stream>>>(
-            n_cells, dev->d_h, dev->d_cell_zb, sf_ws.d_cell_wse);
-        CUDA_CHECK(cudaGetLastError());
-    } else {
-        // No 2D state yet — zero WSE so pipe sees no surface water.
-        CUDA_CHECK(cudaMemsetAsync(sf_ws.d_cell_wse, 0,
-            static_cast<size_t>(n_cells) * sizeof(double), stream));
-    }
-
-    swe2d_drainage_pipe_end_bc_kernel_host(
-        dw.n_pipe_ends, n_cells,
-        dw.d_p_cell, dw.d_p_node, dw.d_p_invert,
-        dw.d_p_diameter, dw.d_p_area,
-        dw.d_p_kin, dw.d_p_kout,
-        sf_ws.d_cell_wse, dev->d_h, 1.0e-6,
-        p.d_node_invert, p.d_node_surface_area,
-        dw.d_node_qleave,
-        sf_ws.gravity,
-        p.d_node_depth, dw.d_p_depth_bc, dw.d_p_node_area);
-
-    // Re-initialize pipe cell areas from the boundary node depths so the
-    // pipe solver sees a consistent initial state (area and head match).
-    if (p.d_A && p.d_node_depth) {
-        swe2d_pipe1d_init_area_from_depth(&p);
-    }
-}
-
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
     const double* host_structure_flows,
-    bool graph_safe)
+     bool graph_safe)
 { // if non-null, override computed structure flows
     if (!dev) dev = s_coupling_dev;
     if (!dev) throw std::runtime_error("compute_coupling_full_on_device: no GPU device state");
@@ -7943,15 +7621,14 @@ void swe2d_gpu_compute_coupling_full_on_device(
     constexpr int BLOCK = 256;
 
     // Ensure device-resident drainage q buffer exists.
+    // (The buffer is still legitimately used as upload staging by
+    // swe2d_gpu_accumulate_external_source; the legacy fold kernel that
+    // wrote d_drainage_q into d_external_source_mps was deleted in
+    // Phase F5/G5 because source-sink coupling now writes
+    // d_ext_struct_flux_h directly.)
     swe2d_gpu_ensure_drainage_q_buf(dev, n_cells);
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_external_source_mps, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
-
-    // ── Zero the drainage q buffer for the next step ──
-    // This runs BEFORE the fold below (which reads d_drainage_q from the
-    // CURRENT step).  The fold is at the bottom — zero AFTER the fold,
-    // at the end of this function.
-    // Note: d_drainage_q is allocated (if first call) but NOT zeroed here.
 
     if (sf_ws.cell_capacity >= n_cells && sf_ws.d_cell_wse) {
         if (cell_wse_host) {
@@ -8136,90 +7813,6 @@ void swe2d_gpu_compute_coupling_full_on_device(
                 dev->d_external_source_mps);
             CUDA_CHECK(cudaGetLastError());
         }
-    }
-
-    // ── Drainage exchange: surface ↔ pipe network via inlets/outfalls ──
-    // Launches inlet capture, outfall surcharge/backwater, and node_depth
-    // delta application.  Writes exchange Q into d_drainage_q (for the fold
-    // below) and updates pipe1d.d_node_depth in-place.
-    auto& dw = dev->drain_ws;
-    if (dw.exchange_loaded && dw.d_q_cell) {
-        // Zero delta and exchange Q buffers
-        CUDA_CHECK(cudaMemsetAsync(dw.d_node_delta, 0,
-            static_cast<size_t>(dw.n_nodes) * sizeof(double), stream));
-        CUDA_CHECK(cudaMemsetAsync(cpl_ws.d_drainage_q, 0,
-            static_cast<size_t>(n_cells) * sizeof(double), stream));
-        auto& p = dev->pipe1d;
-        if (p.d_A && p.d_node_depth) {
-            int grid_inlets = (dw.n_inlets + BLOCK - 1) / BLOCK;
-            int grid_outfalls = (dw.n_outfalls + BLOCK - 1) / BLOCK;
-            int grid_nodes = (p.n_nodes + BLOCK - 1) / BLOCK;
-            if (dw.n_inlets > 0 && dw.d_i_cell) {
-                swe2d_drainage_inlet_exchange_kernel<<<grid_inlets, BLOCK, 0, stream>>>(
-                    dw.n_inlets, n_cells,
-                    dw.d_i_cell, dw.d_i_node, dw.d_i_crest, dw.d_i_width,
-                    dw.d_i_cd, dw.d_i_qmax,
-                    dw.d_i_type, dw.d_i_grate_len, dw.d_i_grate_wid,
-                    dw.d_i_grate_kind, dw.d_i_grate_open,
-                    dw.d_i_curb_len, dw.d_i_curb_ht, dw.d_i_curb_throat,
-                    dw.d_i_slot_len, dw.d_i_slot_wid,
-                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, dev->d_h,
-                    p.d_node_invert, dw.d_node_maxd, p.d_node_depth,
-                    p.d_node_surface_area,
-                    s_coupling_dt, sf_ws.gravity, 0.0,
-                    cpl_ws.d_drainage_q, dw.d_node_delta,
-                    dw.d_limiter_events, dw.d_limiter_volume);
-                CUDA_CHECK(cudaGetLastError());
-            }
-            if (dw.n_outfalls > 0 && dw.d_o_cell) {
-                swe2d_drainage_outfall_exchange_kernel<<<grid_outfalls, BLOCK, 0, stream>>>(
-                    dw.n_outfalls, n_cells,
-                    dw.d_o_cell, dw.d_o_node, dw.d_o_invert, dw.d_o_diameter,
-                    dw.d_o_cd, dw.d_o_qmax, dw.d_o_zero_storage,
-                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, dev->d_h,
-                    dw.d_node_maxd, p.d_node_depth, p.d_node_surface_area,
-                    s_coupling_dt, sf_ws.gravity, 0.0,
-                    cpl_ws.d_drainage_q, dw.d_node_delta, dw.d_node_qleave,
-                    dw.d_limiter_events, dw.d_limiter_volume);
-                CUDA_CHECK(cudaGetLastError());
-            }
-            if (p.d_node_depth && dw.d_node_delta) {
-                swe2d_drainage_apply_delta_kernel<<<grid_nodes, BLOCK, 0, stream>>>(
-                    p.n_nodes, dw.d_node_maxd, dw.d_node_delta, p.d_node_depth);
-                CUDA_CHECK(cudaGetLastError());
-            }
-            // ── Pipe-end exchange: surface ↔ pipe network via daylight nodes ──
-            // The pipe-end BC (surface WSE → node depth) was already applied
-            // before the pipe solver in swe2d_gpu_apply_pipe_end_bc.  The pipe
-            // solver's mass balance computed p.d_node_net_q, which is the net
-            // discharge entering each node.  Apply it directly to the surface
-            // cell with the surface availability limiter.
-            if (dw.n_pipe_ends > 0 && dw.d_p_cell && dw.d_p_node
-                && dw.d_p_node_area && p.d_node_net_q) {
-                swe2d_drainage_pipe_end_exchange_kernel_host(
-                    dw.n_pipe_ends, n_cells,
-                    dw.d_p_cell, dw.d_p_node,
-                    dw.d_p_node_area,
-                    cpl_ws.d_cell_area, dev->d_h,
-                    p.d_node_net_q,
-                    s_coupling_dt,
-                    cpl_ws.d_drainage_q,
-                    dw.d_limiter_events, dw.d_limiter_volume,
-                    dw.d_p_enable_overflow,
-                    dw.d_p_max_overflow_rate);
-            }
-        }
-    }
-
-    // ── Fold drainage q into external source ──
-    if (cpl_ws.d_drainage_q) {
-        int grid = (n_cells + BLOCK - 1) / BLOCK;
-        swe2d_fold_drainage_q_kernel<<<grid, BLOCK, 0, stream>>>(
-            n_cells, cpl_ws.d_drainage_q, dev->d_cell_area, dev->d_external_source_mps);
-        CUDA_CHECK(cudaGetLastError());
-        // Zero the drainage q buffer for the next step
-        CUDA_CHECK(cudaMemsetAsync(cpl_ws.d_drainage_q, 0,
-            static_cast<size_t>(n_cells) * sizeof(double), stream));
     }
 
     // Sync stream after coupling work so the solver's graph capture on the next
@@ -9522,6 +9115,9 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const double* pipe_end_invert, const double* pipe_end_diameter,
     const double* pipe_end_area,
     const double* pipe_end_kin, const double* pipe_end_kout,
+    const int32_t* pipe_end_enable_overflow,
+    const double* pipe_end_overflow_elevation,
+    const double* pipe_end_max_overflow_rate,
     const double* node_max_depth)
 {
     if (!dev) return;
@@ -9566,35 +9162,22 @@ void swe2d_gpu_upload_drainage_exchange_params(
         h2d(ws.d_p_area, pipe_end_area, n_pipe_ends * sizeof(double));
         h2d(ws.d_p_kin, pipe_end_kin, n_pipe_ends * sizeof(double));
         h2d(ws.d_p_kout, pipe_end_kout, n_pipe_ends * sizeof(double));
+        if (pipe_end_enable_overflow)
+            h2d(ws.d_p_enable_overflow, pipe_end_enable_overflow, n_pipe_ends * sizeof(int32_t));
+        if (pipe_end_overflow_elevation)
+            h2d(ws.d_p_overflow_elevation, pipe_end_overflow_elevation, n_pipe_ends * sizeof(double));
+        if (pipe_end_max_overflow_rate)
+            h2d(ws.d_p_max_overflow_rate, pipe_end_max_overflow_rate, n_pipe_ends * sizeof(double));
     }
     if (n_nodes > 0 && ws.d_node_maxd) {
         h2d(ws.d_node_maxd, node_max_depth, n_nodes * sizeof(double));
     }
-    // Mark pipe-end and outfall nodes as boundary (no storage in mass balance)
-    if (n_nodes > 0 && dev->pipe1d.d_node_is_boundary) {
-        std::vector<int32_t> is_boundary(n_nodes, 0);
-        for (int32_t j = 0; j < n_outfalls; ++j) {
-            int32_t n = outfall_node[j];
-            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
-        }
-        for (int32_t j = 0; j < n_pipe_ends; ++j) {
-            int32_t n = pipe_end_node[j];
-            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
-        }
-        h2d(dev->pipe1d.d_node_is_boundary, is_boundary.data(), n_nodes * sizeof(int32_t));
-    }
-    // Mark inlet nodes (flow-prescribed BC): zero then mark from inlet_node array.
-    // This must run every upload because inlet_node may have changed.
-    if (n_nodes > 0 && dev->pipe1d.d_node_is_inlet) {
-        CUDA_CHECK(cudaMemsetAsync(dev->pipe1d.d_node_is_inlet, 0,
-            static_cast<size_t>(n_nodes) * sizeof(int32_t), dev->d_stream));
-        if (n_inlets > 0) {
-            dim3 grid_inlets((n_inlets + 256 - 1) / 256);
-            swe2d_mark_inlet_nodes_kernel<<<grid_inlets, 256, 0, dev->d_stream>>>(
-                n_inlets, ws.d_i_node, n_nodes, dev->pipe1d.d_node_is_inlet);
-            CUDA_CHECK(cudaGetLastError());
-        }
-    }
+    // (removed Phase 2.1): boundary/inlet node marking using d_node_is_boundary
+    //   and d_node_is_inlet retired. The unified face mesh replaces these flags:
+    //   pipe-end faces carry class 3 (SURFACE_2D_PIPE_END), inlet faces carry
+    //   class 4 (SURFACE_2D_INLET), outfall faces carry class 1 (OUTFALL_BC).
+    //   The face mesh is built in swe2d_build_pipe1d_mesh directly from the
+    //   manhole/inlet/outfall arrays in the unified API.
     ws.n_inlets = n_inlets;
     ws.n_outfalls = n_outfalls;
     ws.n_nodes = n_nodes;
@@ -9612,32 +9195,12 @@ void swe2d_gpu_upload_outfall_free_bc_nodes(
     const int32_t* outfall_node_indices)
 {
     if (!dev || n_outfall_nodes <= 0) return;
-    const int32_t n_nodes = dev->pipe1d.n_nodes;
-    if (n_nodes <= 0) return;
-
-    // Set outfall flags on device
-    if (dev->pipe1d.d_node_is_outfall) {
-        std::vector<int32_t> is_outfall(n_nodes, 0);
-        for (int32_t j = 0; j < n_outfall_nodes; ++j) {
-            int32_t n = outfall_node_indices[j];
-            if (n >= 0 && n < n_nodes) is_outfall[n] = 1;
-        }
-        CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_node_is_outfall, is_outfall.data(),
-            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyHostToDevice));
-    }
-
-    // Also mark them as boundary nodes (no storage mass balance)
-    if (dev->pipe1d.d_node_is_boundary) {
-        std::vector<int32_t> is_boundary(n_nodes, 0);
-        CUDA_CHECK(cudaMemcpy(is_boundary.data(), dev->pipe1d.d_node_is_boundary,
-            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyDeviceToHost));
-        for (int32_t j = 0; j < n_outfall_nodes; ++j) {
-            int32_t n = outfall_node_indices[j];
-            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
-        }
-        CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_node_is_boundary, is_boundary.data(),
-            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyHostToDevice));
-    }
+    // Phase 2.1 — body retired. Outfall flags now live on per-face arrays
+    // (face_class == OUTFALL_BC for free outfalls, face_class == SURFACE_2D_PIPE_END
+    // for coupled outfalls). swe2d_build_pipe1d_mesh builds the face mesh directly
+    // from the unified API's manhole/outfall arrays; the legacy per-node flag
+    // arrays (d_node_is_outfall / d_node_is_boundary) are gone.
+    (void)outfall_node_indices;
 }
 
 // Graph management (Suggestion 9)
@@ -9805,8 +9368,8 @@ __global__ void compute_line_metrics_profile_kernel(
         }
     }
 
-    double nx = normal_x[line];
-    double ny = normal_y[line];
+    double nx = normal_x[s];
+    double ny = normal_y[s];
     double normal_v = uu * nx + vv * ny;
     double qn = wet ? hh * normal_v : 0.0;
     double fr = wet ? vel / sqrt(fmax(gravity * hh, 1.0e-12)) : 0.0;
@@ -9897,7 +9460,7 @@ __global__ void compute_line_metrics_ts_kernel(
         out[1] = vel_num   * inv_wsum;   // velocity_ms
         out[2] = wse_num   * inv_wsum;   // wse_m
         out[3] = bed_num   * inv_wsum;   // bed_m
-        out[4] = qn_sum    * inv_wsum;   // flow_cms (weighted sum of qn)
+        out[4] = qn_sum;                 // flow_cms (total volumetric flow, m³/s)
         out[5] = wet_sum   * inv_wsum;   // wet_frac
         out[6] = fr_num    * inv_wsum;   // fr
     }
@@ -9978,8 +9541,8 @@ void swe2d_gpu_configure_line_sampling(
     alloc(&dev->d_lm_station_offsets, station_offsets, static_cast<size_t>(n_lines + 1) * sizeof(int32_t));
     alloc(&dev->d_lm_cell_idx,       cell_idx,         static_cast<size_t>(total_stations) * sizeof(int32_t));
     alloc(&dev->d_lm_weights,        weights,           static_cast<size_t>(total_stations) * sizeof(double));
-    alloc(&dev->d_lm_normal_x,       normal_x,          static_cast<size_t>(n_lines) * sizeof(double));
-    alloc(&dev->d_lm_normal_y,       normal_y,          static_cast<size_t>(n_lines) * sizeof(double));
+    alloc(&dev->d_lm_normal_x,       normal_x,          static_cast<size_t>(total_stations) * sizeof(double));
+    alloc(&dev->d_lm_normal_y,       normal_y,          static_cast<size_t>(total_stations) * sizeof(double));
     alloc(&dev->d_lm_station_m,      station_m,         static_cast<size_t>(total_stations) * sizeof(double));
 
     swe2d_gpu_ensure_line_metrics_buf(dev, 64);

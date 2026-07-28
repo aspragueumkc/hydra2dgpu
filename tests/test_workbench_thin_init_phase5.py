@@ -21,7 +21,7 @@ from typing import get_type_hints
 from unittest.mock import MagicMock, patch
 
 # Save real QApplication BEFORE installing mocks (needed for dialog construction)
-from PyQt5.QtWidgets import QApplication as _REAL_QAPP  # noqa: E402
+from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP  # noqa: E402
 # Install QGIS mocks BEFORE any swe2d imports
 from tests.mocks.qgis_env import install_qgis_mocks  # noqa: E402
 install_qgis_mocks()

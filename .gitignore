@@ -11,6 +11,8 @@ Makefile
 *.pyd
 *.o
 *.obj
+# scikit-build-core build dir (created by `python -m build --wheel`)
+_skbuild/
 
 # Distribution
 dist/
@@ -25,6 +27,9 @@ __pycache__/
 # Knowledge graph cache
 graphify-out/
 
+# Agent memory index (rebuildable; canonical memory lives in docs/memory/)
+.memory/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -35,6 +40,9 @@ temp_error_log.txt
 tests/results/*.log
 symbology-style.db
 marketing/
+.superpowers/
+.worktrees/
+.worktrees/
 
 # Heavy / third-party reference material (file size)
 reference/example_test_project/

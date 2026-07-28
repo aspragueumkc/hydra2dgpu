@@ -52,7 +52,7 @@ try:
         QgsApplication, QgsVectorLayer, QgsFeature, QgsGeometry,
         QgsPointXY, QgsFields, QgsField, QgsWkbTypes,
     )
-    from PyQt5.QtCore import QVariant
+    from qgis.PyQt.QtCore import QVariant
     _HAVE_QGIS = True
 except ImportError:
     _HAVE_QGIS = False
@@ -71,7 +71,7 @@ except Exception:
     _HAVE_WORKBENCH = False
 
 try:
-    from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
+    from swe2d.core.boundary_qgis_adapter import (
         apply_bc_layer_overrides_qgis,
         collect_bc_layer_hydrographs_qgis,
         collect_bc_layer_edge_groups_qgis,

@@ -166,11 +166,6 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.internal_flow_layer_combo, QComboBox)
         self.assertEqual(view.internal_flow_layer_combo.objectName(), "internal_flow_layer_combo")
 
-    def test_view_has_internal_flow_field_edit(self):
-        view = self._make_view()
-        self.assertIsInstance(view.internal_flow_field_edit, QLineEdit)
-        self.assertEqual(view.internal_flow_field_edit.objectName(), "internal_flow_field_edit")
-
     def test_view_has_run_time_edit(self):
         view = self._make_view()
         self.assertIsInstance(view.run_time_edit, QLineEdit)

@@ -135,6 +135,7 @@ def make_drainage_inp(
     outfalls: List[Tuple[str, float]] = None,
     conduits: List[Tuple[str, str, str, float, float, float]] = None,
     xsections: List[Tuple[str, str, float]] = None,
+    losses: List[Tuple[str, float, float]] = None,
     inflows: List[Tuple[str, str]] = None,
     timeseries: List[Tuple[str, float, float]] = None,
 ) -> str:
@@ -147,6 +148,8 @@ def make_drainage_inp(
         conduits = []
     if xsections is None:
         xsections = []
+    if losses is None:
+        losses = []
     if inflows is None:
         inflows = []
     if timeseries is None:
@@ -198,6 +201,12 @@ def make_drainage_inp(
         lines.append(";;Node            Constituent      Tseries     Mfac  Sfactor")
         for node, ts_name in inflows:
             lines.append(f"{node:16s} FLOW             {ts_name:16s} 1.0   1.0")
+        lines.append("")
+    if losses:
+        lines.append("[LOSSES]")
+        lines.append(";;Link             Kentry   Kexit    Kavg     Flap Gate")
+        for link, kentry, kexit in losses:
+            lines.append(f"{link:16s} {kentry:.3f}    {kexit:.3f}    0.0      NO")
         lines.append("")
     if timeseries:
         lines.append("[TIMESERIES]")

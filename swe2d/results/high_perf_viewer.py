@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 import os
 import sys
 import time
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -237,10 +237,7 @@ def _draw_velocity_overlays(
     streamline_step_px: float,
 ) -> None:
     """draw velocity overlays."""
-    try:
-        from qgis.PyQt import QtCore, QtGui
-    except Exception:
-        from PyQt5 import QtCore, QtGui
+    from qgis.PyQt import QtCore, QtGui
     painter = QtGui.QPainter(image)
     painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
 
@@ -326,10 +323,7 @@ def _draw_scalar_legend(
     label: str,
 ) -> None:
     """draw scalar legend."""
-    try:
-        from qgis.PyQt import QtCore, QtGui
-    except Exception:
-        from PyQt5 import QtCore, QtGui
+    from qgis.PyQt import QtCore, QtGui
     if image is None or image.isNull() or cmap is None or cmap.shape[0] < 2:
         return
     if not (np.isfinite(vmin) and np.isfinite(vmax)):
@@ -385,10 +379,7 @@ def draw_scalar_legend_on_painter(
     label: str,
 ) -> None:
     """draw scalar legend on painter."""
-    try:
-        from qgis.PyQt import QtCore, QtGui
-    except Exception:
-        from PyQt5 import QtCore, QtGui
+    from qgis.PyQt import QtCore, QtGui
     if painter is None or cmap is None or cmap.shape[0] < 2:
         return
     if not (np.isfinite(vmin) and np.isfinite(vmax)):
@@ -502,10 +493,7 @@ def render_unstructured_snapshot_image(
     - overlay_cell_mannings_n: per-cell Manning's n
     - overlay_cell_curve_number: per-cell Curve Number
     """
-    try:
-        from qgis.PyQt import QtCore, QtGui
-    except Exception:
-        from PyQt5 import QtCore, QtGui
+    from qgis.PyQt import QtCore, QtGui
     t0 = time.perf_counter()
     out = {
         "ok": False,
@@ -1002,15 +990,14 @@ def render_unstructured_snapshot_image(
     out["ok"] = True
     out["vmin"] = vmin
     out["vmax"] = vmax
+    out["field_key"] = str(mode)
+    out["length_unit_name"] = str(length_unit_name)
     out["render_ms"] = (time.perf_counter() - t0) * 1000.0
     return out
 
 
 if True:  # noqa - ponytail: always define block; Qt imported inside functions that need it
-    try:
-        from qgis.PyQt import QtCore, QtGui
-    except Exception:
-        from PyQt5 import QtCore, QtGui
+    from qgis.PyQt import QtCore, QtGui, QtWidgets
     try:
         from qgis.core import QgsPointXY
         from qgis.gui import QgsMapCanvasItem
@@ -1035,6 +1022,20 @@ if True:  # noqa - ponytail: always define block; Qt imported inside functions t
             self._face_segments = np.empty((0, 4), dtype=np.float64)
             self._station_point = None
             self._station_label = ""
+            # Raw data overlay for tooltip lookup
+            self._raw_grid: Optional[np.ndarray] = None
+            self._raw_grid_mask: Optional[np.ndarray] = None
+            self._raw_field_key: str = ""
+            self._raw_field_label: str = ""
+            self._raw_vmin: float = 0.0
+            self._raw_vmax: float = 1.0
+            self._raw_length_unit: str = "m"
+            self._last_tooltip_pixel: Optional[Tuple[int, int]] = None
+            # Connect to canvas mouse-move signal for tooltip
+            try:
+                canvas.xyCoordinates.connect(self._on_canvas_mouse_move)
+            except Exception:
+                pass
             self.setZValue(9999.0)
             self.setVisible(False)
 
@@ -1071,14 +1072,111 @@ if True:  # noqa - ponytail: always define block; Qt imported inside functions t
             self.setVisible(not self._image.isNull())
             self.update()
 
+        def set_raw_data(
+            self,
+            grid: Optional[np.ndarray],
+            grid_mask: Optional[np.ndarray],
+            field_key: str = "",
+            field_label: str = "",
+            vmin: float = 0.0,
+            vmax: float = 1.0,
+            length_unit: str = "m",
+        ) -> None:
+            """Store the raw scalar field grid for tooltip value lookup.
+
+            Parameters
+            ----------
+            grid : np.ndarray or None
+                2D array (h, w) of raw scalar values for each raster pixel.
+            grid_mask : np.ndarray or None
+                Boolean mask of valid (rendered) pixels.
+            field_key : str
+                Machine key for the displayed field (e.g. 'depth', 'speed').
+            field_label : str
+                Human-readable label with units (e.g. 'Depth (m)').
+            vmin, vmax : float
+                Color-range min/max used for the rendered image.
+            length_unit : str
+                Unit label (e.g. 'm', 'ft').
+            """
+            if grid is not None and grid_mask is not None:
+                self._raw_grid = np.asarray(grid, dtype=np.float64)
+                self._raw_grid_mask = np.asarray(grid_mask, dtype=bool)
+            else:
+                self._raw_grid = None
+                self._raw_grid_mask = None
+            self._raw_field_key = str(field_key)
+            self._raw_field_label = str(field_label)
+            self._raw_vmin = float(vmin)
+            self._raw_vmax = float(vmax)
+            self._raw_length_unit = str(length_unit)
+            self._last_tooltip_pixel = None
+
         def clear(self):
             """clear."""
             self._image = QtGui.QImage()
             self._face_segments = np.empty((0, 4), dtype=np.float64)
             self._station_point = None
             self._station_label = ""
+            self._raw_grid = None
+            self._raw_grid_mask = None
+            self._raw_field_key = ""
+            self._raw_field_label = ""
+            self._last_tooltip_pixel = None
             self.setVisible(False)
             self.update()
+
+        def _on_canvas_mouse_move(self, point: Any) -> None:
+            """Handle mouse move on the canvas — show tooltip with raw data value."""
+            if self._raw_grid is None or self._raw_grid_mask is None or self._image.isNull() or not self.isVisible():
+                QtWidgets.QToolTip.hideText()
+                return
+            try:
+                x_min, x_max, y_min, y_max = self._extent
+            except Exception:
+                QtWidgets.QToolTip.hideText()
+                return
+            h, w = self._raw_grid.shape[:2]
+            if h <= 0 or w <= 0 or x_max <= x_min or y_max <= y_min:
+                QtWidgets.QToolTip.hideText()
+                return
+
+            # Convert map point to pixel indices in the raw grid
+            col = int((float(point.x()) - x_min) / (x_max - x_min) * w)
+            row = int((y_max - float(point.y())) / (y_max - y_min) * h)
+            col = max(0, min(w - 1, col))
+            row = max(0, min(h - 1, row))
+
+            # Skip if pixel hasn't changed (rate-limiting)
+            if self._last_tooltip_pixel == (row, col):
+                return
+            self._last_tooltip_pixel = (row, col)
+
+            if not self._raw_grid_mask[row, col]:
+                QtWidgets.QToolTip.hideText()
+                return
+
+            val = float(self._raw_grid[row, col])
+            if not np.isfinite(val):
+                QtWidgets.QToolTip.hideText()
+                return
+
+            # Build tooltip text
+            label = self._raw_field_label or self._raw_field_key
+            tooltip = f"{label}\n{val:.4g}"
+            if self._raw_vmin != self._raw_vmax:
+                pct = (val - self._raw_vmin) / (self._raw_vmax - self._raw_vmin) * 100.0
+                tooltip += f"\nRange: {pct:.1f}%"
+
+            # Show tooltip at the canvas viewport-global position
+            canvas = self._canvas()
+            if canvas is None:
+                return
+            vp = canvas.viewport()
+            if vp is None:
+                return
+            cursor_global = QtGui.QCursor.pos()
+            QtWidgets.QToolTip.showText(cursor_global, tooltip, vp)
 
         def set_face_segments(self, segments_world: np.ndarray):
             """Set face segments."""

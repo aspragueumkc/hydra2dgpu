@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
-from typing import Callable, Dict, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -218,6 +218,7 @@ class SWE2DDrainageSoA:
     node_invert_elev: np.ndarray
     node_max_depth: np.ndarray
     node_surface_area: np.ndarray
+    node_rim_elev: np.ndarray              # [n_nodes] float64, manhole rim elevation (SPEC §2.10)
     link_from: np.ndarray
     link_to: np.ndarray
     link_length: np.ndarray
@@ -241,6 +242,8 @@ class SWE2DDrainageSoA:
     inlet_curb_throat: np.ndarray    # [n_inlets] int32
     inlet_slot_len: np.ndarray       # [n_inlets] float64
     inlet_slot_wid: np.ndarray       # [n_inlets] float64
+    inlet_cell_length: np.ndarray    # [n_inlets] float64; overrides volume-equivalent cell
+    inlet_cell_width: np.ndarray     # [n_inlets] float64
     outfall_cell: np.ndarray
     outfall_node: np.ndarray
     outfall_invert_elev: np.ndarray
@@ -261,17 +264,31 @@ class SWE2DDrainageSoA:
     pipe_end_enable_overflow: np.ndarray
     pipe_end_overflow_elevation: np.ndarray
     pipe_end_max_overflow_rate: np.ndarray
+    pipe_end_shape_type: np.ndarray      # [n_pipe_ends] int32 (0=circ, 1=rect, 2=ellipse)
+    pipe_end_width: np.ndarray           # [n_pipe_ends] float64
+    pipe_end_height: np.ndarray          # [n_pipe_ends] float64
+    pipe_end_pipe_cell: np.ndarray      # [n_pipe_ends] int32 — index into d_cell_h for the open-end sub-cell
     node_is_inlet: np.ndarray            # [n_nodes] int32, 1 if node has inlet assignment
+    junction_node: np.ndarray             # [n_junctions] int32, indices of junction nodes (not outfall/inlet/pipe_end)
+    node_inlet_loss_k: np.ndarray
+    node_outlet_loss_k: np.ndarray
     link_entrance_loss_k: np.ndarray
     link_exit_loss_k: np.ndarray
     link_invert_in: np.ndarray
     link_invert_out: np.ndarray
+    link_upstream_offset: np.ndarray    # [n_links] float64, added to node_invert for pipe invert
+    link_downstream_offset: np.ndarray  # [n_links] float64, added to node_invert for pipe invert
     link_shape_type: np.ndarray      # [n_links] int32, 0=circular 1=rect 2=ellipse
     link_width: np.ndarray           # [n_links] float64
     link_height: np.ndarray          # [n_links] float64
-    max_cell_length: float = 0.0
+    max_cell_length: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     solver_mode: int = int(DrainageSolverMode.EGL)
     pipe_solver_mode: str = "diffusion_wave"
+    friction_method: int = 0
+    recon_method: int = 0
+    time_integrator: int = 1
+    friction_alpha: float = 0.01
+    surcharge_method: int = 0
     outfall_free_bc_nodes: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
 
@@ -341,8 +358,22 @@ class SWE2DCouplingSoA:
     structures: Optional[SWE2DStructuresSoA] = None
 
 
-def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Optional[SWE2DDrainageSoA]:
-    """Pack a PipeNetworkConfig into flat SoA arrays for GPU consumption."""
+def pack_pipe_network_soa(
+    cfg: Optional[PipeNetworkConfig],
+    n_cells: int,
+    cell_bed: Optional[np.ndarray] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Optional[SWE2DDrainageSoA]:
+    """Pack a PipeNetworkConfig into flat SoA arrays for GPU consumption.
+
+    If ``cell_bed`` is supplied (length ``n_cells``), each pipe-end's
+    invert elevation is auto-snapped to the coupled 2D cell's bed
+    elevation when the mismatch exceeds a small tolerance. The original
+    user-supplied invert is preserved in the log; the snapped value
+    is what the pipe-end exchange kernel actually uses, so gravity-driven
+    outflow works correctly regardless of whether the operator drew the
+    pipe-end slightly above or below the surface mesh.
+    """
     if cfg is None or not cfg.enabled:
         return None
     if not cfg.nodes:
@@ -360,17 +391,33 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     node_invert_elev = np.zeros(nn, dtype=np.float64)
     node_max_depth = np.zeros(nn, dtype=np.float64)
     node_surface_area = np.zeros(nn, dtype=np.float64)
+    node_rim_elev = np.zeros(nn, dtype=np.float64)
     for i, nd in enumerate(cfg.nodes):
         node_x[i] = float(nd.x)
         node_y[i] = float(nd.y)
         node_invert_elev[i] = float(nd.invert_elev)
         node_max_depth[i] = float(nd.max_depth)
-        node_surface_area[i] = _meta_float(nd.metadata, "surface_area", _meta_float(nd.metadata, "surface_area_m2", 50.0))
+        # Read surface_area: prefer metadata for backward compatibility,
+        # fall back to first-class field for new code.
+        if nd.metadata and ("surface_area" in nd.metadata or "surface_area_m2" in nd.metadata):
+            node_surface_area[i] = _meta_float(nd.metadata, "surface_area", _meta_float(nd.metadata, "surface_area_m2", 50.0))
+        elif hasattr(nd, "surface_area"):
+            node_surface_area[i] = float(nd.surface_area)
+        else:
+            node_surface_area[i] = 50.0
+        # Rim elevation (manhole top).  DrainageNode.rim_elev may be None
+        # for non-manhole nodes; default to node_max_depth above the invert
+        # so the rim still acts as a surcharge overflow cap (SPEC §2.10).
+        rim_val = getattr(nd, "rim_elev", None)
+        if rim_val is None or float(rim_val) <= 0.0:
+            rim_val = float(nd.invert_elev) + float(nd.max_depth)
+        node_rim_elev[i] = float(rim_val)
 
     node_enable_overflow = np.zeros(nn, dtype=np.int32)
     node_overflow_elevation = np.zeros(nn, dtype=np.float64)
     node_max_overflow_rate = np.zeros(nn, dtype=np.float64)
-    outfall_free_bc_nodes = []
+    outfall_free_bc_nodes: List[int] = []
+    pipe_end_node_indices: set = set()
     for i, nd in enumerate(cfg.nodes):
         node_enable_overflow[i] = 1 if bool(getattr(nd, "enable_overflow", False)) else 0
         node_overflow_elevation[i] = float(getattr(nd, "overflow_elevation", 0.0) or 0.0)
@@ -378,6 +425,15 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         ntype = str(getattr(nd, "node_type", "junction") or "junction").strip().lower()
         if ntype == "outfall":
             outfall_free_bc_nodes.append(i)
+        elif ntype == "pipe_end":
+            pipe_end_node_indices.add(i)
+
+    # Per-node loss coefficients (override per-link values for storage→pipe faces)
+    node_inlet_loss_k = np.zeros(nn, dtype=np.float64)
+    node_outlet_loss_k = np.zeros(nn, dtype=np.float64)
+    for ni, node in enumerate(cfg.nodes):
+        node_inlet_loss_k[ni] = float(node.inlet_loss_k) if node.inlet_loss_k is not None else 0.0
+        node_outlet_loss_k[ni] = float(node.outlet_loss_k) if node.outlet_loss_k is not None else 0.0
 
     link_from = np.full(nl, -1, dtype=np.int32)
     link_to = np.full(nl, -1, dtype=np.int32)
@@ -390,10 +446,35 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     link_exit_loss_k = np.zeros(nl, dtype=np.float64)
     link_invert_in = np.zeros(nl, dtype=np.float64)
     link_invert_out = np.zeros(nl, dtype=np.float64)
+    link_upstream_offset = np.zeros(nl, dtype=np.float64)
+    link_downstream_offset = np.zeros(nl, dtype=np.float64)
     link_shape_type = np.zeros(nl, dtype=np.int32)
     link_width = np.zeros(nl, dtype=np.float64)
     link_height = np.zeros(nl, dtype=np.float64)
-    shape_map = {"circular": 0, "rectangular": 1, "elliptical": 2}
+    shape_map = {
+        # XSECT_CIRCULAR = 0 — circular pipe cross-section (and aliases)
+        "circular": 0,
+        "circle":   0,
+        "round":    0,
+        # XSECT_RECTANGULAR = 1 — rectangular/box conduit
+        "rectangular": 1,
+        "rect":       1,
+        "box":        1,
+        # XSECT_ELLIPTICAL = 2 — elliptical / egg / horseshoe / pipe-arch.
+        # pipe-arch is geometrically similar to elliptical: a flattened arch
+        # which uses elliptical-flow hydraulics.  Mapping it to 0 (circular)
+        # was a silent-fallback bug; explicit mapping here surfaces the
+        # distinction and prevents wrong hydraulics.
+        "elliptical": 2,
+        "ellipse":     2,
+        "pipe_arch":   2,
+        "egg":         2,
+        "horseshoe":   2,
+        # "custom" — designer-supplied shape; pipe1d treats it like circular
+        # until a custom geometry table is wired.  Explicit entry so the
+        # known alias is preserved across serialisation round-trips.
+        "custom":      0,
+    }
     for i, lk in enumerate(cfg.links):
         link_from[i] = int(node_idx.get(lk.from_node_id, -1))
         link_to[i] = int(node_idx.get(lk.to_node_id, -1))
@@ -405,7 +486,14 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
             d_link = equivalent_circular_diameter_from_area(area_link)
         link_diameter[i] = d_link
         shape_str = str(getattr(lk, "link_shape", "circular") or "circular").strip().lower()
-        link_shape_type[i] = shape_map.get(shape_str, 0)
+        if shape_str not in shape_map:
+            # Fail fast — silent fallback to circular (0) was a known bug for
+            # pipe_arch / box.  Surface the unknown alias to the operator.
+            raise ValueError(
+                f"Unknown link_shape '{shape_str}' for link {lk.link_id!r}. "
+                f"Known shapes: {sorted(shape_map.keys())}"
+            )
+        link_shape_type[i] = shape_map[shape_str]
         w = getattr(lk, "width", None)
         link_width[i] = float(w if w is not None else getattr(lk, "diameter", d_link) or d_link)
         h = getattr(lk, "height", None)
@@ -418,10 +506,12 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         if invert_in is None:
             invert_in = lk.invert_elev if hasattr(lk, "invert_elev") and lk.invert_elev is not None else node_invert_elev[link_from[i]] if link_from[i] >= 0 else 0.0
         link_invert_in[i] = float(invert_in)
+        link_upstream_offset[i] = float(getattr(lk, "upstream_offset", 0.0) or 0.0)
         invert_out = getattr(lk, "outlet_invert_elev", None)
         if invert_out is None:
             invert_out = lk.invert_elev if hasattr(lk, "invert_elev") and lk.invert_elev is not None else node_invert_elev[link_to[i]] if link_to[i] >= 0 else 0.0
         link_invert_out[i] = float(invert_out)
+        link_downstream_offset[i] = float(getattr(lk, "downstream_offset", 0.0) or 0.0)
 
     inlet_cell = np.full(ni, -1, dtype=np.int32)
     inlet_node = np.full(ni, -1, dtype=np.int32)
@@ -468,12 +558,42 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         inlet_slot_len[i] = float(getattr(it, "slot_length", 0.0) or 0.0)
         inlet_slot_wid[i] = float(getattr(it, "slot_width", 0.0) or 0.0)
 
+    # Inlet box storage-cell geometry (separate from inlet opening dims).
+    # Defaults replicate the volume-equivalent rectangular cell that the C++
+    # builder would otherwise derive from inlet_diameter.
+    inlet_cell_length = np.zeros(ni, dtype=np.float64)
+    inlet_cell_width = np.zeros(ni, dtype=np.float64)
+    for i in range(ni):
+        n = int(inlet_node[i])
+        d = float(inlet_width[i]) if inlet_width[i] > 0.0 else 3.0
+        if 0 <= n < nn:
+            nd = cfg.nodes[n]
+            box_len = float(getattr(nd, "inlet_box_length", 0.0) or 0.0)
+            box_wid = float(getattr(nd, "inlet_box_width", 0.0) or 0.0)
+            inlet_cell_length[i] = box_len if box_len > 0.0 else d
+            inlet_cell_width[i] = box_wid if box_wid > 0.0 else math.pi * d / 4.0
+        else:
+            inlet_cell_length[i] = d
+            inlet_cell_width[i] = math.pi * d / 4.0
+
     # Mark nodes that have inlet assignments (flow-prescribed BCs, not head-driven).
     node_is_inlet = np.zeros(nn, dtype=np.int32)
     for i in range(ni):
         n = int(inlet_node[i])
         if 0 <= n < nn:
             node_is_inlet[n] = 1
+
+    # Build junction-node list: nodes that are NOT outfall, NOT inlet-assigned,
+    # and NOT a pipe_end.  These are pure junctions where surcharge overflow
+    # (SPEC §2.10) is the primary 2D-coupling pathway.  Computed here so it
+    # uses the populated node_is_inlet flag and outfall / pipe_end sets.
+    outlet_set = set(int(x) for x in outfall_free_bc_nodes)
+    inlet_set = set(int(i) for i in range(nn) if int(node_is_inlet[i]) == 1)
+    excluded_for_junction = outlet_set | inlet_set | pipe_end_node_indices
+    junction_node = np.asarray(
+        sorted(i for i in range(nn) if i not in excluded_for_junction),
+        dtype=np.int32,
+    )
 
     outfall_cell = np.full(no, -1, dtype=np.int32)
     outfall_node = np.full(no, -1, dtype=np.int32)
@@ -505,11 +625,41 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     pipe_end_enable_overflow = np.zeros(np_end, dtype=np.int32)
     pipe_end_overflow_elevation = np.zeros(np_end, dtype=np.float64)
     pipe_end_max_overflow_rate = np.zeros(np_end, dtype=np.float64)
+    pipe_end_shape_type = np.zeros(np_end, dtype=np.int32)
+    pipe_end_width = np.zeros(np_end, dtype=np.float64)
+    pipe_end_height = np.zeros(np_end, dtype=np.float64)
     for i, pe in enumerate(getattr(cfg, "pipe_ends", [])):
         ci = int(pe.cell_id)
         pipe_end_cell[i] = ci if 0 <= ci < int(n_cells) else -1
         pipe_end_node[i] = int(node_idx.get(pe.node_id, -1))
-        pipe_end_invert_elev[i] = float(pe.invert_elev)
+        configured_invert = float(pe.invert_elev)
+        pipe_end_invert_elev[i] = configured_invert
+        # Auto-snap pipe-end invert to the coupled 2D cell bed so gravity-driven
+        # outflow works regardless of how the operator drew the pipe-end above
+        # or below the surface mesh.  Without this snap the weir/orifice kernel
+        # sees a node_head below surface_WSE and refuses to release water
+        # (the open end of a pipe sits in a depression, so it can never
+        # gravity-outflow unless the 2D bed is at or below the pipe invert).
+        # We log the snap so the discrepancy is visible, but we do not raise —
+        # the override is what fixes the bug.
+        if (cell_bed is not None
+                and 0 <= ci < int(cell_bed.shape[0])
+                and pipe_end_cell[i] >= 0):
+            bed_elev = float(cell_bed[ci])
+            # Tolerance: any difference is a snap candidate.  Bed lower than
+            # invert is fine (pipe end sits above the surface, water flows out
+            # freely); bed higher than invert by more than 0.05 ft silently
+            # forces gravity outflow to zero, so snap in that case.
+            if bed_elev > pipe_end_invert_elev[i] + 0.05:
+                if log_fn:
+                    log_fn(
+                        f"[pipe_end {i}] auto-snapped invert "
+                        f"{pipe_end_invert_elev[i]:.3f} → {bed_elev:.3f} "
+                        f"to match coupled 2D cell {ci} bed "
+                        f"(bed={bed_elev:.3f}, configured_invert="
+                        f"{configured_invert:.3f})"
+                    )
+                pipe_end_invert_elev[i] = bed_elev
         pipe_end_diameter[i] = float(getattr(pe, "diameter", 0.0) or 0.0)
         pipe_end_area[i] = float(getattr(pe, "area_m2", 0.0) or 0.0)
         kin = getattr(pe, "inlet_loss_k", 0.5)
@@ -519,6 +669,18 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         pipe_end_enable_overflow[i] = 1 if bool(getattr(pe, "enable_overflow", False)) else 0
         pipe_end_overflow_elevation[i] = float(getattr(pe, "overflow_elevation", 0.0) or 0.0)
         pipe_end_max_overflow_rate[i] = float(getattr(pe, "max_overflow_rate", 0.0) or 0.0)
+        # Pull the cross-section geometry from the link that ends at this
+        # pipe-end node.  shape_type follows XSECT_CIRCULAR (0),
+        # XSECT_RECTANGULAR (1), XSECT_ELLIPTICAL (2).  width/height are
+        # the span/rise for box/elliptical and equal to diameter for
+        # circular.  These feed the weir/orifice exchange kernel.
+        pe_node = pipe_end_node[i]
+        for li in range(len(cfg.links)):
+            if int(link_to[li]) == pe_node or int(link_from[li]) == pe_node:
+                pipe_end_shape_type[i] = int(link_shape_type[li])
+                pipe_end_width[i] = float(link_width[li])
+                pipe_end_height[i] = float(link_height[li])
+                break
 
     for i, lk in enumerate(cfg.links):
         fn = int(link_from[i])
@@ -529,7 +691,41 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
             if int(pipe_end_node[j]) == tn:
                 link_exit_loss_k[i] = float(pipe_end_outlet_loss_k[j])
 
-    max_cell_length = max(0.0, max((lk.max_cell_length for lk in cfg.links), default=0.0))
+    # Build per-pipe-end pipe-cell index (the open-end sub-cell whose
+    # cell_h represents the hydraulic head at the pipe end).  Mirror the
+    # C++ sub-cell layout: sub_cells_per_link[i] = ceil(L / link_max_cell_length[i]).
+    # The open-end cell for a pipe-end at the link's FROM node is the FIRST
+    # sub-cell (cell_offset); for the TO node it is the LAST sub-cell
+    # (cell_offset + n_sub - 1).  Direction matters — the two ends of a
+    # long link are different cells.
+    pipe_end_pipe_cell = np.full(np_end, -1, dtype=np.int32)
+    if np_end > 0 and len(cfg.links) > 0:
+        cell_offset = 0
+        link_first_cell: List[int] = []
+        link_last_cell: List[int] = []
+        for li, lk in enumerate(cfg.links):
+            L = float(lk.length)
+            mcl = float(getattr(lk, "max_cell_length", 0.0) or 0.0)
+            if mcl > 0.0 and L > 0.0:
+                n_sub = max(1, int(math.ceil(L / mcl)))
+            else:
+                n_sub = 1
+            link_first_cell.append(cell_offset)
+            link_last_cell.append(cell_offset + n_sub - 1)
+            cell_offset += n_sub
+        for j in range(np_end):
+            pe_node = int(pipe_end_node[j])
+            for li, lk in enumerate(cfg.links):
+                if int(link_from[li]) == pe_node:
+                    pipe_end_pipe_cell[j] = link_first_cell[li]
+                    break
+                if int(link_to[li]) == pe_node:
+                    pipe_end_pipe_cell[j] = link_last_cell[li]
+                    break
+
+    max_cell_length = np.array([
+        float(getattr(lk, "max_cell_length", 0.0) or 0.0) for lk in cfg.links
+    ], dtype=np.float64)
 
     return SWE2DDrainageSoA(
         node_x=node_x,
@@ -537,6 +733,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         node_invert_elev=node_invert_elev,
         node_max_depth=node_max_depth,
         node_surface_area=node_surface_area,
+        node_rim_elev=node_rim_elev,
         link_from=link_from,
         link_to=link_to,
         link_length=link_length,
@@ -560,6 +757,8 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         inlet_curb_throat=inlet_curb_throat,
         inlet_slot_len=inlet_slot_len,
         inlet_slot_wid=inlet_slot_wid,
+        inlet_cell_length=inlet_cell_length,
+        inlet_cell_width=inlet_cell_width,
         outfall_cell=outfall_cell,
         outfall_node=outfall_node,
         outfall_invert_elev=outfall_invert_elev,
@@ -578,19 +777,33 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         node_overflow_elevation=node_overflow_elevation,
         node_max_overflow_rate=node_max_overflow_rate,
         node_is_inlet=node_is_inlet,
+        node_inlet_loss_k=node_inlet_loss_k,
+        node_outlet_loss_k=node_outlet_loss_k,
+        junction_node=junction_node,
         pipe_end_enable_overflow=pipe_end_enable_overflow,
         pipe_end_overflow_elevation=pipe_end_overflow_elevation,
         pipe_end_max_overflow_rate=pipe_end_max_overflow_rate,
+        pipe_end_shape_type=pipe_end_shape_type,
+        pipe_end_width=pipe_end_width,
+        pipe_end_height=pipe_end_height,
+        pipe_end_pipe_cell=pipe_end_pipe_cell,
         link_entrance_loss_k=link_entrance_loss_k,
         link_exit_loss_k=link_exit_loss_k,
         link_invert_in=link_invert_in,
         link_invert_out=link_invert_out,
+        link_upstream_offset=link_upstream_offset,
+        link_downstream_offset=link_downstream_offset,
         link_shape_type=link_shape_type,
         link_width=link_width,
         link_height=link_height,
         max_cell_length=max_cell_length,
         solver_mode=int(getattr(cfg, "solver_mode", DrainageSolverMode.EGL)),
         pipe_solver_mode=str(getattr(cfg, "pipe_solver_mode", "diffusion_wave")),
+        friction_method=int(getattr(cfg, "friction_method", 0)),
+        recon_method=int(getattr(cfg, "recon_method", 0)),
+        time_integrator=int(getattr(cfg, "time_integrator", 1)),
+        friction_alpha=float(getattr(cfg, "friction_alpha", 0.01)),
+        surcharge_method=int(getattr(cfg, "surcharge_method", 0)),
         outfall_free_bc_nodes=np.asarray(outfall_free_bc_nodes, dtype=np.int32),
     )
 
@@ -740,7 +953,7 @@ def pack_coupling_soa(
     """Pack both drainage and structures into a single SWE2DCouplingSoA."""
     return SWE2DCouplingSoA(
         n_cells=int(n_cells),
-        drainage=pack_pipe_network_soa(pipe_network, n_cells),
+        drainage=pack_pipe_network_soa(pipe_network, n_cells, cell_bed=cell_bed, log_fn=log_fn),
         structures=pack_structures_soa(hydraulic_structures, n_cells, cell_bed=cell_bed, log_fn=log_fn),
     )
 
@@ -763,6 +976,8 @@ class SWE2DCouplingController:
         use_redistribution: bool = True,
         log_callback: Optional[Callable[[str], None]] = None,
         inv_cell_perm: Optional[np.ndarray] = None,
+        backend=None,
+        h_min: float = 1.0e-6,
 ):
         """Coupling controller for SWE2D surface/drainage/structure exchange.
 
@@ -770,6 +985,12 @@ class SWE2DCouplingController:
             length_scale_si_to_model: SI meters per model unit (e.g. 0.3048
                 for US-foot CRS, 1.0 for metric CRS).  Used to configure
                 the unit system and compute model_to_ft for HDS-5 culverts.
+            backend: Optional backend reference (held for diagnostics and
+                future cross-coupling needs; not currently invoked by the
+                controller itself).
+            h_min: Minimum wet/dry depth floor in model units, threaded to
+                the native pipe1d solver and pipe-end BC kernel so they
+                agree with the backend's dry-cell threshold.
         """
         if cell_area is None or cell_bed is None:
             raise ValueError("cell_area and cell_bed are required")
@@ -778,6 +999,8 @@ class SWE2DCouplingController:
         self.cell_bed = np.ascontiguousarray(cell_bed, dtype=np.float64).ravel()
         self._log_callback: Optional[Callable[[str], None]] = None
         self._inv_cell_perm: Optional[np.ndarray] = inv_cell_perm
+        self._backend = backend
+        self._h_min = float(h_min)
         # Optional cell centroid coordinates for influence-width redistribution.
         self._cell_cx: Optional[np.ndarray] = None
         self._cell_cy: Optional[np.ndarray] = None
@@ -826,7 +1049,7 @@ class SWE2DCouplingController:
         self._persistent_coupling_preloaded = False
         self._coupling_applied_this_timestep = False
         self._use_redistribution = bool(use_redistribution)
-        self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
+        self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells, cell_bed=self.cell_bed, log_fn=self._log) if self.drainage is not None else None
         self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0, cell_bed=self.cell_bed, log_fn=self._log) if self.structures is not None else None
         self._structures_cfg = tuple(self.structures.cfg.structures) if self.structures is not None else tuple()
         self._structure_count = len(self._structures_cfg)
@@ -1114,8 +1337,6 @@ class SWE2DCouplingController:
             return
         if self.culvert_face_flux_mode != "face_flux":
             return
-        if not hasattr(native_mod, "swe2d_gpu_upload_culvert_face_flux_params"):
-            return
 
         # Build the SoA if not yet built
         if self._face_flux_soa is None:
@@ -1198,11 +1419,6 @@ class SWE2DCouplingController:
         if n_struct == 0:
             return source_rate
 
-        if not (native_mod is not None and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources")):
-            raise RuntimeError(
-                "GPU redistribution function swe2d_gpu_redistribute_structure_sources "
-                "is unavailable — no CPU fallback."
-            )
         try:
             return np.asarray(
                 native_mod.swe2d_gpu_redistribute_structure_sources(
@@ -1232,10 +1448,6 @@ class SWE2DCouplingController:
             self._native_cuda_mod_checked = True
             self._native_cuda_mod_cache = None
             return None
-        if not hasattr(mod, "swe2d_gpu_compute_coupling_sources"):
-            self._native_cuda_mod_checked = True
-            self._native_cuda_mod_cache = None
-            return None
         if not bool(mod.swe2d_gpu_available()):
             self._native_cuda_mod_checked = True
             self._native_cuda_mod_cache = None
@@ -1247,39 +1459,60 @@ class SWE2DCouplingController:
     def readback_coupling_state(self) -> Dict[str, np.ndarray]:
         """Read current drainage + structure state from GPU to host.
 
-        Performs a small D2H readback of per-node depths, per-link flows,
-        and per-structure flows.  Intended to be called at output intervals
+        Performs a small D2H readback of per-cell state and aggregated
+        per-link/per-structure flows. Intended to be called at output intervals
         (NOT per-timestep) to accumulate a coupling time history on host.
 
-        Returns a dict with keys:
-            node_depth  — (N_nodes,) float64 or empty
-            link_flow   — (N_links,) float64 or empty
-            struct_flow — (N_struct,) float64 or empty
-            cell_flow   — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_velocity — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_depth  — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_head   — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_owner_link — (N_pipe_cells,) int64 or empty  [NEW]
-            cell_sub_idx — (N_pipe_cells,) int64 or empty  [NEW]
-            cell_shape_type — (N_pipe_cells,) int32 or empty  [NEW]
-            cell_width — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_height — (N_pipe_cells,) float64 or empty  [NEW]
-            cell_invert — (N_pipe_cells,) float64 or empty  [NEW]
+        Returns a dict whose cell keys match
+        ``swe2d_pipe1d_readback_cell_state`` directly, plus three aggregate /
+        coupling-layer keys:
+
+            cell_A        — (N_cells_all,) float64,         matches new API
+            cell_Q        — (N_cells_all,) float64,         volumetric flow
+            cell_velocity — (N_cells_all,) float64,         Q / max(A, 1e-12)
+            cell_depth    — (N_cells_all,) float64,         cell_y - cell_invert
+            cell_q        — (N_cells_all,) float64,         solver cell q state
+            cell_h        — (N_cells_all,) float64,         depth above invert
+            cell_y        — (N_cells_all,) float64,         water surface elevation
+            cell_invert, cell_width, cell_height,
+            cell_shape_type, cell_owner_link, cell_sub_idx, cell_class,
+            cell_surface_area, cell_crown, cell_rim, cell_max_depth
+                          — (N_cells_all,) arrays,           matches new API
+            link_q        — (N_links,) float64,             aggregated per-link flow
+            struct_q      — (N_non_bridge_structures,) float64,
+                                                             structure flows
+            rain_cum_mm, rain_excess_cum_mm
+                          — (N_cells,) float64,             rain CN overlay
         """
         out: Dict[str, np.ndarray] = {
-            "node_depth": np.empty(0, dtype=np.float64),
-            "link_flow": np.empty(0, dtype=np.float64),
-            "struct_flow": np.empty(0, dtype=np.float64),
+            "link_q": np.empty(0, dtype=np.float64),
+            "struct_q": np.empty(0, dtype=np.float64),
+            "cell_A": np.empty(0, dtype=np.float64),
+            "cell_Q": np.empty(0, dtype=np.float64),
+            "cell_velocity": np.empty(0, dtype=np.float64),
+            "cell_depth": np.empty(0, dtype=np.float64),
+            "cell_q": np.empty(0, dtype=np.float64),
+            "cell_h": np.empty(0, dtype=np.float64),
+            "cell_y": np.empty(0, dtype=np.float64),
+            "cell_invert": np.empty(0, dtype=np.float64),
+            "cell_width": np.empty(0, dtype=np.float64),
+            "cell_height": np.empty(0, dtype=np.float64),
+            "cell_shape_type": np.empty(0, dtype=np.int32),
+            "cell_owner_link": np.empty(0, dtype=np.int64),
+            "cell_sub_idx": np.empty(0, dtype=np.int64),
+            "cell_class": np.empty(0, dtype=np.int32),
+            "cell_surface_area": np.empty(0, dtype=np.float64),
+            "cell_crown": np.empty(0, dtype=np.float64),
+            "cell_rim": np.empty(0, dtype=np.float64),
+            "cell_max_depth": np.empty(0, dtype=np.float64),
         }
         native_mod = self._native_cuda_module()
         if native_mod is None:
             return out
 
-        # ── Rain CN state (always read back if binding is available) ──────────
-        if hasattr(native_mod, "swe2d_readback_rain_state") and self.n_cells > 0:
-            dev_ptr = 0
-            if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
-                dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
+        # ── Rain CN state ────────────────────────────────────────────────────
+        if self.n_cells > 0:
+            dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
             try:
                 rain_state = native_mod.swe2d_readback_rain_state(dev_ptr, int(self.n_cells))
                 if rain_state:
@@ -1291,67 +1524,78 @@ class SWE2DCouplingController:
         if self.drainage is not None and self._drainage_soa is not None:
             dsoa = self._drainage_soa
             nn = int(len(dsoa.node_invert_elev))
-            if nn > 0 and hasattr(native_mod, "swe2d_pipe1d_readback_node_state"):
-                dev_ptr = 0
-                if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
-                    dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
+            if nn > 0:
+                dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
                 try:
-                    # Compute pipe-cell layout to match C++ subdivision.
-                    # The C++ readback guard checks n_cells == p.n_pipe_cells;
-                    # passing self.n_cells (2D mesh count) silently skips the
-                    # copy and returns zeros.
+                    # Compute pipe-cell layout to match C++ subdivision (per-link mcl).
                     nl = int(len(dsoa.link_length))
-                    mcl = int(dsoa.max_cell_length)
                     sub_cells_per_link = []
                     for li in range(nl):
                         L = float(dsoa.link_length[li])
+                        mcl = float(dsoa.max_cell_length[li]) if dsoa.max_cell_length is not None and li < len(dsoa.max_cell_length) else 0.0
                         n_sub = 1
-                        if mcl > 0 and L > 0.0:
+                        if mcl > 0.0 and L > 0.0:
                             n_sub = max(1, int(math.ceil(L / mcl)))
                         sub_cells_per_link.append(n_sub)
                     n_pipe_cells = int(sum(sub_cells_per_link)) if sub_cells_per_link else int(self.n_cells)
-                    state = native_mod.swe2d_pipe1d_readback_node_state(
-                        dev_ptr, nn, n_pipe_cells)
-                    if state and "node_depth" in state:
-                        out["node_depth"] = np.asarray(state["node_depth"], dtype=np.float64)
-                    if state and "cell_Q" in state:
-                        cell_q = np.asarray(state["cell_Q"], dtype=np.float64)
-                        if nl > 0 and cell_q.size >= n_pipe_cells:
-                            link_q = np.zeros(nl, dtype=np.float64)
-                            offset = 0
-                            for li in range(nl):
-                                n_sub = sub_cells_per_link[li]
-                                if n_sub > 0 and offset + n_sub <= cell_q.size:
-                                    link_q[li] = float(np.mean(np.abs(cell_q[offset:offset + n_sub])))
-                                offset += n_sub
-                            out["link_flow"] = link_q
+                    state = native_mod.swe2d_pipe1d_readback_cell_state(
+                        dev_ptr, n_pipe_cells,
+                        int(self._n_manhole_cells),
+                        int(self._n_inlet_cells),
+                    )
+                    # Extract actual cell counts from device state (the binding
+                    # returns p.n_cells_all regardless of the passed-in args).
+                    # Update stored values to stay in sync with device.
+                    if state:
+                        self._n_manhole_cells = int(state.get("n_manhole_cells", 0))
+                        self._n_inlet_cells = int(state.get("n_inlet_cells", 0))
+                    # Copy the cell schema directly. Derived arrays are
+                    # populated by the native binding, so no aliases are
+                    # synthesized in Python.
+                    float_state_keys = (
+                        "cell_A",
+                        "cell_Q",
+                        "cell_velocity",
+                        "cell_depth",
+                        "cell_q",
+                        "cell_h",
+                        "cell_y",
+                        "cell_invert",
+                        "cell_width",
+                        "cell_height",
+                        "cell_surface_area",
+                        "cell_crown",
+                        "cell_rim",
+                        "cell_max_depth",
+                    )
+                    integer_state_keys = (
+                        "cell_shape_type",
+                        "cell_owner_link",
+                        "cell_sub_idx",
+                        "cell_class",
+                    )
+                    if state:
+                        for key in float_state_keys:
+                            if key in state:
+                                out[key] = np.asarray(state[key], dtype=np.float64)
+                        for key in integer_state_keys:
+                            if key in state:
+                                out[key] = np.asarray(state[key], dtype=np.int64)
 
-                        # Capture per-cell geometry and mapping directly from C++.
-                        # All arrays are required; fail fast if the readback is incomplete.
-                        cell_A = np.asarray(state["cell_A"], dtype=np.float64)
-                        cell_q = np.asarray(state["cell_Q"], dtype=np.float64)
-                        cell_width = np.asarray(state["cell_width"], dtype=np.float64)
-                        cell_height = np.asarray(state["cell_height"], dtype=np.float64)
-                        cell_shape_type = np.asarray(state["cell_shape_type"], dtype=np.int32)
-                        cell_invert = np.asarray(state["cell_invert"], dtype=np.float64)
-                        cell_owner_link = np.asarray(state["cell_owner_link"], dtype=np.int64)
-                        cell_sub_idx = np.asarray(state["cell_sub_idx"], dtype=np.int64)
-
-                        # Per-cell derived quantities — use per-cell geometry from C++.
-                        out["cell_flow"] = cell_q
-                        out["cell_velocity"] = np.abs(cell_q) / np.maximum(cell_A, 1e-12)
-                        out["cell_depth"] = _depth_from_area(cell_A, cell_shape_type, cell_width, cell_height)
-                        out["cell_head"] = cell_invert + out["cell_depth"]
-                        out["cell_owner_link"] = cell_owner_link
-                        out["cell_sub_idx"] = cell_sub_idx
-                        out["cell_shape_type"] = cell_shape_type
-                        out["cell_width"] = cell_width
-                        out["cell_height"] = cell_height
-                        out["cell_invert"] = cell_invert
+                    # Per-link aggregate: mean |Q| across the pipe cells.
+                    if nl > 0 and out["cell_Q"].size >= n_pipe_cells:
+                        link_q = np.zeros(nl, dtype=np.float64)
+                        offset = 0
+                        for li in range(nl):
+                            n_sub = sub_cells_per_link[li]
+                            if n_sub > 0 and offset + n_sub <= out["cell_Q"].size:
+                                link_q[li] = float(np.mean(np.abs(out["cell_Q"][offset:offset + n_sub])))
+                            offset += n_sub
+                        out["link_q"] = link_q
                 except Exception as exc:
                     self._log(f"[COUPLING] readback failed: {exc}")
 
-        if self._n_non_bridge_structures > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
+        if self._n_non_bridge_structures > 0:
             try:
                 nb_n = int(self._n_non_bridge_structures)
                 flows = np.asarray(
@@ -1360,29 +1604,28 @@ class SWE2DCouplingController:
                 )
                 if flows.size > 0:
                     self._last_structure_flows = flows.copy()
-                    out["struct_flow"] = flows
+                    out["struct_q"] = flows
             except Exception:
                 pass
 
         # Read back external source array for diagnostics (source_min/max).
-        if hasattr(native_mod, "swe2d_gpu_readback_coupling_sources"):
-            try:
-                src_buf = np.zeros(self.n_cells, dtype=np.float64)
-                native_mod.swe2d_gpu_readback_coupling_sources(src_buf, int(self.n_cells))
-                if src_buf.size > 0:
-                    self.last_diag.source_min = float(np.min(src_buf))
-                    self.last_diag.source_max = float(np.max(src_buf))
-                    self.last_diag.source_sum = float(np.sum(src_buf))
-            except Exception:
-                pass
+        try:
+            src_buf = np.zeros(self.n_cells, dtype=np.float64)
+            native_mod.swe2d_gpu_readback_coupling_sources(src_buf, int(self.n_cells))
+            if src_buf.size > 0:
+                self.last_diag.source_min = float(np.min(src_buf))
+                self.last_diag.source_max = float(np.max(src_buf))
+                self.last_diag.source_sum = float(np.sum(src_buf))
+        except Exception:
+            pass
 
         # Update diagnostic snapshot so runtime log shows current readback values.
-        if out["node_depth"].size > 0:
-            self.last_diag.drainage_max_node_depth = float(np.max(out["node_depth"]))
-        if out["link_flow"].size > 0:
-            self.last_diag.drainage_max_link_flow = float(np.max(np.abs(out["link_flow"])))
-        if out["struct_flow"].size > 0:
-            self.last_diag.structure_total_flow = float(np.sum(np.abs(out["struct_flow"])))
+        if out["cell_depth"].size > 0:
+            self.last_diag.drainage_max_node_depth = float(np.max(out["cell_depth"]))
+        if out["link_q"].size > 0:
+            self.last_diag.drainage_max_link_flow = float(np.max(np.abs(out["link_q"])))
+        if out["struct_q"].size > 0:
+            self.last_diag.structure_total_flow = float(np.sum(np.abs(out["struct_q"])))
 
         return out
 
@@ -1390,12 +1633,9 @@ class SWE2DCouplingController:
         """Upload culvert lookup tables and set the GPU culvert solver mode."""
         if self._culvert_solver_mode_applied and self._culvert_solver_mode_applied == self.culvert_solver_mode:
             return
-        if not hasattr(native_mod, "swe2d_gpu_set_culvert_solver_mode"):
-            return
         if (
             self.culvert_solver_mode == 1
             and self._structures_soa is not None
-            and hasattr(native_mod, "swe2d_gpu_build_culvert_tables")
         ):
             ssoa = self._structures_soa
             try:
@@ -1470,31 +1710,27 @@ class SWE2DCouplingController:
             )
 
         # Need compute_coupling_full_on_device for the final on-device write.
-        # Without it we cannot return True (no way to get sources to device).
-        if not hasattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device"):
-            raise RuntimeError(
-                "swe2d_gpu_compute_coupling_full_on_device not found in native module. "
-                "Rebuild hydra_swe2d with the persistent GPU coupling path enabled."
-            )
-
+        # Without it the call below raises AttributeError; that is the
+        # desired fail-loud behaviour — the build is missing the binding.
         self._ensure_native_culvert_solver_mode(native_mod)
 
         # ── Drainage: compute q_cell on-device via swe2d_pipe1d_step ──
         # All state lives on GPU. No H2D upload, no D2H readback in hot path.
         if self.drainage is not None:
-            if self._drainage_soa is not None and hasattr(native_mod, "swe2d_pipe1d_step"):
+            if self._drainage_soa is not None:
                 dsoa = self._drainage_soa
                 static_args = self._ensure_gpu_drainage_static_args()
                 if static_args is None:
                     return False
                 g = float(getattr(self.drainage.cfg, "gravity", _u.gravity()))
+                k_mann = float(_u.manning_factor())
+                h_min = float(self._h_min)
                 nl = int(len(dsoa.link_from))
-                dev_ptr = 0
-                if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
-                    dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
+                dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
                 if not self._pipe1d_mesh_built:
                     self._build_pipe1d_mesh_on_device(
-                        native_mod, static_args, dsoa, nl, dev_ptr
+                        native_mod, static_args, dsoa, nl, dev_ptr,
+                        g_slot_cfl=g,
                     )
                 # Upload inlet/outfall exchange parameters for
                 # surface↔drainage exchange kernels.  Tracked separately
@@ -1503,63 +1739,74 @@ class SWE2DCouplingController:
                 # that case we still need to upload the per-element
                 # exchange arrays before the first pipe1d_step.
                 if not self._drainage_exchange_uploaded:
-                    if hasattr(native_mod, "swe2d_gpu_upload_drainage_exchange_params"):
-                        nn = int(len(static_args["node_invert_elev"]))
-                        ni = int(len(dsoa.inlet_cell))
-                        no = int(len(dsoa.outfall_cell))
-                        np_end = int(len(dsoa.pipe_end_cell))
-                        inlet_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.inlet_cell, dtype=np.int32))
-                        outfall_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.outfall_cell, dtype=np.int32))
-                        pipe_end_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.pipe_end_cell, dtype=np.int32))
-                        native_mod.swe2d_gpu_upload_drainage_exchange_params(
-                            np.asarray(inlet_cell_gpu, dtype=np.int32),
-                            np.asarray(dsoa.inlet_node, dtype=np.int32),
-                            np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
-                            np.asarray(dsoa.inlet_width, dtype=np.float64),
-                            np.asarray(dsoa.inlet_coefficient, dtype=np.float64),
-                            np.asarray(dsoa.inlet_max_capture, dtype=np.float64),
-                            np.asarray(dsoa.inlet_type, dtype=np.int32),
-                            np.asarray(dsoa.inlet_grate_len, dtype=np.float64),
-                            np.asarray(dsoa.inlet_grate_wid, dtype=np.float64),
-                            np.asarray(dsoa.inlet_grate_kind, dtype=np.int32),
-                            np.asarray(dsoa.inlet_grate_open, dtype=np.float64),
-                            np.asarray(dsoa.inlet_curb_len, dtype=np.float64),
-                            np.asarray(dsoa.inlet_curb_ht, dtype=np.float64),
-                            np.asarray(dsoa.inlet_curb_throat, dtype=np.int32),
-                            np.asarray(dsoa.inlet_slot_len, dtype=np.float64),
-                            np.asarray(dsoa.inlet_slot_wid, dtype=np.float64),
-                            np.asarray(outfall_cell_gpu, dtype=np.int32),
-                            np.asarray(dsoa.outfall_node, dtype=np.int32),
-                            np.asarray(dsoa.outfall_invert_elev, dtype=np.float64),
-                            np.asarray(dsoa.outfall_diameter, dtype=np.float64),
-                            np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
-                            np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
-                            np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
-                            np.asarray(pipe_end_cell_gpu, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_node, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_area, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
-                            np.asarray(dsoa.node_max_depth, dtype=np.float64),
-                        )
-                    if hasattr(native_mod, "swe2d_gpu_upload_outfall_free_bc_nodes"):
-                        if dsoa.outfall_free_bc_nodes.size > 0:
-                            native_mod.swe2d_gpu_upload_outfall_free_bc_nodes(
-                                np.asarray(dsoa.outfall_free_bc_nodes, dtype=np.int32)
-                            )
+                    nn = int(len(static_args["node_invert_elev"]))
+                    ni = int(len(dsoa.inlet_cell))
+                    no = int(len(dsoa.outfall_cell))
+                    np_end = int(len(dsoa.pipe_end_cell))
+                    inlet_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.inlet_cell, dtype=np.int32))
+                    outfall_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.outfall_cell, dtype=np.int32))
+                    pipe_end_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.pipe_end_cell, dtype=np.int32))
+                    native_mod.swe2d_gpu_upload_drainage_exchange_params(
+                        np.asarray(inlet_cell_gpu, dtype=np.int32),
+                        np.asarray(dsoa.inlet_node, dtype=np.int32),
+                        np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
+                        np.asarray(dsoa.inlet_width, dtype=np.float64),
+                        np.asarray(dsoa.inlet_coefficient, dtype=np.float64),
+                        np.asarray(dsoa.inlet_max_capture, dtype=np.float64),
+                        np.asarray(dsoa.inlet_type, dtype=np.int32),
+                        np.asarray(dsoa.inlet_grate_len, dtype=np.float64),
+                        np.asarray(dsoa.inlet_grate_wid, dtype=np.float64),
+                        np.asarray(dsoa.inlet_grate_kind, dtype=np.int32),
+                        np.asarray(dsoa.inlet_grate_open, dtype=np.float64),
+                        np.asarray(dsoa.inlet_curb_len, dtype=np.float64),
+                        np.asarray(dsoa.inlet_curb_ht, dtype=np.float64),
+                        np.asarray(dsoa.inlet_curb_throat, dtype=np.int32),
+                        np.asarray(dsoa.inlet_slot_len, dtype=np.float64),
+                        np.asarray(dsoa.inlet_slot_wid, dtype=np.float64),
+                        np.asarray(outfall_cell_gpu, dtype=np.int32),
+                        np.asarray(dsoa.outfall_node, dtype=np.int32),
+                        np.asarray(dsoa.outfall_invert_elev, dtype=np.float64),
+                        np.asarray(dsoa.outfall_diameter, dtype=np.float64),
+                        np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
+                        np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
+                        np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
+                        np.asarray(pipe_end_cell_gpu, dtype=np.int32),
+                        np.asarray(dsoa.pipe_end_node, dtype=np.int32),
+                        np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_area, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_enable_overflow, dtype=np.int32),
+                        np.asarray(dsoa.pipe_end_overflow_elevation, dtype=np.float64),
+                        np.asarray(dsoa.pipe_end_max_overflow_rate, dtype=np.float64),
+                        np.asarray(dsoa.node_max_depth, dtype=np.float64),
+                    )
+                    # Fix P2#11 (audit 2026-07-22): removed no-op
+                    # `swe2d_gpu_upload_outfall_free_bc_nodes` call.
+                    # Outfall flags are now in the per-face mesh built by
+                    # swe2d_build_unified_mesh (face_class == OUTFALL_BC or
+                    # SURFACE_2D_PIPE_END depending on coupling).
                     self._drainage_exchange_uploaded = True
                 cfg = self.drainage.cfg
                 # Ensure persistent coupling buffers (d_cell_wse) are
-                # allocated before the pipe-end BC kernel runs — it reads
-                # cell WSE and will fault on a NULL device pointer.
+                # allocated before swe2d_pipe1d_step runs — it reads cell
+                # WSE and will fault on a NULL device pointer.
                 self._ensure_persistent_coupling_preloaded(native_mod)
-                if hasattr(native_mod, "swe2d_gpu_apply_pipe_end_bc"):
-                    native_mod.swe2d_gpu_apply_pipe_end_bc(int(self.n_cells))
-                # Force free outfall nodes to zero tailwater before pipe step
-                if hasattr(native_mod, "swe2d_outfall_free_bc_kernel_host"):
-                    native_mod.swe2d_outfall_free_bc_kernel_host(dev_ptr)
+                # NO MORE: swe2d_gpu_apply_pipe_end_bc,
+                # swe2d_pipe1d_outfall_bc_kernel_host,
+                # swe2d_gpu_apply_coupling_drainage,
+                # swe2d_gpu_apply_pipe_face_flux — all absorbed into the
+                # unified step kernel.
+                #
+                # Note: don't invalidate the solver's CUDA graph cache here.
+                # The graph signature is dt-free, so the cache can hit if
+                # only dt varies (which it does every step).  The graph
+                # uses the dt baked at capture time — CFL safety caps are
+                # conservative enough that ~20% dt variation is acceptable.
+
+                native_mod.swe2d_gpu_device_sync()
+                _solver_dev_ptr = int(self._backend.get_solver_dev_ptr()) if self._backend is not None else 0
                 native_mod.swe2d_pipe1d_step(
                     dev_ptr,
                     float(dt_s),
@@ -1568,6 +1815,14 @@ class SWE2DCouplingController:
                     int(getattr(cfg, "implicit_coupling_iterations", 2)),
                     float(getattr(cfg, "implicit_coupling_relaxation", 0.5)),
                     float(g),
+                    float(k_mann),
+                    float(h_min),
+                    surcharge_method=int(dsoa.surcharge_method),
+                    friction_method=int(dsoa.friction_method),
+                    recon_method=int(dsoa.recon_method),
+                    time_integrator=int(dsoa.time_integrator),
+                    friction_alpha=float(dsoa.friction_alpha),
+                    solver_dev_ptr=_solver_dev_ptr,
                 )
             else:
                 return False
@@ -1595,37 +1850,26 @@ class SWE2DCouplingController:
                 self._culvert_solver_mode_applied = -1  # not yet applied
 
         n_structures = int(self._structure_count) if self.structures is not None else 0
-        if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
-            native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
+        native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
 
 
-        # cell_wse_host=None → GPU computes WSE from device h+zb
-        # host_structure_flows=None → GPU computes flows on-device
-        # Drainage q_cell is folded into d_external_source_mps via d_drainage_q
-        native_mod.swe2d_gpu_compute_coupling_full_on_device(
-            None,
-            n_structures,
-            None,
-        )
-
-        # (No device sync here — compute_coupling_full_on_device already has a
-        # cudaStreamSynchronize on the solver stream which is sufficient to clear
-        # any pending stream errors before the next graph capture.  Full
-        # cudaDeviceSynchronize is expensive and unnecessary.)
+        # Phase 2.4 — swe2d_gpu_compute_coupling_full_on_device retired.
+        # The unified face kernel (swe2d_unified_face_flux_kernel) writes
+        # d_ext_struct_flux_h / d_ext_struct_flux_hu / d_ext_struct_flux_hv
+        # directly for every face class (INTERIOR, OUTFALL_BC, INLET_BC,
+        # SURFACE_2D_PIPE_END, SURFACE_2D_INLET, SURFACE_2D_JUNCTION_OVERFLOW,
+        # CULVERT). The SWE2D update kernel reads those buffers and applies
+        # the mass/momentum exchange in-line. No separate coupling host wrapper
+        # call is needed any more.
+        # (removed): native_mod.swe2d_gpu_compute_coupling_full_on_device(...)
 
         self._coupling_applied_this_timestep = True
 
-        # ── Invalidate the cached CUDA graph because dev->use_culvert_face_flux
-        # changed from the pre-coupling state (false) to the post-coupling state
-        # (true).  Forces the solver to re-capture on the next step with the
-        # correct ext_struct_flux pointers instead of replaying the old graph
-        # which has nullptr baked in for those kernel arguments.
-        if hasattr(native_mod, "swe2d_gpu_invalidate_graph_cache"):
-            native_mod.swe2d_gpu_invalidate_graph_cache()
-        else:
-            raise RuntimeError(
-                "swe2d_gpu_invalidate_graph_cache not available — required for "
-                "graph cache invalidation when coupling changes use_culvert_face_flux.")
+        # NOTE: the solver's CUDA graph cache is intentionally NOT invalidated
+        # here.  The graph signature is dt-free, so the cache can hit across
+        # steps even with dt variation.  Invalidation here would force
+        # re-capture + re-instantiation on every step (heavyweight sync
+        # compilation), defeating the purpose of CUDA graph capture.
 
         # When face-flux mode is active, the culvert face flux is already
         # applied via d_ext_struct_flux_h which the update kernel reads
@@ -1637,23 +1881,14 @@ class SWE2DCouplingController:
         # ext_struct_flux_h is never populated and the culvert mass must
         # travel through d_external_source_mps like other sources.
         if self.culvert_face_flux_mode != "face_flux":
-            if hasattr(native_mod, "swe2d_gpu_fold_culvert_mass_to_source"):
-                try:
-                    native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
-                except Exception as exc:
-                    self._log(
-                        "[COUPLING] Failed to fold culvert mass to source; "
-                        "redistribution may be incomplete. Error: " + str(exc)
-                    )
+            try:
+                native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
+            except Exception as exc:
+                self._log(
+                    "[COUPLING] Failed to fold culvert mass to source; "
+                    "redistribution may be incomplete. Error: " + str(exc)
+                )
 
-        # ── Face-flux influence-width redistribution ─────────────────────
-        # When face-flux is active and redistribution geometry exists,
-        # spread the culvert mass flux from single donor/receiver cells
-        # across the pre-computed corridor cells.  This prevents excessive
-        # local drawdown (and spurious velocity spikes) at the culvert
-        # inlet/outlet cells.  The redistribution reverses the single-cell
-        # injection in d_ext_struct_flux_h and distributes Q across a
-        # wider set of cells, then re-uploads to device.
         # ── Face-flux redistribution (GPU-only, no PCIe transfers) ─────
         # The GPU kernel operates directly on d_ext_struct_flux_h with zero
         # host readback.  Static geometry (face SOA + redistribution arrays)
@@ -1662,8 +1897,7 @@ class SWE2DCouplingController:
             and self._redist_offsets is not None
             and self._redist_offsets.size > 1
             and self._face_flux_soa is not None
-            and self._face_flux_soa.structure_index.size > 0
-            and hasattr(native_mod, "swe2d_gpu_redistribute_face_flux")):
+            and self._face_flux_soa.structure_index.size > 0):
             ff = self._face_flux_soa
             native_mod.swe2d_gpu_redistribute_face_flux(
                 np.asarray(ff.structure_index, dtype=np.int32),
@@ -1680,13 +1914,12 @@ class SWE2DCouplingController:
         # on-device function is available, apply redistribution directly
         # on dev->d_external_source_mps with no host readback.
         if (self._redist_offsets is not None
-            and self._redist_offsets.size > 1
-            and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent")):
+            and self._redist_offsets.size > 1):
             ssoa = self._structures_soa
             non_bridge_mask = self._structure_non_bridge_mask
             if ssoa is not None and non_bridge_mask is not None and np.any(non_bridge_mask):
                 nb_n = int(self._n_non_bridge_structures)
-                if nb_n > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
+                if nb_n > 0:
                     nb_flows = np.asarray(
                         native_mod.swe2d_gpu_readback_structure_flows(nb_n),
                         dtype=np.float64,
@@ -1724,11 +1957,6 @@ class SWE2DCouplingController:
         """Upload structure and cell-area parameters to GPU for the persistent coupling path."""
         if self._persistent_coupling_preloaded:
             return
-        if not hasattr(native_mod, "swe2d_gpu_preload_structure_params"):
-            raise RuntimeError(
-                "GPU structure preloading function swe2d_gpu_preload_structure_params "
-                "is unavailable — required for persistent coupling path."
-            )
         ssoa = self._structures_soa
         if ssoa is not None and int(len(ssoa.structure_type)) > 0:
             try:
@@ -1770,11 +1998,6 @@ class SWE2DCouplingController:
                     "Failed to preload structure params on device — no CPU fallback. "
                     f"Error: {exc}"
                 )
-        if not hasattr(native_mod, "swe2d_gpu_preload_coupling_cell_area"):
-            raise RuntimeError(
-                "GPU cell area preloading function swe2d_gpu_preload_coupling_cell_area "
-                "is unavailable — required for persistent coupling path."
-            )
         try:
             cell_area_si = np.asarray(self.cell_area, dtype=np.float64) / _u.si_m2_per_model_area()
             native_mod.swe2d_gpu_preload_coupling_cell_area(cell_area_si)
@@ -1808,6 +2031,7 @@ class SWE2DCouplingController:
         dsoa=None,
         nl: int = -1,
         dev_ptr: int = 0,
+        g_slot_cfl: float = 9.80665,
     ) -> bool:
         """Allocate + zero the GPU pipe1d mesh arrays so readbacks return zeros.
 
@@ -1832,7 +2056,7 @@ class SWE2DCouplingController:
             return False
         if native_mod is None:
             native_mod = self._native_cuda_module()
-        if native_mod is None or not hasattr(native_mod, "swe2d_build_pipe1d_mesh"):
+        if native_mod is None:
             return False
         if static_args is None:
             static_args = self._ensure_gpu_drainage_static_args()
@@ -1840,7 +2064,7 @@ class SWE2DCouplingController:
             return False
         dsoa = self._drainage_soa if dsoa is None else dsoa
         nl = int(len(dsoa.link_from)) if nl < 0 else int(nl)
-        if dev_ptr == 0 and hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
+        if dev_ptr == 0:
             dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
         # The GPU solver device pointer is null until backend.initialize()
         # has been called.  If construction happens before initialization
@@ -1850,26 +2074,137 @@ class SWE2DCouplingController:
         # controller only after backend.initialize().
         if dev_ptr == 0:
             return False
-        native_mod.swe2d_build_pipe1d_mesh(
-            nl,
-            static_args["link_from"],
-            static_args["link_to"],
-            static_args["link_length"],
-            static_args["link_diameter"],
-            static_args["link_roughness_n"],
-            np.asarray(dsoa.link_entrance_loss_k, dtype=np.float64),
-            np.asarray(dsoa.link_exit_loss_k, dtype=np.float64),
-            static_args["node_invert_elev"],
-            static_args["node_surface_area"],
-            static_args["node_max_depth"],
-            np.asarray(dsoa.link_invert_in, dtype=np.float64),
-            np.asarray(dsoa.link_invert_out, dtype=np.float64),
-            int(dsoa.max_cell_length),
-            dev_ptr,
-            np.asarray(dsoa.link_shape_type, dtype=np.int32),
-            np.asarray(dsoa.link_width, dtype=np.float64),
-            np.asarray(dsoa.link_height, dtype=np.float64),
+        # Use the unified mesh builder with per-link shape data.
+        np_end = int(getattr(dsoa, "pipe_end_cell", np.zeros(0)).shape[0])
+        pipe_end_node_ids = np.asarray(
+            getattr(dsoa, "pipe_end_node", np.zeros(np_end, dtype=np.int32)),
+            dtype=np.int32,
         )
+        link_shape = np.asarray(
+            getattr(dsoa, "link_shape_type", np.zeros(nl, dtype=np.int32)),
+            dtype=np.int32,
+        )
+        link_w = np.asarray(
+            getattr(dsoa, "link_width", np.zeros(nl, dtype=np.float64)),
+            dtype=np.float64,
+        )
+        link_h = np.asarray(
+            getattr(dsoa, "link_height", np.zeros(nl, dtype=np.float64)),
+            dtype=np.float64,
+        )
+
+        # ── Inlet cell params (n_inlet_cells + geometry for the pipe1D mesh) ──
+        ni = int(getattr(dsoa, "inlet_cell", np.empty(0)).shape[0])
+        inlet_cell_kw = {}
+        inlet_face_kw = {}
+        if ni > 0:
+            # Build per-inlet geometry from network node arrays
+            inv_node = static_args["node_invert_elev"]
+            sa_node = static_args.get("node_surface_area",
+                        np.full(static_args.get("node_invert_elev", np.zeros(0)).size, 1.0e10))
+            md_node = static_args.get("node_max_depth",
+                        np.full(static_args.get("node_invert_elev", np.zeros(0)).size, 10.0))
+            in_ids = np.asarray(dsoa.inlet_node, dtype=np.int32)
+            inlet_invert = np.where(in_ids >= 0, inv_node[in_ids], 0.0).astype(np.float64)
+            inlet_surf = np.where(in_ids >= 0, sa_node[in_ids], 1.0e10).astype(np.float64)
+            inlet_md   = np.where(in_ids >= 0, md_node[in_ids], 10.0).astype(np.float64)
+            # Equivalent diameter: use width if non-zero, else default 3 ft
+            inlet_diam = np.where(np.asarray(dsoa.inlet_width, dtype=np.float64) > 0.0,
+                                  np.asarray(dsoa.inlet_width, dtype=np.float64),
+                                  3.0).astype(np.float64)
+            inlet_cell_kw = {
+                "n_inlet_cells": ni,
+                "inlet_node_ids": in_ids,
+                "inlet_invert": inlet_invert,
+                "inlet_surface_area": inlet_surf,
+                "inlet_max_depth": inlet_md,
+                "inlet_diameter": inlet_diam,
+                "inlet_cell_length": np.asarray(dsoa.inlet_cell_length, dtype=np.float64),
+                "inlet_cell_width": np.asarray(dsoa.inlet_cell_width, dtype=np.float64),
+            }
+            # Inlet capture faces (SURFACE_2D_INLET, class 4, HEC-22)
+            inlet_face_2d_cell_gpu = self._remap_cells_for_gpu(
+                np.asarray(dsoa.inlet_cell, dtype=np.int32)
+            )
+            inlet_face_kw = {
+                "inlet_face_node": in_ids,
+                "inlet_face_2d_cell": inlet_face_2d_cell_gpu,
+                "inlet_face_type": np.asarray(dsoa.inlet_type, dtype=np.int32),
+                "inlet_face_grate_len": np.asarray(dsoa.inlet_grate_len, dtype=np.float64),
+                "inlet_face_grate_wid": np.asarray(dsoa.inlet_grate_wid, dtype=np.float64),
+                "inlet_face_grate_open": np.asarray(dsoa.inlet_grate_open, dtype=np.float64),
+                "inlet_face_curb_len": np.asarray(dsoa.inlet_curb_len, dtype=np.float64),
+                "inlet_face_curb_ht": np.asarray(dsoa.inlet_curb_ht, dtype=np.float64),
+                "inlet_face_curb_throat": np.asarray(dsoa.inlet_curb_throat, dtype=np.int32),
+                "inlet_face_slot_len": np.asarray(dsoa.inlet_slot_len, dtype=np.float64),
+                "inlet_face_slot_wid": np.asarray(dsoa.inlet_slot_wid, dtype=np.float64),
+                "inlet_face_crest": np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
+                "inlet_face_cd": np.asarray(dsoa.inlet_coefficient, dtype=np.float64),
+                "inlet_face_qmax": np.asarray(dsoa.inlet_max_capture, dtype=np.float64),
+            }
+
+        native_mod.swe2d_build_unified_mesh(
+            dev_ptr=dev_ptr,
+            n_links=nl,
+            link_from=static_args["link_from"],
+            link_to=static_args["link_to"],
+            L=static_args["link_length"],
+            D=static_args["link_diameter"],
+            n_mann=static_args["link_roughness_n"],
+            S0=np.zeros(nl, dtype=np.float64),
+            node_invert=static_args["node_invert_elev"],
+            node_inlet_loss_k=static_args["node_inlet_loss_k"],
+            node_outlet_loss_k=static_args["node_outlet_loss_k"],
+            mcl=np.asarray(dsoa.max_cell_length, dtype=np.float64),
+            n_pipe_ends=np_end,
+            pipe_end_node_ids=pipe_end_node_ids,
+            link_shape_type=link_shape,
+            link_width=link_w,
+            link_height=link_h,
+            link_inlet_loss_k=static_args["link_inlet_loss_k"],
+            link_outlet_loss_k=static_args["link_outlet_loss_k"],
+            link_upstream_offset=np.asarray(dsoa.link_upstream_offset, dtype=np.float64),
+            link_downstream_offset=np.asarray(dsoa.link_downstream_offset, dtype=np.float64),
+            grav_slot_cfl=g_slot_cfl,
+            **inlet_cell_kw,
+            **inlet_face_kw,
+        )
+
+        # Wire pipe-end faces to 2D surface cells (SURFACE_2D_PIPE_END).
+        if np_end > 0:
+            pipe_end_cell_gpu = self._remap_cells_for_gpu(
+                np.asarray(dsoa.pipe_end_cell, dtype=np.int32)
+            )
+            native_mod.swe2d_pipe1d_upload_pipe_end_surface_faces(
+                dev_ptr, pipe_end_cell_gpu
+            )
+
+        # Wire SURFACE_2D_JUNCTION_OVERFLOW (class-5) faces to 2D surface cells.
+        # For inlets, dsoa.inlet_cell maps inlet index → 2D cell.  Manhole
+        # overflow faces exist only in tests (no n_manhole_cells in prod).
+        if ni > 0:
+            overflow_2d_cells = self._remap_cells_for_gpu(
+                np.asarray(dsoa.inlet_cell, dtype=np.int32)
+            )
+            native_mod.swe2d_pipe1d_upload_junction_overflow_2d_cells(
+                dev_ptr, overflow_2d_cells
+            )
+
+        # Initialise pipe cell area from each cell's depth (h_min floor for
+        # dry cells) so the first pipe1d_step does not start with
+        # uninitialised area values.
+        native_mod.swe2d_pipe1d_init_cell_area(dev_ptr, float(self._h_min))
+
+        # Store cell counts eagerly after mesh build so the first readback
+        # has correct values (cold-start fix: avoid getattr(..., 0) fallback).
+        # Inlet cells: count from dsoa.inlet_cell shape.
+        # Manhole cells: nodes that are NOT inlets (junction_node count).
+        # In production, manhole cells are 0 (overflow only in tests).
+        ni = int(getattr(dsoa, "inlet_cell", np.empty(0)).shape[0])
+        nj = int(np.sum(dsoa.node_is_inlet == 0)) if dsoa.node_is_inlet is not None else 0
+        self._n_inlet_cells = ni
+        self._n_manhole_cells = nj
+
         self._pipe1d_mesh_built = True
         return True
 
@@ -1886,6 +2221,8 @@ class SWE2DCouplingController:
             "node_invert_elev": np.ascontiguousarray(dsoa.node_invert_elev, dtype=np.float64),
             "node_max_depth": np.ascontiguousarray(dsoa.node_max_depth, dtype=np.float64),
             "node_surface_area": np.ascontiguousarray(dsoa.node_surface_area, dtype=np.float64),
+            "node_inlet_loss_k": np.ascontiguousarray(dsoa.node_inlet_loss_k, dtype=np.float64),
+            "node_outlet_loss_k": np.ascontiguousarray(dsoa.node_outlet_loss_k, dtype=np.float64),
             "node_is_inlet": np.ascontiguousarray(dsoa.node_is_inlet, dtype=np.int32),
             "link_from": np.ascontiguousarray(dsoa.link_from, dtype=np.int32),
             "link_to": np.ascontiguousarray(dsoa.link_to, dtype=np.int32),
@@ -1916,6 +2253,8 @@ class SWE2DCouplingController:
             "pipe_end_enable_overflow": np.ascontiguousarray(dsoa.pipe_end_enable_overflow, dtype=np.int32),
             "pipe_end_overflow_elevation": np.ascontiguousarray(dsoa.pipe_end_overflow_elevation, dtype=np.float64),
             "pipe_end_max_overflow_rate": np.ascontiguousarray(dsoa.pipe_end_max_overflow_rate, dtype=np.float64),
+            "link_inlet_loss_k": np.ascontiguousarray(dsoa.link_entrance_loss_k, dtype=np.float64),
+            "link_outlet_loss_k": np.ascontiguousarray(dsoa.link_exit_loss_k, dtype=np.float64),
         }
         return self._gpu_drainage_static_args
 
@@ -2010,6 +2349,8 @@ def build_coupling_controller(
     cell_centroids=None,
     inv_cell_perm=None,
     log_fn=None,
+    h_min: float = 1.0e-6,
+    backend=None,
 ):
     """Build a SWE2DCouplingController from drainage + structure configs.
 
@@ -2026,9 +2367,16 @@ def build_coupling_controller(
         if pipe_network_cfg is not None:
             drainage_mod = SWE2DUrbanDrainageModule(pipe_network_cfg)
             drainage_mod.initialize()
+        # Configure the global unit system from the CRS length scale BEFORE
+        # passing it to SWE2DCouplingController.  Passing `_si_m_per_model`
+        # (the inverted reciprocal) would feed SWE2DCouplingController a value
+        # that _u.configure() interprets as `si_m_per_model`, yielding
+        # gravity = SI_GRAVITY × (1 / inverted_value) which for USC projects
+        # becomes 9.80665 / 3.281 ≈ 2.99 ft/s² instead of 32.17 ft/s².
+        # Fix U1 (audit 2026-07-22): pass the length scale directly, no inversion.
         _ls = max(1.0e-6, float(length_scale_si_to_model))
-        _si_m_per_model = 1.0 / _ls
-        _model_to_ft = _u.USC_FT_PER_SI_M * _si_m_per_model
+        _u.configure(_ls)
+        _model_to_ft = _u.model_to_ft()
         if hydraulic_structures_cfg is not None:
             structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft)
         _cs_mode = int(culvert_solver_mode) if not isinstance(culvert_solver_mode, str) else {"egl": 0, "hgl": 1}.get(culvert_solver_mode.strip().lower(), 0)
@@ -2041,13 +2389,14 @@ def build_coupling_controller(
             culvert_solver_mode=_cs_mode,
             bridge_cuda_coupling=bridge_cuda_coupling,
             bridge_stacked_coupling_mode=bridge_stacked_coupling_mode,
-            length_scale_si_to_model=_si_m_per_model,
+            length_scale_si_to_model=_ls,
             culvert_face_flux_mode=culvert_face_flux_mode,
             use_redistribution=use_redistribution,
             log_callback=log_fn,
+            inv_cell_perm=np.asarray(inv_cell_perm, dtype=np.int32).copy() if inv_cell_perm is not None else None,
+            h_min=float(h_min),
+            backend=backend,
         )
-        if inv_cell_perm is not None:
-            coupling_controller._inv_cell_perm = np.asarray(inv_cell_perm, dtype=np.int32)
         if cell_centroids is not None:
             if hasattr(coupling_controller, "set_cell_centroids"):
                 coupling_controller.set_cell_centroids(cell_centroids[0], cell_centroids[1])

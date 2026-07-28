@@ -6,7 +6,7 @@ from swe2d.boundary_and_forcing.bc_logic import (
     interp_hydrograph,
     normalize_inflow_to_uniform_velocity,
 )
-from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
+from swe2d.core.boundary_qgis_adapter import (
     apply_bc_layer_overrides_qgis,
     collect_bc_layer_edge_groups_qgis,
     collect_bc_layer_hydrographs_qgis,
@@ -26,7 +26,7 @@ from swe2d.boundary_and_forcing.internal_flow_logic import (
     first_matching_field,
     resolve_internal_flow_field_name,
 )
-from swe2d.boundary_and_forcing.internal_flow_qgis_adapter import (
+from swe2d.core.internal_flow_qgis_adapter import (
     build_internal_flow_forcing_qgis,
 )
 from swe2d.boundary_and_forcing.internal_flow_qgis_geometry import (
@@ -41,7 +41,7 @@ from swe2d.boundary_and_forcing.runtime_source_logic import (
     internal_flow_source_cms_at_time,
 )
 from swe2d.runtime.runtime_sources import SWE2DRuntimeSourceManager
-from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import (
+from swe2d.core.spatial_forcing_qgis_adapter import (
     build_spatial_cn_array_qgis,
     build_spatial_manning_array_qgis,
     build_thiessen_rain_cn_forcing_qgis,

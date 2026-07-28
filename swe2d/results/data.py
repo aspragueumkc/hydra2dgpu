@@ -98,7 +98,7 @@ class SWE2DResultsData:
         # Pipe cell: {(link_id, cell_sub_idx, metric): {link_id, cell_sub_idx, metric, times: list, values: list}}
         self._live_pipe_cell: Dict[Tuple[str, int, str], Dict[str, object]] = {}
         # Display state for TS/Profile/Structure/Network renderers (plain data)
-        self.ts_var_key: str = "flow_cms"
+        self.ts_var_key: str = "flow"
         self.prof_var_key: str = "wse_bed"
         self.prof_fill_key: str = "none"
         self.prof_cmap: str = "viridis"
@@ -173,6 +173,8 @@ class SWE2DResultsData:
         """Initialize pipe cell storage with dynamic lists.
 
         Called once before the run starts, after the pipe cell keys are known.
+        Geometry fields are initialized with safe defaults; the real values
+        are written on the first snapshot for each cell.
         """
         self._live_pipe_cell.clear()
         for key in keys:
@@ -183,6 +185,10 @@ class SWE2DResultsData:
                 "metric": metric,
                 "times": [],
                 "values": [],
+                "cell_invert": 0.0,
+                "cell_width": 1.0,
+                "cell_height": 1.0,
+                "cell_shape_type": 0,
             }
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
@@ -262,7 +268,7 @@ class SWE2DResultsData:
         if lid not in self._live_line_ts:
             self._live_line_ts[lid] = {"line_name": str(row.get("line_name", f"line_{lid}"))}
         d = self._live_line_ts[lid]
-        for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+        for key in ("depth", "velocity", "wse", "bed", "flow", "wet_frac", "fr"):
             arr = d.get(key)
             if arr is not None and snap_idx < arr.size:
                 arr[snap_idx] = float(row.get(key, 0.0))
@@ -282,7 +288,7 @@ class SWE2DResultsData:
         n_sta = int(d.get("n_stations", 0))
         if n_sta <= 0:
             return
-        for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+        for key in ("depth", "velocity", "wse", "bed", "flow_qn", "fr"):
             arr = d.get(key)
             if arr is not None and snap_idx < arr.shape[0]:
                 val = row.get(key, 0.0)
@@ -325,6 +331,10 @@ class SWE2DResultsData:
                     "metric": metric,
                     "t_s": row.get("t_s", 0.0),
                     "value": row.get("value", 0.0),
+                    "cell_invert": row.get("cell_invert"),
+                    "cell_width": row.get("cell_width"),
+                    "cell_height": row.get("cell_height"),
+                    "cell_shape_type": row.get("cell_shape_type"),
                 }
                 self.append_pipe_cell_snapshot(pipe_row)
             return
@@ -340,9 +350,10 @@ class SWE2DResultsData:
         """Write a pipe cell row into live pipe cell storage.
 
         On the first write for each cell, also stores per-cell geometry
-        (cell_invert, cell_width) extracted from the C++ readback — these
-        are constant for the cell's lifetime and are used by the profile
-        viewer to draw the pipe cross-section without needing GPKK access.
+        (cell_invert, cell_width, cell_height, cell_shape_type) extracted
+        from the C++ readback — these are constant for the cell's lifetime
+        and are used by the profile viewer to draw the pipe cross-section
+        without needing GeoPackage access.
         """
         key = (
             str(snapshot.get("link_id", "")),
@@ -355,10 +366,24 @@ class SWE2DResultsData:
         if d is None:
             return
 
-        # Store per-cell geometry on first write (same for all 4 metrics)
-        if "cell_invert" not in d:
-            d["cell_invert"] = float(snapshot.get("cell_invert", 0.0))
-            d["cell_width"] = float(snapshot.get("cell_width", 1.0))
+        # Store per-cell geometry on first write (same for all 4 metrics).
+        # Because each metric has its own key, propagate geometry to every
+        # sibling key so the profile viewer can read it from any metric.
+        # Only set geometry if the snapshot actually carries it; otherwise a
+        # later metric snapshot without geometry would overwrite the values
+        # propagated by the first metric snapshot.
+        if not d["times"] and any(k in snapshot for k in ("cell_invert", "cell_width", "cell_height", "cell_shape_type")):
+            cell_invert = float(snapshot.get("cell_invert", 0.0))
+            cell_width = float(snapshot.get("cell_width", 1.0))
+            cell_height = float(snapshot.get("cell_height", cell_width))
+            cell_shape_type = int(snapshot.get("cell_shape_type", 0))
+            for sibling_key in self._live_pipe_cell.keys():
+                if sibling_key[0] == key[0] and sibling_key[1] == key[1]:
+                    sibling = self._live_pipe_cell[sibling_key]
+                    sibling["cell_invert"] = cell_invert
+                    sibling["cell_width"] = cell_width
+                    sibling["cell_height"] = cell_height
+                    sibling["cell_shape_type"] = cell_shape_type
 
         d["times"].append(float(snapshot.get("t_s", 0.0)))
         d["values"].append(float(snapshot.get("value", 0.0)))
@@ -400,7 +425,7 @@ class SWE2DResultsData:
             entry = {"line_name": d.get("line_name", f"line_{lid}")}
             if times:
                 entry["t_s"] = list(times)
-            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+            for k in ("depth", "velocity", "wse", "bed", "flow", "wet_frac", "fr"):
                 v = d.get(k)
                 if v is not None:
                     entry[f"ts_{k}"] = list(np.asarray(v, dtype=np.float64))
@@ -410,7 +435,7 @@ class SWE2DResultsData:
             sta = d.get("station_m")
             if sta is not None:
                 entry["station_m"] = np.asarray(sta, dtype=np.float64)
-            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+            for k in ("depth", "velocity", "wse", "bed", "flow_qn", "fr"):
                 arr = d.get(k)
                 if arr is not None and hasattr(arr, "shape") and arr.ndim == 2:
                     entry[f"prof_{k}"] = arr
@@ -430,7 +455,7 @@ class SWE2DResultsData:
             line_name = d.get("line_name", f"line_{lid}")
             for i in range(n):
                 row = {"line_id": lid, "line_name": line_name, "t_s": float(t_s[i])}
-                for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                for key in ("depth", "velocity", "wse", "bed", "flow", "wet_frac", "fr"):
                     arr = d.get(key)
                     row[key] = float(arr[i]) if arr is not None and i < arr.size else 0.0
                 out.append(row)
@@ -440,17 +465,17 @@ class SWE2DResultsData:
         """Reconstruct list-of-dicts from _live_line_profile numpy storage."""
         out = []
         for lid, d in self._live_line_profile.items():
-            depth_m = d.get("depth_m")
-            if depth_m is None:
+            depth = d.get("depth")
+            if depth is None:
                 continue
-            n_snaps = depth_m.shape[0]
-            n_sta = depth_m.shape[1] if depth_m.ndim > 1 else 0
-            station_m = d.get("station_m")
-            station_arr = np.asarray(station_m) if station_m is not None else np.arange(n_sta)
+            n_snaps = depth.shape[0]
+            n_sta = depth.shape[1] if depth.ndim > 1 else 0
+            station = d.get("station")
+            station_arr = np.asarray(station) if station is not None else np.arange(n_sta)
             line_name = d.get("line_name", f"line_{lid}")
             for i in range(n_snaps):
                 row = {"line_id": lid, "line_name": line_name}
-                for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+                for key in ("depth", "velocity", "wse", "bed", "flow_qn", "fr"):
                     arr = d.get(key)
                     if arr is not None and arr.ndim == 2 and i < arr.shape[0]:
                         row[key] = arr[i]
@@ -458,7 +483,7 @@ class SWE2DResultsData:
                         row[key] = np.array([])
                 wet = d.get("wet")
                 row["wet"] = wet[i] if wet is not None and wet.ndim == 2 and i < wet.shape[0] else np.array([], dtype=np.int32)
-                row["station_m"] = station_arr
+                row["station"] = station_arr
                 out.append(row)
         return out
 
@@ -482,22 +507,22 @@ class SWE2DResultsData:
         station_offsets = lm_data.get("station_offsets")
         station_m = lm_data.get("station_m")
         import logging as _lg
-        _lg.warning("[LINE_DIAG] populate_from_gpu: t_s=%s profiles=%s ts=%s station_offsets=%s station_m=%s",
+        _lg.debug("[LINE_DIAG] populate_from_gpu: t_s=%s profiles=%s ts=%s station_offsets=%s station_m=%s",
                      t_s.shape if hasattr(t_s, 'shape') else t_s,
                      profiles.shape if hasattr(profiles, 'shape') else profiles,
                      ts.shape if hasattr(ts, 'shape') else ts,
                      station_offsets.shape if hasattr(station_offsets, 'shape') else station_offsets,
                      station_m.shape if hasattr(station_m, 'shape') else station_m)
         if t_s is None or profiles is None or ts is None or station_offsets is None:
-            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — missing required keys")
+            _lg.debug("[LINE_DIAG] populate_from_gpu: EARLY RETURN — missing required keys")
             return
         total_stations = lm_data.get("total_stations", 0)
         if total_stations <= 0:
-            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — total_stations=%d", total_stations)
+            _lg.debug("[LINE_DIAG] populate_from_gpu: EARLY RETURN — total_stations=%d", total_stations)
             return
         n_lines = int(station_offsets.size) - 1
         if n_lines <= 0:
-            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — n_lines=%d", n_lines)
+            _lg.debug("[LINE_DIAG] populate_from_gpu: EARLY RETURN — n_lines=%d", n_lines)
             return
 
         # Resolve the ordered list of actual line IDs (matching the GPU 0-index).
@@ -506,9 +531,9 @@ class SWE2DResultsData:
 
         new_ts: Dict[int, Dict[str, object]] = {}
         new_prof: Dict[int, Dict[str, object]] = {}
-        _ts_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
-                     "flow_cms", "wet_frac", "fr")
-        _prof_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
+        _ts_keys = ("depth", "velocity", "wse", "bed",
+                     "flow", "wet_frac", "fr")
+        _prof_keys = ("depth", "velocity", "wse", "bed",
                        "flow_qn", "fr")
         for gpu_idx in range(n_lines):
             lid = line_ids_ordered[gpu_idx] if gpu_idx < len(line_ids_ordered) else gpu_idx
@@ -564,7 +589,13 @@ class SWE2DResultsData:
         return out
 
     def build_pipe_cell_items(self) -> List[Dict]:
-        """Reconstruct list-of-dicts from _live_pipe_cell for persistence."""
+        """Reconstruct list-of-dicts from _live_pipe_cell for persistence.
+
+        Each returned dict contains the metric timeseries plus the pipe-cell
+        geometry fields needed to draw cross-sections and populate the
+        GeoPackage ``swe2d_baked_pipe_cell_ts`` table.  Missing geometry is
+        filled with safe defaults.
+        """
         out = []
         for (link_id, cell_sub_idx, metric), d in self._live_pipe_cell.items():
             times = d.get("times")
@@ -577,6 +608,10 @@ class SWE2DResultsData:
                 "metric": metric,
                 "times": np.array(list(times), dtype=np.float64),
                 "values": np.array(list(values), dtype=np.float64),
+                "cell_invert": float(d.get("cell_invert", 0.0)),
+                "cell_width": float(d.get("cell_width", 1.0)),
+                "cell_height": float(d.get("cell_height", 1.0)),
+                "cell_shape_type": int(d.get("cell_shape_type", 0)),
             })
         return out
 
@@ -1233,6 +1268,10 @@ class SWE2DResultsData:
                     "metric": item["metric"],
                     "times": list(item["times"]),
                     "values": list(item["values"]),
+                    "cell_invert": float(item.get("cell_invert", 0.0)),
+                    "cell_width": float(item.get("cell_width", 1.0)),
+                    "cell_height": float(item.get("cell_height", 1.0)),
+                    "cell_shape_type": int(item.get("cell_shape_type", 0)),
                 }
 
             # Load overlay scalar fields

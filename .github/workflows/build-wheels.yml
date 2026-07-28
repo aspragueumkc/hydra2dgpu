@@ -1,0 +1,64 @@
+name: Build wheels
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # so the release job can attach wheels
+
+jobs:
+  build_wheels:
+    name: Build wheels on ${{ matrix.os }} py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python: ["cp310", "cp311", "cp312"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up CUDA 12.4 (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.4.0'
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Set up CUDA 12.4 (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.4.0'
+          method: network
+
+      - name: Set up MSVC dev cmd (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.19
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-*
+          CIBW_SKIP: "pp* *-musllinux* *-win32 *-manylinux_i686"
+          CIBW_BEFORE_BUILD_LINUX: |
+            yum install -y cuda-toolkit-12-4 || true
+            echo "CUDACXX=$(which nvcc)" >> $GITHUB_ENV
+          CIBW_BEFORE_BUILD_WINDOWS: |
+            Write-Output "CUDACXX=$env:CUDA_PATH\bin\nvcc.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+          CIBW_ENVIRONMENT_PASS_LINUX: "BACKWATER_USE_CUDA CUDA_HOME CUDACXX"
+          CIBW_ENVIRONMENT_PASS_WINDOWS: "BACKWATER_USE_CUDA CUDA_PATH CUDACXX"
+          BACKWATER_USE_CUDA: "ON"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python }}
+          path: ./wheelhouse/*.whl

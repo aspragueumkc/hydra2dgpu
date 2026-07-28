@@ -10,8 +10,11 @@ from typing import Callable
 
 from qgis.PyQt import QtCore, QtWidgets
 
-from swe2d.workbench.dialogs.sqlite_preview_dialog import SWE2DSQLiteTablePreviewDialog
+from swe2d.workbench.dialogs.sqlite_preview_dialog import SWE2DEnhancedTablePreviewDialog
+from swe2d.workbench.dialogs.coupling_results_dialog import SWE2DCouplingResultsViewerDialog
 from swe2d.workbench.dialogs.simulation_config_viewer_dialog import SWE2DSimulationConfigViewerDialog
+from swe2d.workbench.dialogs.gpkg_plot_tab import GpkgPlotTab
+from swe2d.workbench.services.numpy_blob_service import export_table_to_csv
 from swe2d.workbench.services.gpkg_operations_service import (
     drop_table,
     get_table_row_count,
@@ -44,10 +47,16 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self._open_line_results_viewer = open_line_results_viewer
         self._log = logger if callable(logger) else (lambda _msg: None)
 
-        root = QtWidgets.QVBoxLayout(self)
+        self._tabs = QtWidgets.QTabWidget()
+
+        # ── Tables tab (existing content) ───────────────────────────
+        tables_tab = QtWidgets.QWidget()
+        tables_layout = QtWidgets.QVBoxLayout(tables_tab)
+        tables_layout.setContentsMargins(0, 0, 0, 0)
+
         self.source_lbl = QtWidgets.QLabel(f"GeoPackage: {self._gpkg_path}")
         self.source_lbl.setWordWrap(True)
-        root.addWidget(self.source_lbl)
+        tables_layout.addWidget(self.source_lbl)
 
         self.table = QtWidgets.QTableWidget()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -57,39 +66,49 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Table", "Rows", "Type", "Actions"])
         self.table.horizontalHeader().setStretchLastSection(True)
-        root.addWidget(self.table, stretch=1)
+        tables_layout.addWidget(self.table, stretch=1)
 
         row = QtWidgets.QHBoxLayout()
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
         self.refresh_btn.setToolTip("Reload the table listing from the GeoPackage.")
         self.open_btn = QtWidgets.QPushButton("Open Viewer")
-        self.open_btn.setToolTip("Open the appropriate viewer for the selected table.")
-        self.preview_btn = QtWidgets.QPushButton("Preview Table")
-        self.preview_btn.setToolTip("Preview the selected table contents.")
+        self.open_btn.setToolTip("Open the enhanced viewer for the selected table.")
         self.rename_btn = QtWidgets.QPushButton("Rename Table")
         self.rename_btn.setToolTip("Rename the selected model table (swe2d_* tables only).")
         self.delete_btn = QtWidgets.QPushButton("Delete Table")
         self.delete_btn.setToolTip("Permanently delete the selected table from the GeoPackage.")
         self.delete_run_btn = QtWidgets.QPushButton("Delete by Run ID")
         self.delete_run_btn.setToolTip("Delete all result tables associated with a specific run ID.")
-        for btn in (self.refresh_btn, self.open_btn, self.preview_btn, self.rename_btn, self.delete_btn, self.delete_run_btn):
+        self.export_csv_btn = QtWidgets.QPushButton("Export CSV")
+        self.export_csv_btn.setToolTip("Export selected table to CSV.")
+        for btn in (self.refresh_btn, self.open_btn, self.rename_btn, self.delete_btn, self.delete_run_btn, self.export_csv_btn):
             row.addWidget(btn)
         row.addStretch(1)
-        root.addLayout(row)
+        tables_layout.addLayout(row)
+
+        self._tabs.addTab(tables_tab, "Tables")
+
+        # ── Plot tab ────────────────────────────────────────────────
+        self._plot_tab = GpkgPlotTab()
+        self._tabs.addTab(self._plot_tab, "Plot")
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.addWidget(self._tabs)
+
+        # Wire buttons
+        self.refresh_btn.clicked.connect(self.refresh_tables)
+        self.open_btn.clicked.connect(self.open_selected)
+        self.rename_btn.clicked.connect(self.rename_selected)
+        self.delete_btn.clicked.connect(self.delete_selected)
+        self.delete_run_btn.clicked.connect(self._delete_by_run_id)
+        self.export_csv_btn.clicked.connect(self._export_selected_csv)
+        self.table.itemSelectionChanged.connect(self._sync_button_state)
+        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         root.addWidget(buttons)
-
-        self.refresh_btn.clicked.connect(self.refresh_tables)
-        self.open_btn.clicked.connect(self.open_selected)
-        self.preview_btn.clicked.connect(self.preview_selected)
-        self.rename_btn.clicked.connect(self.rename_selected)
-        self.delete_btn.clicked.connect(self.delete_selected)
-        self.delete_run_btn.clicked.connect(self._delete_by_run_id)
-        self.table.itemSelectionChanged.connect(self._sync_button_state)
-        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
 
         self.refresh_tables()
 
@@ -128,7 +147,7 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         name = self._selected_table()
         has_sel = bool(name)
         self.open_btn.setEnabled(has_sel)
-        self.preview_btn.setEnabled(has_sel)
+        self.export_csv_btn.setEnabled(has_sel)
         mutable = has_sel and self._is_mutable_model_table(name)
         self.rename_btn.setEnabled(mutable)
         self.delete_btn.setEnabled(mutable)
@@ -154,13 +173,22 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self.table.resizeColumnsToContents()
         self._sync_button_state()
 
-    def _open_preview(self, name: str, title: str):
-        """Open the SQLite table preview dialog for the given table."""
-        dlg = SWE2DSQLiteTablePreviewDialog(self._gpkg_path, name, title=title, parent=self)
-        dlg.exec()
+    def _export_selected_csv(self):
+        name = self._selected_table()
+        if not name:
+            return
+        filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, f"Export {name} to CSV", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if not filepath:
+            return
+        try:
+            export_table_to_csv(self._gpkg_path, name, filepath)
+            self._log(f"Exported {name} to {filepath}")
+        except (ValueError, OSError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Export CSV", str(exc))
 
     def open_selected(self):
-        """Open the appropriate viewer for the selected table."""
         name = self._selected_table()
         if not name:
             return
@@ -171,21 +199,63 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         if kind == "line_results":
             self._open_line_results_viewer()
             return
+        if kind == "coupling_results":
+            self._open_coupling_results()
+            return
         if kind == "config":
             dlg = SWE2DSimulationConfigViewerDialog(self._gpkg_path, parent=self)
             dlg.exec()
             return
-        if kind == "mesh_results":
-            self._open_preview(name, title=f"Mesh Results Viewer - {name}")
-            return
-        self._open_preview(name, title=f"Table Viewer - {name}")
+        # Use enhanced viewer for everything else
+        self._open_enhanced_viewer(name)
+
+    def _open_coupling_results(self):
+        """Open the coupling results viewer for the baked coupling table."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self._gpkg_path)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT run_id FROM swe2d_baked_coupling LIMIT 1")
+                row = cur.fetchone()
+                if row is None:
+                    QtWidgets.QMessageBox.information(self, "Coupling Results", "No coupling data found in this GeoPackage.")
+                    return
+                run_id = str(row[0])
+            finally:
+                conn.close()
+            from swe2d.results.data import SWE2DResultsData
+            records = SWE2DResultsData._expand_baked_coupling_rows(self._gpkg_path, run_id)
+            if not records:
+                QtWidgets.QMessageBox.information(self, "Coupling Results", "No coupling records found.")
+                return
+            dlg = SWE2DCouplingResultsViewerDialog(
+                records, run_id, self._gpkg_path, parent=self,
+            )
+            dlg.exec()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Coupling Results", f"Failed to open coupling viewer:\n{exc}",
+            )
+
+    def _open_enhanced_viewer(self, name: str, title: str = ""):
+        dlg = SWE2DEnhancedTablePreviewDialog(
+            self._gpkg_path, name,
+            title=title or f"Table Viewer - {name}",
+            parent=self,
+        )
+        dlg.plot_requested.connect(self._switch_to_plot_tab)
+        dlg.exec()
+
+    def _switch_to_plot_tab(self, gpkg_path: str, table: str):
+        self._plot_tab.set_table(gpkg_path, table)
+        self._tabs.setCurrentWidget(self._plot_tab)
 
     def preview_selected(self):
-        """Open the table preview for the selected table."""
         name = self._selected_table()
         if not name:
             return
-        self._open_preview(name, title=f"Table Viewer - {name}")
+        self._open_enhanced_viewer(name)
 
     def rename_selected(self):
         """Prompt for a new name and rename the selected table."""

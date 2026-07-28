@@ -120,8 +120,6 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
     visible_only = _safe_is_checked(_w("visible_only_chk"), False)
     lock_canvas = _safe_is_checked(_w("lock_canvas_chk"), False)
     auto_contrast = _safe_is_checked(_w("auto_contrast_chk"), True)
-    if visible_only:
-        auto_contrast = False
     h_min_display = _safe_value(_w("min_depth_spin"), 1.0e-6)
     color_min = _safe_value(_w("color_min_spin"), None)
     color_max = _safe_value(_w("color_max_spin"), None)

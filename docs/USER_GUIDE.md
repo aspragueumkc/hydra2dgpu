@@ -3,24 +3,6 @@
 **Version**: 2.0 (GPU-Only)
 **Last Updated**: 2026-06-22
 
-<style>
-:root { --fig-bg: #1e1e2e; --fig-fg: #cdd6f4; --fig-border: #45475a; --fig-input: #313244; --fig-label: #a6adc8; --fig-btn: #89b4fa; --fig-heading: #f5c2e7; }
-.fig-frame { display:inline-block; min-width:480px; max-width:560px; background:var(--fig-bg); border:1px solid var(--fig-border); border-radius:8px; font-family:'Segoe UI',system-ui,sans-serif; color:var(--fig-fg); overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,0.3); margin:8px 0; }
-.fig-header { background:#181825; padding:8px 14px; font-size:13px; font-weight:600; color:var(--fig-heading); border-bottom:1px solid var(--fig-border); }
-.fig-body { padding:8px 14px; }
-.fig-row { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
-.fig-row label { flex:0 0 150px; font-size:12px; color:var(--fig-label); text-align:right; }
-.fig-row input { flex:1; background:var(--fig-input); color:var(--fig-fg); border:1px solid var(--fig-border); border-radius:4px; padding:4px 8px; font-size:12px; }
-.fig-sep { border:none; border-top:1px solid #585b70; margin:6px 0; }
-.fig-btn-row { display:flex; gap:4px; margin-top:4px; flex-wrap:wrap; }
-.fig-btn { background:var(--fig-btn); color:#1e1e2e; border:none; border-radius:4px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer; text-align:center; }
-.fig-btn.secondary { background:#45475a; color:var(--fig-fg); }
-.fig-btn.danger { background:#f38ba8; }
-.fig-section-label { font-size:11px; font-weight:600; color:var(--fig-heading); margin:4px 0; }
-.fig-progress { background:#313244; border-radius:3px; height:6px; margin:6px 0; overflow:hidden; }
-.fig-progress-fill { background:#89b4fa; width:0%; height:100%; border-radius:3px; }
-</style>
-
 ---
 
 ## Table of Contents
@@ -34,7 +16,9 @@
 7. [Running the Solver](#7-running-the-solver)
 8. [Results & Postprocessing](#8-results--postprocessing)
 9. [Troubleshooting](#9-troubleshooting)
-10. [References](#10-references)
+10. [Agent-Assisted Modeling (MCP)](#10-agent-assisted-modeling-mcp)
+11. [Layer Styles (QML)](#11-layer-styles-qml)
+12. [References](#12-references)
 
 ---
 
@@ -141,14 +125,13 @@ print(f"GPU available: {swe2d_gpu_available()}")
 
 The workbench opens as a **dock-integrated Studio** inside the QGIS main window. The left dock contains three tabs that follow the simulation workflow:
 
-<div class="fig-frame"><div class="fig-header">Left Dock: HYDRA2D Model Setup</div><div class="fig-body">
-<div style="display:flex;gap:4px;margin-bottom:8px;">
-<div class="fig-btn" style="flex:1;font-size:11px;padding:4px">Layers</div>
-<div class="fig-btn secondary" style="flex:1;font-size:11px;padding:4px">Mesh</div>
-<div class="fig-btn secondary" style="flex:1;font-size:11px;padding:4px">Parameters</div>
-</div>
-<div style="background:#313244;border-radius:4px;padding:20px;text-align:center;font-size:12px;color:var(--fig-label);">Active tab content (varies by tab)</div>
-</div></div>
+![HYDRA2D Studio workbench — full QGIS window with all docks visible](images/studio_overview.jpg)
+*Live screenshot of the HYDRA2D Studio workbench docked inside QGIS. Visible from this single view: the **HYDRA2D Model Setup** dock (left) with its Mesh Generation toolbox, the **HYDRA2D Run** dock (top) with Run / Cancel / Snapshot controls, the **HYDRA2D Temporal** dock (top) with playback controls, the **HYDRA2D View** dock (top right) with Mesh / Time Series / Profile tabs, the **HYDRA2D Results** dock (right) with the Overlay toolbox, the **HYDRA2D CFD Inspector / HYDRA2D Results** tab strip, and the **HYDRA2D Log** dock (bottom) with startup messages. The Studio workbench opens via **HYDRA2DGPU → Open HYDRA2DGPU Workbench** once a model GeoPackage has been created or loaded.*
+
+The **HYDRA2D Model Setup** dock (left) has two top-level tabs — **Mesh Generation** and **Simulation** — that switch the entire dock between the model-loading workflow and the solver configuration workflow. Each tab contains its own internal pages.
+
+![HYDRA2D Model Setup dock — Mesh Generation tab](images/hydra2d_setup.jpg)
+*Live screenshot of the HYDRA2D Model Setup dock with the **Mesh Generation** tab active (Filter parameters, Show advanced parameters, Import/Export section). When no model GeoPackage is loaded the dock is largely empty; once a model is opened the Layer Setup / Mesh Setup / Utilities pages populate. The accordion at the bottom of the screenshot is the empty-state rendering of those sub-pages — only the active page is populated at runtime.*
 
 | Tab | Workflow Step | Section |
 |-----|---------------|---------|
@@ -177,30 +160,38 @@ The **Layers** tab is the first step in the workflow. It contains three pages in
 2. **Mesh Setup** — GeoPackage management, terrain assignment, BC configuration
 3. **Utilities** — GeoPackage explorer, log viewer, status display
 
-### 4.1 Load Layers Page
+### 4.1 Import / Export Page (Layers tab — first page)
 
-The Load Layers page provides a grid of QGIS layer selectors. Select the layers that define your model geometry, terrain, roughness, and drainage configuration.
+The Import / Export page loads the model GeoPackage, exchanges mesh data with the QGIS map canvas, and exposes the import / export / assign-Z operations that were previously split across separate "Load Layers" and "Mesh Setup" pages. Select the layers that define your model geometry, terrain, roughness, and drainage configuration.
 
-<div class="fig-frame"><div class="fig-header">Load Layers</div><div class="fig-body">
-<div class="fig-row"><label>Nodes layer:</label><input placeholder="swe2d_mesh_nodes..." value="swe2d_mesh_nodes"></div>
-<div class="fig-row"><label>Cells layer:</label><input placeholder="swe2d_mesh_cells..." value="swe2d_mesh_cells"></div>
-<div class="fig-row"><label>Terrain raster:</label><input placeholder="dem_10m"></div>
-<div class="fig-row"><label>Manning polygons:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>CN polygons:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Rain gages:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Hyetographs:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Sample lines:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Drainage nodes:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Drainage links:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Drainage inlets:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Drainage node-inlets:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Structures:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>BC lines:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Layer group:</label><input placeholder="(no group)"></div>
-<div class="fig-sep"></div>
-<div class="fig-btn-row"><div class="fig-btn">Autopopulate From Group</div><div class="fig-btn secondary">Refresh Layers</div></div>
-<div class="fig-btn-row"><div class="fig-btn">Create 2D Model GeoPackage</div></div>
-</div></div>
+![Import / Export page (Mesh Generation tab)](images/tab_mg_0_import_export.jpg)
+*Live screenshot of the **Import / Export** page (first page of the **Mesh Generation** tab in the HYDRA2D Model Setup dock). The page exposes the load / export / assign-Z operations and the default boundary-condition controls. Combo boxes default to `(none)` until a model GeoPackage is opened; the dock's other QToolBox pages — Layer Setup, General, Algorithm, Mesh Definition, Quality Loop — collapse below.*
+
+| Widget | Purpose | Valid Values | When to Use |
+|--------|---------|-------------|-------------|
+| **Nodes layer** | QGIS point layer containing mesh node coordinates. Field `node_id` must be present. | Any point layer | Always — required for mesh construction |
+| **Cells layer** | QGIS polygon/multipolygon layer defining mesh cell geometry. Each cell has a `cell_id` referencing `node_id`. | Any polygon layer | Always — required for mesh construction |
+| **Terrain raster** | Digital elevation model (DEM) raster used to assign node bed elevations via **Assign Node Z From Terrain** in the Mesh Setup page. | DEM raster layer | Always — assign elevations after mesh is built |
+| **Manning polygons** | Polygon layer with Manning's n values for spatially varying roughness. Leave empty for uniform n (set in Parameters tab). | Polygon layer with numeric roughness field | Spatially varying bed roughness |
+| **CN polygons** | Polygon layer containing SCS Curve Number values for runoff computation. | Polygon layer with CN field | When infiltration method is SCS Curve Number |
+| **Rain gages (points)** | Point layer defining rain gauge locations. Each gauge needs an ID matching entries in the hyetograph table. | Point layer with gauge IDs | Rainfall-on-grid simulations |
+| **Rain hyetographs (table)** | Table layer containing precipitation hyetographs. Columns: time (hours) and rainfall intensity. | Table layer with time/intensity columns | Spatial rainfall with Thiessen interpolation |
+| **Sample lines layer** | Line layer for sampling flow results along cross-sections during simulation. | Line layer | When cross-section output is needed |
+| **Drainage nodes layer** | Point layer for drainage network nodes (manholes, junctions). | Point layer | Coupled 1D-2D drainage simulations |
+| **Drainage links layer** | Line layer for drainage network links (pipes, channels). | Line layer | Coupled 1D-2D drainage simulations |
+| **Drainage inlet types (table)** | Table layer defining inlet types (grate, curb, combination) and their hydraulic capture curves. | Table layer | Inlet-specific hydraulics |
+| **Drainage node-inlets (table)** | Table layer mapping drain nodes to inlet types. | Table layer | Advanced inlet configuration |
+| **Hydraulic structures layer** | Line layer for structures (weirs, culverts, gates, bridges, pumps). | Line layer with structure type field | Structure modeling |
+| **BC lines layer** | Line layer for boundary condition segments. Each segment defines BC type (inflow, stage, normal depth, etc.). | Line layer with BC type/value fields | Non-uniform BC assignment |
+| **Layer group** | QGIS layer group containing all input layers for this model. | Existing layer group | Batch auto-population of combos |
+
+**Action buttons**:
+
+| Button | Purpose |
+|--------|---------|
+| **Autopopulate From Group** | Walk the selected layer group and auto-fill all layer combos by matching layer names against known keywords. |
+| **Refresh Layers** | Refresh all layer combos to reflect current QGIS project layers. Use after adding or renaming layers. |
+| **Create 2D Model GeoPackage** | Create a new GeoPackage to store model geometry, boundary conditions, and results. Must be done once before running a model. |
 
 #### Widget Reference
 
@@ -230,22 +221,12 @@ The Load Layers page provides a grid of QGIS layer selectors. Select the layers 
 | **Refresh Layers** | Refresh all layer combos to reflect current QGIS project layers. Use after adding or renaming layers. |
 | **Create 2D Model GeoPackage** | Create a new GeoPackage to store model geometry, boundary conditions, and results. Must be done once before running a model. |
 
-### 4.2 Mesh Setup Page
+### 4.2 Layer Setup Page (Layers tab — second page)
 
-The Mesh Setup page manages mesh I/O, terrain assignment, and boundary condition configuration.
+The Layer Setup page provides a grid of QGIS layer selectors for the topology layers used by Gmsh-based mesh generation.
 
-<div class="fig-frame"><div class="fig-header">Mesh Setup</div><div class="fig-body">
-<div class="fig-btn-row"><div class="fig-btn" style="flex:1;min-width:220px">Load 2D Model GeoPackage</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1">Export Mesh To Map Layers</div><div class="fig-btn secondary" style="flex:1">Load Mesh From Layers</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1">Assign Node Z From Terrain</div><div class="fig-btn secondary" style="flex:1">Pull Node Z From Layer</div></div>
-<div class="fig-sep"></div>
-<div style="font-size:11px;font-weight:600;color:var(--fig-label);margin-bottom:4px;">Boundary Conditions</div>
-<div class="fig-row"><label>Default BC type:</label><input value="Normal Depth ▾"></div>
-<div class="fig-row" style="margin-left:168px;gap:16px;">
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox" checked> Inflow progressive</label>
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox"> Uniform inflow velocity</label>
-</div>
-</div></div>
+![Layer Setup page (Mesh Generation tab)](images/tab_mg_1_layer_setup.jpg)
+*Live screenshot of the **Layer Setup** page (second page of the **Mesh Generation** tab). Visible widgets: Topology nodes layer, Topology arcs layer, Topology regions layer, Constraints layer, Quad edges / transition layers, Elevation source. Once a model GeoPackage is opened, the combos populate with the matching QGIS layers.*
 
 #### Widget Reference
 
@@ -267,14 +248,12 @@ The Mesh Setup page manages mesh I/O, terrain assignment, and boundary condition
 > default. WALL, INFLOW_Q, and STAGE boundary types ignore the `bc_relax`
 > field entirely.
 
-### 4.3 Utilities Page
+### 4.3 General Page (Mesh tab — Controls / General)
 
-<div class="fig-frame"><div class="fig-header">Utilities</div><div class="fig-body">
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1;min-width:200px">Open Model GeoPackage Explorer</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1;min-width:200px">Open Run Log Viewer</div></div>
-<div class="fig-sep"></div>
-<div style="font-size:11px;color:var(--fig-label);font-style:italic;padding:4px 0;">No layer-linked mesh yet</div>
-</div></div>
+The General page sets the meshing backend, default target size, and default cell type. The standalone "Utilities" subpage from earlier guides has been folded into the menu bar (`HYDRA2DGPU → Open Model GeoPackage Explorer`, `Open Run Log Viewer`).
+
+![General page (Mesh Generation tab)](images/tab_mg_2_general.jpg)
+*Live screenshot of the **General** page (third page of the **Mesh Generation** tab). Visible widgets: Meshing backend (Gmsh recommended, Structured fallback), Default target size, Default cell type, plus the **Generate Mesh** and **Terminate** action buttons. The Mesh Generation tab's other QToolBox pages (Import/Export, Layer Setup, Algorithm, Mesh Definition, Quality Loop) collapse below the active page.*
 
 #### Widget Reference
 
@@ -295,33 +274,20 @@ Two pages in the QToolBox:
 1. **Layer Setup** — select topology layers
 2. **Controls** — meshing backend, generation, validation
 
-<div class="fig-frame"><div class="fig-header">Layer Setup</div><div class="fig-body">
-<div class="fig-row"><label>Topology nodes layer:</label><input placeholder="Select layer..."></div>
-<div class="fig-row"><label>Topology arcs layer:</label><input placeholder="Select layer..."></div>
-<div class="fig-row"><label>Topology regions layer:</label><input placeholder="Select layer..."></div>
-<div class="fig-row"><label>Constraints layer:</label><input placeholder="Select layer..."></div>
-<div class="fig-row"><label>Quad edges / transition:</label><input placeholder="Select layer..."></div>
-<div class="fig-btn-row"><div class="fig-btn" style="flex:1">Create Topology Template Layers</div></div>
-</div></div>
+### 4.4 Algorithm Page (Mesh Generation tab)
 
-<div class="fig-frame"><div class="fig-header">Controls</div><div class="fig-body">
-<div class="fig-row"><label>Meshing backend:</label><input value="Gmsh (recommended) ▾"></div>
-<div class="fig-row"><label>Default target size:</label><input value="20.0"></div>
-<div class="fig-row"><label>Default cell type:</label><input value="triangular ▾"></div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Gmsh Controls</div>
-<div class="fig-row"><label>Triangle algorithm:</label><input value="Frontal-Delaunay ▾"></div>
-<div class="fig-row"><label>Quad algorithm:</label><input value="Frontal+Blossom ▾"></div>
-<div class="fig-row"><label>Recombine algorithm:</label><input value="Blossom ▾"></div>
-<div class="fig-row"><label>Num threads:</label><input value="1"></div>
-<div class="fig-row"><label>Smoothing passes:</label><input value="0"></div>
-<div class="fig-sep"></div>
-<div class="fig-btn-row"><div class="fig-btn">Validate &amp; Summarize</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary">Edit Region Attributes</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary">Edit Quad/Transition Edges</div></div>
-<div class="fig-btn-row"><div class="fig-btn">Generate Mesh</div></div>
-<div class="fig-btn-row"><div class="fig-btn danger">Terminate</div></div>
-</div></div>
+![Algorithm page (Mesh Generation tab)](images/tab_mg_3_algorithm.jpg)
+*Live screenshot of the **Algorithm** page (fourth page of the **Mesh Generation** tab). Contains the Gmsh algorithm selector (Triangle, Quad, Recombine, smoothing passes, num threads) plus the **Validate & Summarize**, **Edit Region Attributes**, **Edit Quad/Transition Edges** action buttons. See the full reference table below for the Gmsh algorithm parameters.*
+
+### 4.5 Mesh Definition Page
+
+![Mesh Definition page (Mesh Generation tab)](images/tab_mg_4_mesh_definition.jpg)
+*Live screenshot of the **Mesh Definition** page (fifth page of the **Mesh Generation** tab). Defines arc handling, interface transition grading, min cell size, edge tolerance, and region-target-size usage.*
+
+### 4.6 Quality Loop Page
+
+![Quality Loop page (Mesh Generation tab)](images/tab_mg_5_quality_loop.jpg)
+*Live screenshot of the **Quality Loop** page (sixth page of the **Mesh Generation** tab). Enables the iterative Gmsh quality loop with max iterations and time limit.
 
 ### Mesh Generation Workflow
 
@@ -402,27 +368,8 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 
 ### 6.1 Solver Parameters Page
 
-<div class="fig-frame"><div class="fig-header">Solver Parameters</div><div class="fig-body">
-<div class="fig-row"><label>Manning n:</label><input value="0.020"></div>
-<div class="fig-row"><label>CFL:</label><input value="0.45"></div>
-<div class="fig-row"><label>h_min:</label><input value="0.000001"></div>
-<div class="fig-row"><label>Initial condition:</label><input value="Dry start ▾"></div>
-<div class="fig-row"><label>Initial depth:</label><input value="0.0"></div>
-<div class="fig-row"><label>Initial WSE:</label><input value="0.0"></div>
-<div class="fig-row"><label>Variable timestep:</label><input type="checkbox" checked style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>dt:</label><input value="5.0"></div>
-<div class="fig-row"><label>Initial dt:</label><input value="0.0"></div>
-<div class="fig-row"><label>GPU diag sync:</label><input value="0"></div>
-<div class="fig-row"><label>Tiny mode:</label><input value="Off (0) ▾"></div>
-<div class="fig-row"><label>Wet cell threshold:</label><input value="0.003"></div>
-<div class="fig-row"><label>CUDA graph replay:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>SWE2D perf mode:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Run time:</label><input value="01:00" style="width:80px;flex:none;"></div>
-<div class="fig-sep"></div>
-<div class="fig-row"><label>Reconstruction:</label><input value="Van Leer (4) ▾"></div>
-<div class="fig-row"><label>Temporal order:</label><input value="RK4 (4) ▾"></div>
-<div class="fig-row"><label>Internal flow layer:</label><input value="(none) ▾"></div>
-</div></div>
+![Solver Parameters page (Simulation tab)](images/tab_sim_0_solver_parameters.jpg)
+*Live screenshot of the **Solver Parameters** page (first page of the **Simulation** tab in the HYDRA2D Model Setup dock). Visible sections: **Time Stepping** (CFL, dt, initial dt, variable-timestep toggle), **Boundary Conditions** (default BC type, BC lines layer, inflow progressive, uniform inflow velocity), **Physics_Friction** (Manning polygons, Manning n, h_min, internal flow layer), **Numerics** (Reconstruction, Temporal discretization), and the collapsed **Initial Conditions** group. Other QToolBox pages (Rain / Hydrology, Stability Controls, Structures & Drainage, Output) collapse below the active page.*
 
 #### Widget Reference
 
@@ -475,25 +422,8 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 
 ### 6.2 Rain / Hydrology Page
 
-<div class="fig-frame"><div class="fig-header">Rain / Hydrology</div><div class="fig-body">
-<div class="fig-row"><label>Max rel depth increase:</label><input value="2.0"></div>
-<div class="fig-row"><label>Max source dh/step:</label><input value="0.0"></div>
-<div class="fig-row"><label>Max source rate:</label><input value="0.0"></div>
-<div class="fig-row"><label>Extreme rain mode:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Source CFL beta:</label><input value="0.25"></div>
-<div class="fig-row"><label>Source max substeps:</label><input value="16"></div>
-<div class="fig-row"><label>True source subcycling:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>IMEX split:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Stage-coupled IMEX RK2:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-sep"></div>
-<div class="fig-row"><label>Rain rate (mm/hr):</label><input value="0.0"></div>
-<div class="fig-row"><label>CN default:</label><input value="75"></div>
-<div class="fig-row"><label>Ia ratio:</label><input value="0.05"></div>
-<div class="fig-row"><label>Use spatial rain/CN:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Infiltration method:</label><input value="SCS CN ▾"></div>
-<div class="fig-row"><label>Storm area layer:</label><input placeholder="(none)"></div>
-<div class="fig-row"><label>Rain buffer rings:</label><input value="0"></div>
-</div></div>
+![Rain / Hydrology page (Simulation tab)](images/tab_sim_1_rain___hydrology.jpg)
+*Live screenshot of the **Rain / Hydrology** page (second page of the **Simulation** tab). Visible sections: **Rainfall Input** (Rain gages, Rain hyetographs, Rain rate, Spatial rainfall toggle, Rain rate update interval, Storm area layer, Rain boundary buffer rings), **Infiltration** (method, CN polygons, default CN, SCS Ia/S ratio), and **Source Stability** (Max rel depth increase, Max source dh/step, Max source rate, Source CFL beta, Source max substeps).*
 
 #### Widget Reference
 
@@ -519,17 +449,8 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 
 ### 6.3 Stability Controls Page
 
-<div class="fig-frame"><div class="fig-header">Stability Controls</div><div class="fig-body">
-<div class="fig-row"><label>Shallow damping depth:</label><input value="0.0001"></div>
-<div class="fig-row"><label>Shallow-front fallback:</label><input type="checkbox" checked style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Front flux damping:</label><input value="0.5"></div>
-<div class="fig-row"><label>Active-set hysteresis:</label><input type="checkbox" checked style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Depth cap:</label><input value="1e6"></div>
-<div class="fig-row"><label>Momentum cap min speed:</label><input value="50.0"></div>
-<div class="fig-row"><label>Momentum cap celerity mult:</label><input value="20.0"></div>
-<div class="fig-row"><label>Max inv area:</label><input value="1e6"></div>
-<div class="fig-row"><label>CFL lambda cap:</label><input value="1e6"></div>
-</div></div>
+![Stability Controls page (Simulation tab)](images/tab_sim_2_stability_controls.jpg)
+*Live screenshot of the **Stability Controls** page (third page of the **Simulation** tab). Sets shallow damping, wet/dry front handling, depth cap, momentum cap (min speed / celerity multiplier), max inverse area, and CFL lambda cap.*
 
 #### Widget Reference
 
@@ -548,24 +469,8 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 
 ### 6.4 Structures & Drainage Page
 
-<div class="fig-frame"><div class="fig-header">Structures & Drainage</div><div class="fig-body">
-<div class="fig-row"><label>Coupling loop:</label><input value="cuda ▾"></div>
-<div class="fig-row"><label>Culvert solver mode:</label><input value="Secant (0) ▾"></div>
-<div class="fig-row"><label>Culvert face flux:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-<div class="fig-row"><label>Bridge coupling mode:</label><input value="phase3_spatial ▾"></div>
-<div class="fig-sep"></div>
-<div class="fig-row"><label>Drainage solver mode:</label><input value="EGL (0) ▾"></div>
-<div class="fig-row"><label>Drainage GPU method:</label><input value="step ▾"></div>
-<div class="fig-row"><label>Coupling substeps:</label><input value="1"></div>
-<div class="fig-row"><label>Max coupling substeps:</label><input value="10"></div>
-<div class="fig-row"><label>Head deadband:</label><input value="0.001"></div>
-<div class="fig-row"><label>Dynamic relaxation:</label><input value="0.5"></div>
-<div class="fig-row"><label>Adaptive depth fraction:</label><input value="0.1"></div>
-<div class="fig-row"><label>Adaptive wave Courant:</label><input value="0.5"></div>
-<div class="fig-row"><label>Implicit iters:</label><input value="50"></div>
-<div class="fig-row"><label>Implicit relax:</label><input value="0.5"></div>
-<div class="fig-row"><label>Use redistribution:</label><input type="checkbox" style="flex:none;width:auto;"></div>
-</div></div>
+![Structures & Drainage page (Simulation tab)](images/tab_sim_3_structures_and_drainage.jpg)
+*Live screenshot of the **Structures & Drainage** page (fourth page of the **Simulation** tab). Configures the 1D-2D coupling (loop backend, culvert solver, culvert face-flux toggle, bridge coupling), the drainage solver (mode, GPU method, substeps, head deadband, dynamic relaxation), and adaptive coupling (depth fraction, wave Courant, implicit iters, implicit relax, redistribution).*
 
 #### Widget Reference
 
@@ -592,31 +497,157 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **Drainage implicit iterations (GPU)** | Implicit solver iterations for GPU drainage. | 1–8 | 2 | GPU drainage convergence |
 | **Drainage implicit relaxation (GPU)** | Relaxation factor for implicit drainage on GPU. | 0.1–1.0 | 0.5 | GPU drainage stability |
 
-### 6.5 Run / Output Page
+### 6.6 Drainage Configuration Details
 
-<div class="fig-frame"><div class="fig-header">Run / Output</div><div class="fig-body">
-<div class="fig-btn-row"><div class="fig-btn" style="flex:1">Run 2D Model</div><div class="fig-btn danger" style="flex:1">Cancel</div></div>
-<div class="fig-progress"><div class="fig-progress-fill" style="width:0%"></div></div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Output</div>
-<div class="fig-row"><label>Output interval:</label><input value="00:30"></div>
-<div class="fig-row"><label>Line output interval:</label><input value="00:05"></div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Debugging</div>
-<div class="fig-btn-row">
-<div class="fig-btn secondary" style="flex:1">Preview Overrides</div>
-<div class="fig-btn secondary" style="flex:1">Preview Coupling</div>
-<div class="fig-btn secondary" style="flex:1">Take Snapshot</div>
-</div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Results Output</div>
-<div class="fig-row"><label>Table prefix:</label><input placeholder="optional"></div>
-<div class="fig-row"><label>GPKG path:</label><input placeholder="GeoPackage path (optional)"></div>
-<div class="fig-btn-row">
-<div class="fig-btn secondary" style="flex:0 0 auto;min-width:80px">Browse...</div>
-<div class="fig-btn secondary" style="flex:0 0 auto;min-width:140px">Load Inputs From Results...</div>
-</div>
-</div></div>
+This section provides detailed guidance for configuring drainage network parameters in the GeoPackage layers.
+
+#### Node Types and Semantics
+
+The drainage network supports several node types, each with specific behavior:
+
+| Node Type | Description | Required Fields | Typical Use |
+|-----------|-------------|-----------------|-------------|
+| **junction** | Standard pipe junction where multiple pipes meet | `invert_elev`, `max_depth`, `surface_area` | Interior network connections |
+| **inlet** | Node with surface inlet capture ( grate, curb, etc.) | `invert_elev`, `max_depth`, `surface_area`, plus inlet configuration | Surface → pipe water entry |
+| **outfall** | Network discharge point with boundary condition | `invert_elev`, `max_depth`, `surface_area`, `outfall_mode` | Pipe → surface water exit |
+| **storage** | Large storage node (detention pond, wetland) | `invert_elev`, `max_depth`, `surface_area` | Flood attenuation |
+| **pipe_end** | Pipe that terminates at a 2D surface cell | `invert_elev`, `max_depth`, `surface_area`, pipe-end geometry | Direct pipe-surface coupling |
+
+**Node behavior:**
+- **Junction nodes** provide storage volume when pipes are surcharged. Water can pool in the node when inflow exceeds pipe capacity.
+- **Inlet nodes** capture surface water and route it into the pipe network. Configure inlet type in the `swe2d_drainage_inlets` table.
+- **Outfall nodes** discharge water back to the surface. Configure boundary condition via `outfall_mode` field.
+
+#### Surcharge Behavior
+
+When pipe flow exceeds capacity, the network becomes **pressurized** and water can:
+
+1. **Pool at junction nodes** — if node depth exceeds `max_depth`, water is stored in the node (limited by `surface_area`).
+2. **Overflow to surface** — if node depth exceeds rim elevation (`invert_elev + max_depth`), water flows back to 2D surface cells (via SURFACE_2D_JUNCTION_OVERFLOW faces).
+
+**Surcharge configuration:**
+- Set `rim_elev` to control when overflow starts (default: `invert_elev + max_depth`)
+- Set `surface_area` to define node storage capacity (larger = more buffering)
+- Enable `enable_overflow` and set `overflow_elevation` for controlled overflow
+- Set `max_overflow_rate` to limit discharge during surcharge (prevents numerical instability)
+
+**Manhole storage example:**
+```
+# 5m × 5m manhole, 2m max depth
+invert_elev = 10.0    # Pipe invert elevation
+max_depth = 2.0      # Water can rise 2m above invert
+surface_area = 25.0  # 25 m² storage area
+rim_elev = 12.0      # Overflow starts at 12m elevation
+
+# Can store up to 50 m³ before overflowing
+```
+
+#### Loss Coefficients
+
+Loss coefficients account for energy losses at pipe entrances and exits due to:
+- Pipe geometry changes (contractions, expansions)
+- Fittings (bends, tees, crosses)
+- Appurtenances (valves, meters)
+
+**Coefficient hierarchy** (highest priority first):
+1. **Node-level overrides** — `inlet_loss_k`, `outlet_loss_k` on DrainageNode
+2. **Link-level values** — `entrance_loss_k`, `exit_loss_k` on DrainageLink
+3. **Default values** — 0.5 (entrance), 1.0 (exit)
+
+**Typical values** (from FHWA HDS-5):
+- **Pipe entrance**: 0.2–0.5 (well-designed transitions), 0.5–1.0 (sharp transitions)
+- **Pipe exit**: 0.5–1.0 (gradual expansion), 1.0–2.0 (sudden expansion)
+- **Manhole**: 0.0–0.2 (minimal loss in large manholes)
+
+**Loss coefficient semantics:**
+```python
+# Node-level override (takes precedence)
+node = DrainageNode(
+    node_id="MH-1",
+    inlet_loss_k=0.3,    # Override for all pipes entering this manhole
+    outlet_loss_k=0.8,   # Override for all pipes leaving this manhole
+)
+
+# Link-level value (fallback if node-level not set)
+link = DrainageLink(
+    link_id="P-1",
+    entrance_loss_k=0.5,  # FHWA standard entrance loss
+    exit_loss_k=1.0,      # FHWA standard exit loss
+)
+```
+
+**When to adjust loss coefficients:**
+- **Increase** (e.g., 0.5 → 1.0) if model overestimates flow (too much inflow from upstream)
+- **Decrease** (e.g., 0.5 → 0.2) if model underestimates flow (not enough inflow)
+- **Set to 0** for direct connections (no fitting losses)
+
+#### Outfall Boundary Conditions
+
+Configure outfall behavior via the `outfall_mode` field on drainage nodes:
+
+| Mode | Description | Required Fields | Use Case |
+|------|-------------|-----------------|----------|
+| **free** (default) | Node drains freely; depth reset to 0 each step unless backwatered by surface cell | None | Most outfalls |
+| **fixed_wse** | Tailwater clamped to fixed water surface elevation | `outfall_fixed_wse` | Controlled tailwater conditions |
+| **stage_discharge** | Outflow rate from rating table | `outfall_rating_table` (list of [wse, Q] pairs) | Complex tailwater curves |
+| **tabular** | Time-varying rating table (stage, Q vs. time) | `outfall_rating_wse`, `outfall_rating_q`, `outfall_tabular_time` | Time-varying tailwater |
+
+**Rating table format** (for `stage_discharge`):
+```python
+outfall_rating_table = [
+    [wse_1, Q_1],   # [meters, m³/s]
+    [wse_2, Q_2],
+    # ... linear interpolation between points
+]
+```
+
+**Outfall best practices:**
+- Use **free** mode for most cases — allows proper backwater interaction with 2D surface
+- Use **fixed_wse** when modeling a downstream control structure with known water level
+- Use **stage_discharge** when you have field-measured rating curves
+- For tidal outfalls, use **free** mode and let the 2D surface provide tidal forcing
+
+#### Interpreting Drainage Results
+
+Drainage results are available in the results GeoPackage tables:
+
+**Per-cell results** (`swe2d_cell_results` table):
+| Field | Meaning | Units | Typical Range |
+|-------|---------|-------|---------------|
+| `cell_h` | Flow depth (water surface - invert) | m | 0–pipe_diameter |
+| `cell_y` | Water surface elevation | m | invert_elev to rim_elev |
+| `cell_Q` | Flow rate | m³/s | -max_flow to +max_flow |
+| `cell_velocity` | Flow velocity (Q/A) | m/s | 0–10 (pressurized) |
+| `cell_A` | Flow area | m² | 0 to full_pipe_area |
+
+**Per-link results** (`swe2d_link_results` table):
+| Field | Meaning | Units | Typical Range |
+|-------|---------|-------|---------------|
+| `link_q` | Mean flow magnitude | m³/s | 0–max_flow |
+| `link_velocity` | Mean velocity | m/s | 0–10 |
+| `link_froude` | Froude number | dimensionless | 0–1 (subcritical), >1 (supercritical) |
+| `link_is_surcharged` | Pressurized flow flag | boolean | 0 or 1 |
+
+**Common result patterns:**
+
+| Pattern | Interpretation | Action |
+|---------|---------------|--------|
+| **Node depth ≈ max_depth consistently** | Node is at capacity, may be surcharging | Check for surface overflow, consider increasing `surface_area` |
+| **Link is_surcharged = 1 but link_Q ≈ 0** | Pipe is full but not flowing — potential blockage | Check downstream conditions, verify loss coefficients |
+| **High inlet capture but low pipe flow** | Bottleneck downstream | Increase pipe diameter or reduce loss coefficients |
+| **Oscillating node depth** | Numerical instability | Reduce `dt`, increase `coupling_substeps`, switch to First-order reconstruction |
+| **Mass balance drift over time** | Accumulating error | Check CFL, verify loss coefficients, reduce `adaptive_depth_fraction` |
+
+**Visualization tips:**
+- Use `link_is_surcharged` to identify pressurized pipes (color them red in results overlay)
+- Use `node_depth` vs `node_max_depth` ratio to see which nodes are near capacity
+- Use `cell_velocity` to identify high-velocity sections (potential erosion concerns)
+- Compare initial and final mass to verify conservation (should be within 0.1% for well-behaved simulations)
+
+### 6.5 Output Page (Simulation tab — Run / Output)
+
+![Output page (Simulation tab)](images/tab_sim_4_output.jpg)
+*Live screenshot of the **Output** page (fifth page of the **Simulation** tab). The actual Run / Cancel / Snapshot / Batch controls are in the top **HYDRA Run** dock; this page collects the output / debugging / results-output controls (output interval, line output interval, preview overrides, preview coupling, take snapshot, table prefix, results GPKG path).*
 
 #### Widget Reference
 
@@ -716,35 +747,18 @@ JSON schema, status file format, and programmatic API
 
 The right-side **HYDRA2D Results** dock provides run selection, timestep navigation, and overlay controls:
 
-<div class="fig-frame"><div class="fig-header">HYDRA2D Results</div><div class="fig-body">
-<div class="fig-row"><label>Run selector:</label><input value="swe2d_20260622_120000 ▾"></div>
-<div class="fig-row"><label>Variable:</label><input value="Depth (h) ▾"></div>
-<div class="fig-row"><label>Timestep:</label><input value="12 / 48 ▾"></div>
-<div class="fig-row" style="margin-left:158px;gap:16px;">
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox" checked> Show overlay</label>
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox"> Show arrows</label>
-</div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Sample Lines</div>
-<div class="fig-row"><label>Line:</label><input value="sample_line_01 ▾"></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1">Plot Profile</div><div class="fig-btn secondary" style="flex:1">Plot Timeseries</div></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1">Export CSV</div></div>
-<div class="fig-sep"></div>
-<div class="fig-section-label">Coupling Diagnostics</div>
-<div class="fig-row"><label>Metric:</label><input value="Drainage link flow ▾"></div>
-<div class="fig-row"><label>Element:</label><input value="link_0042 ▾"></div>
-</div></div>
+![HYDRA2D Results dock — Overlay toolbox page open](images/hydra2d_results.jpg)
+*Live screenshot of the HYDRA2D Results dock with the **Overlay** toolbox page open. Visible sections: **Field_Colormap** (Field, WSE render, Colormap, Resolution), **Color Range** (Opacity, Auto contrast, Min depth threshold, Color min/max, Reset), **Overlay Style** (Lock canvas extent, Visible cells only). The **Runs** toolbox tab below selects the run id, variable, timestep, sample lines, and coupling diagnostics.*
 
 - Scrub through timesteps using the **HYDRA2D Temporal** dock (bottom):
 
-<div class="fig-frame" style="max-width:100%"><div class="fig-header">HYDRA2D Temporal</div><div class="fig-body">
-<div style="display:flex;align-items:center;gap:6px;font-size:12px;">
-<span style="color:var(--fig-label);">◀◀</span><span style="color:var(--fig-btn);">▶</span><span style="color:var(--fig-label);">▶▶</span>
-<div class="fig-progress" style="flex:1"><div class="fig-progress-fill" style="width:25%"></div></div>
-<span>t = 300 s / 3600 s</span>
-<span style="color:var(--fig-label);">▸</span>
-</div>
-</div></div>
+![HYDRA2D Temporal dock — playback controls](images/hydra2d_temporal.jpg)
+*Live screenshot of the HYDRA2D Temporal dock. The animation controls (◀◀ / ▶ / ▶▶ buttons, timeline scrubber, playback-speed selector) become active once the first timestep of a finished run is loaded into the Results dock.*
+
+The **HYDRA2D Log** dock (bottom of the QGIS window) streams solver output live:
+
+![HYDRA2D Log dock — startup messages](images/hydra2d_log.jpg)
+*Live screenshot of the HYDRA2D Log dock at startup. After a run starts the dock fills with per-timestep progress lines, [WARNING] / [ERROR] entries highlighted in red, and the final solver summary.*
 
 - Plot depth, velocity, and WSE along sample lines
 - View coupling diagnostics for drainage and structure flows
@@ -753,18 +767,8 @@ The right-side **HYDRA2D Results** dock provides run selection, timestep navigat
 
 The **HYDRA2D Results** dock provides high-performance canvas overlay:
 
-<div class="fig-frame"><div class="fig-header">Map Overlay Controls</div><div class="fig-body">
-<div class="fig-row" style="margin-left:0;"><label style="flex:none;text-align:left;width:auto;"><input type="checkbox" checked> Show overlay</label></div>
-<div class="fig-row"><label>Style:</label><input value="Depth (h) ▾"></div>
-<div class="fig-row"><label>Color map:</label><input value="Viridis ▾"></div>
-<div class="fig-row"><label>Opacity:</label><input value="0.7" style="width:60px;flex:none;"></div>
-<div class="fig-row" style="margin-left:0;gap:16px;">
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox"> Velocity arrows</label>
-<label style="flex:none;width:auto;font-size:11px;"><input type="checkbox"> Streamlines</label>
-</div>
-<div class="fig-sep"></div>
-<div class="fig-btn-row"><div class="fig-btn secondary" style="flex:1">Export Overlay to GeoTIFF</div></div>
-</div></div>
+![HYDRA2D Results dock — overlay section](images/hydra2d_results.jpg)
+*Live screenshot of the HYDRA2D Results dock showing the Overlay toolbox section (Field, WSE render, Colormap, Resolution, Opacity, Auto contrast, Min/Max depth thresholds, Lock canvas extent, Visible cells only). Style, colormap, and overlay toggles appear here when a finished run is loaded; **Export Overlay to GeoTIFF** is in the same section.*
 
 ### 8.4 Export Workflows
 
@@ -829,7 +833,62 @@ ground truth with documented L1/L∞ tolerances.
 
 ---
 
-## 10. Layer Styles (QML)
+## 10. Agent-Assisted Modeling (MCP)
+
+HYDRA ships with an [MCP](https://modelcontextprotocol.io/) server
+(`tools/hydra_mcp/`) that lets an AI agent assist you live inside QGIS or
+operate headless model/results data.
+
+### Enabling the live GUI bridge
+
+There are two ways to expose a running QGIS session to an agent:
+
+1. **Before launching QGIS:** set the environment variable so the plugin
+   auto-starts the bridge:
+   ```bash
+   HYDRA_MCP_BRIDGE=1 qgis
+   ```
+   The plugin writes a per-session token file (`hydra_mcp_bridge_*.json`)
+   under `$XDG_RUNTIME_DIR` or `/tmp`.
+
+2. **If QGIS is already running:** open the QGIS Python Console
+   (**Plugins ▸ Python Console**) and paste:
+   ```python
+   import os
+   if not os.environ.get("HYDRA_MCP_BRIDGE"):
+       os.environ["HYDRA_MCP_BRIDGE"] = "1"
+       from tools.hydra_mcp.qgis_bridge import bootstrap_bridge_if_needed
+       bootstrap_bridge_if_needed()
+   ```
+   Watch the log for the `HYDRA_MCP_BRIDGE_READY <socket> <token_path>` line.
+
+### Attaching an agent
+
+With the bridge running, an MCP client calls:
+
+```json
+{"mode": "display"}
+```
+
+`gui_launch(mode="display")` waits up to its `timeout` for the token file,
+connects, and returns session metadata.  The agent can then drive the live
+Studio workbench (`gui_widget_tree`, `gui_get_value`, `gui_set_value`,
+`gui_screenshot`) and query model/results GeoPackages (`model_inspect`,
+`run_list`, `results_query`).
+
+> **Security note:** the bridge is same-machine only (QLocalSocket) and is
+> opt-in.  Normal plugin use is unaffected when `HYDRA_MCP_BRIDGE` is unset.
+> See `tools/hydra_mcp/README.md` for full client configuration.
+
+The MCP server must be started with the **same Python environment that QGIS
+itself uses** — the one that has `qgis`, `osgeo`, and the HYDRA plugin on
+`sys.path`.  If the server is launched from a different environment, imports
+such as `osgeo` and the native solver extensions will fail.  See
+`tools/hydra_mcp/README.md` for example client configurations.
+
+---
+
+## 11. Layer Styles (QML)
 
 SWE2D automatically applies styled layer definitions (QML) to every
 GeoPackage layer when it is loaded. The styles configure editor widgets,
@@ -899,7 +958,7 @@ layer is loaded from this GPKG.
 | `swe2d_topo_quad_edges.qml` | Topology quad edges |
 | `swe2d_topo_regions.qml` | Topology regions |
 
-## 11. References
+## 12. References
 
 - Toro, E. F. *Riemann Solvers and Numerical Methods for Fluid Dynamics*. Springer.
 - FHWA. *Hydraulic Design of Highway Culverts* (HDS-5). FHWA-HIF-05-012.

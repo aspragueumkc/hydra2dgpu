@@ -36,7 +36,7 @@ except ImportError:
 # Unit helpers (mirrors results_render_service._unit_labels)
 def _unit_labels(length_unit: str = "") -> dict:
     from swe2d import units as _u
-    lu = str(length_unit or _u.length_unit_name() or "m").strip().lower()
+    lu = str(length_unit or _u.length_unit_name()).strip().lower()
     if lu == "ft":
         return {"len": "ft", "flow": "ft³/s", "vel": "ft/s"}
     return {"len": "m", "flow": "m³/s", "vel": "m/s"}
@@ -45,10 +45,10 @@ def _unit_labels(length_unit: str = "") -> dict:
 def _label_for_var(var_key: str, length_unit: str = "") -> str:
     u = _unit_labels(length_unit)
     table = {
-        "flow_cms":      f"Flow ({u['flow']})",
-        "depth_m":       f"Depth ({u['len']})",
-        "wse_m":         f"WSE ({u['len']})",
-        "velocity_ms":   f"Velocity ({u['vel']})",
+        "flow":      f"Flow ({u['flow']})",
+        "depth":       f"Depth ({u['len']})",
+        "wse":         f"WSE ({u['len']})",
+        "velocity":   f"Velocity ({u['vel']})",
     }
     return table.get(str(var_key), str(var_key))
 
@@ -56,15 +56,15 @@ def _label_for_var(var_key: str, length_unit: str = "") -> str:
 def _var_from_label(label: str) -> str:
     """Reverse-lookup: given a display label, return the var key."""
     rev = {
-        "flow_cms": "Flow",
-        "depth_m": "Depth",
-        "wse_m": "WSE",
-        "velocity_ms": "Velocity",
+        "flow": "Flow",
+        "depth": "Depth",
+        "wse": "WSE",
+        "velocity": "Velocity",
     }
     for key, frag in rev.items():
         if frag in label:
             return key
-    return "flow_cms"
+    return "flow"
 
 
 # ── Colour conversion ────────────────────────────────────────────────
@@ -104,7 +104,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._result_data: Any = None
         self._h_min: float = 1.0e-6
         self._selected_element_id: str = ""
-        self._selected_metric: str = "flow_cms"
+        self._selected_metric: str = "flow"
 
         # Cached plot data
         self._plot_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
@@ -237,9 +237,16 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._plot_widget.setMouseEnabled(x=True, y=True)
         self._plot_widget.setMenuEnabled(False)
 
-        self._hover_label = pg.TextItem("", anchor=(0, 1), color=(0, 0, 0))
+        self._hover_label = pg.TextItem("", anchor=(0, 0), color=(0, 0, 0))
         self._hover_label.setZValue(100)
         self._hover_label.setVisible(False)
+        try:
+            self._hover_label.setFill(pg.mkBrush(QtGui.QColor(255, 255, 255, 230)))
+        except Exception:
+            try:
+                self._hover_label.setBackground(QtGui.QColor(255, 255, 255, 230))
+            except Exception:
+                pass
         self._plot_widget.addItem(self._hover_label)
 
         self._hover_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color=(128, 128, 128), width=0.8, style=QtCore.Qt.PenStyle.DashLine))
@@ -293,7 +300,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     @selected_metric.setter
     def selected_metric(self, metric: str) -> None:
         """Set the selected metric and update the UI combo."""
-        self._selected_metric = str(metric) if metric else "flow_cms"
+        self._selected_metric = str(metric) if metric else "flow"
         if self._metric_combo is not None:
             idx = self._metric_combo.findData(self._selected_metric)
             if idx >= 0:
@@ -317,6 +324,11 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     # Slots
     # ------------------------------------------------------------------
 
+    def _resolve_unit(self) -> str:
+        """Return the effective length unit string."""
+        from swe2d import units as _u
+        return getattr(self, "_length_unit_override", "") or str(_u.length_unit_name())
+
     def _repopulate_combo_items(self) -> None:
         """Populate/populate the variable combo with unit-agnostic labels.
 
@@ -325,11 +337,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         """
         if self._metric_combo is None:
             return
+        lu = self._resolve_unit()
         prev_data = self._metric_combo.currentData()
         self._metric_combo.blockSignals(True)
         self._metric_combo.clear()
-        for key in ("flow_cms", "depth_m", "wse_m", "velocity_ms"):
-            self._metric_combo.addItem(_label_for_var(key), key)
+        for key in ("flow", "depth", "wse", "velocity"):
+            self._metric_combo.addItem(key.capitalize(), key)
         idx = self._metric_combo.findData(prev_data)
         if idx >= 0:
             self._metric_combo.setCurrentIndex(idx)
@@ -348,7 +361,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     def _on_metric_changed(self) -> None:
         """Re-plot when the metric combo changes."""
-        self._selected_metric = str(self._metric_combo.currentData() or "flow_cms")
+        self._selected_metric = str(self._metric_combo.currentData() or "flow")
         self.refresh()
 
     def _on_table_toggle(self, visible: bool) -> None:
@@ -359,13 +372,15 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 self._populate_table()
 
     def _on_mouse_moved(self, evt) -> None:
-        """Handle mouse hover on the plot — update crosshair and data label."""
+        """Handle mouse hover on the plot — update crosshair, data label, and tooltip."""
         if self._plot_widget is None or not self._plot_items:
+            QtWidgets.QToolTip.hideText()
             return
-        pos = evt[0]  # QPointF
+        pos = evt[0]  # QPointF in scene coordinates
         plot = self._plot_widget.plotItem
         vb = plot.vb
         if vb is None:
+            QtWidgets.QToolTip.hideText()
             return
         mouse_point = vb.mapSceneToView(pos)
         mx, my = mouse_point.x(), mouse_point.y()
@@ -379,6 +394,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         # Find closest data point across all curves
         closest_dist = float("inf")
         closest_text = ""
+        closest_tooltip = ""
         for item in self._plot_items:
             x_data = item.xData
             y_data = item.yData
@@ -389,15 +405,30 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             if dist < closest_dist:
                 closest_dist = dist
                 label = item.name() or "?"
-                closest_text = f"{label}: ({x_data[idx]:.4g}, {y_data[idx]:.4g})"
+                x_val = x_data[idx]
+                y_val = y_data[idx]
+                closest_text = f"{label}: ({x_val:.4g}, {y_val:.4g})"
+                metric_name = _label_for_var(self._selected_metric, self._resolve_unit()) if hasattr(self, '_selected_metric') else "Value"
+                closest_tooltip = (
+                    f"Time: {x_val:.4g} {_TIME_UNIT}\n"
+                    f"{metric_name}: {y_val:.4g}"
+                )
 
         if closest_text:
             self._hover_label.setText(closest_text)
             self._hover_label.setVisible(True)
-            # Position above the crosshair
             self._hover_label.setPos(mx, my)
+            # Show QToolTip mapped from scene to global screen coordinates
+            if closest_tooltip:
+                views = self._plot_widget.scene().views()
+                if views:
+                    view = views[0]
+                    vp_pos = view.mapFromScene(pos)
+                    global_pos = view.viewport().mapToGlobal(vp_pos)
+                    QtWidgets.QToolTip.showText(global_pos, closest_tooltip, view.viewport())
         else:
             self._hover_label.setVisible(False)
+            QtWidgets.QToolTip.hideText()
 
     # ------------------------------------------------------------------
     # Element combo population
@@ -649,7 +680,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     @selected_metric.setter
     def selected_metric(self, metric: str) -> None:
         """Set the selected metric and update the UI combo."""
-        self._selected_metric = str(metric) if metric else "flow_cms"
+        self._selected_metric = str(metric) if metric else "flow"
         if self._metric_combo is not None:
             idx = self._metric_combo.findData(self._selected_metric)
             if idx >= 0:
@@ -670,12 +701,16 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         mesh_data: Optional[Dict[str, np.ndarray]] = None,
         result_data: Any = None,
         h_min: float = 1.0e-6,
+        model_gpkg_path: str = "",
+        length_unit: str = "",
     ) -> None:
         """Set data sources and refresh."""
         if mesh_data is not None:
             self._mesh_data = mesh_data
         if result_data is not None:
             self._result_data = result_data
+            self._model_gpkg_path = str(model_gpkg_path or "").strip()
+            self._length_unit_override = str(length_unit or "").strip()
             self._repopulate_combo_items()
             self._populate_element_id_combo()
             self._populate_metric_combo()
@@ -712,7 +747,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             self._plot_widget.addItem(text)
             return
 
-        lu = getattr(data, "_length_unit", "")
+        lu = self._resolve_unit()
         ylabel = _label_for_var(var_key, lu)
         self._plot_widget.setLabel("left", ylabel)
 
@@ -735,8 +770,11 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             t_hr = raw["t_s"] / 3600.0
             vals = raw[var_key]
             if t_hr.shape != vals.shape:
-                logger.warning("Shape mismatch for %s.%s: t=%s val=%s — skipping", rec.display_label(), var_key, t_hr.shape, vals.shape)
-                continue
+                n = min(t_hr.size, vals.size)
+                if n < 2:
+                    continue
+                t_hr = t_hr[:n]
+                vals = vals[:n]
             color = _c2q(rec.color)
             pen = pg.mkPen(color=color, width=1.6)
             item = self._plot_widget.plot(t_hr, vals, pen=pen, name=rec.display_label())
@@ -787,7 +825,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 cols = sorted(raw.keys())
                 n = min(len(raw["t_s"]), 5000)
                 for i in range(n):
-                    records.append({k: raw[k][i] for k in cols})
+                    records.append({k: raw[k][i] if isinstance(raw[k], np.ndarray) else raw[k] for k in cols})
                 break
 
         if not records or not cols:
@@ -829,9 +867,8 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._metric_combo.clear()
 
         if etype == "line":
-            # Standard TS metrics (unit-aware labels)
-            for key in ("flow_cms", "depth_m", "wse_m", "velocity_ms"):
-                self._metric_combo.addItem(_label_for_var(key), key)
+            for key in ("flow", "depth", "wse", "velocity"):
+                self._metric_combo.addItem(key.capitalize(), key)
         else:
             # Coupling-based types — collect unique metric values from records
             data = self._result_data
@@ -856,4 +893,4 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         # Sync _selected_metric to the combo's actual current value
         # (the combo may have been repopulated with different items)
-        self._selected_metric = str(self._metric_combo.currentData() or "flow_cms")
+        self._selected_metric = str(self._metric_combo.currentData() or "flow")

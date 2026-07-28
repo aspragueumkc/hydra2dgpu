@@ -3,7 +3,8 @@ import json
 import os
 import sys
 import tempfile
-import time
+import unittest
+
 import numpy as np
 
 # Make tests/_swe2d_test_helpers importable (repo-root style)
@@ -51,7 +52,7 @@ def test_sweep_expansion_layer():
 def test_mesh_persist_and_load_round_trip():
     """Full round trip: build small mesh, save to GPKG, load back via the CLI helper."""
     from tests._swe2d_test_helpers import _serialize_and_persist_mesh
-    from swe2d.cli.gpkg_adapter import query_mesh_from_gpkg
+    from swe2d.core.gpkg_io import query_mesh_from_gpkg
 
     mesh_data = {
         "node_x": np.array([0.0, 10.0, 5.0], dtype=np.float64),
@@ -134,3 +135,95 @@ def test_status_file_types():
     finally:
         if os.path.exists(path):
             os.unlink(path)
+
+
+def _assert_one_second_run_reports_solver_step_and_diagnostics():
+    """Status and callbacks expose solver context, not callback counts/percent."""
+    from swe2d.cli.headless_runner import execute_run
+    from tests._swe2d_test_helpers import (
+        _make_cartesian_quad_mesh,
+        _serialize_and_persist_mesh,
+    )
+
+    callbacks = []
+    with tempfile.TemporaryDirectory() as tmp:
+        gpkg = os.path.join(tmp, "status_mesh.gpkg")
+        status_path = os.path.join(tmp, "status.json")
+        mesh_name = "status_mesh"
+        node_x, node_y, _, cell_nodes, _, _ = _make_cartesian_quad_mesh(
+            2, 1, 2.0, 1.0,
+        )
+        _serialize_and_persist_mesh(
+            gpkg,
+            mesh_name,
+            node_x,
+            node_y,
+            np.zeros_like(node_x),
+            cell_nodes,
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.float64),
+        )
+
+        execute_run(
+            gpkg,
+            {
+                "mesh": mesh_name,
+                "params": {
+                    "run_duration_s": 1.0,
+                    "output_interval_s": 1.0,
+                    "dt_request": 0.1,
+                    "dt_fixed": 0.1,
+                    "initial_dt": 0.1,
+                    "temporal_scheme": 1,
+                    "save_mesh_results": False,
+                },
+            },
+            progress_callback=lambda sim_time, diagnostics: callbacks.append(
+                (sim_time, diagnostics)
+            ),
+            status_file_path=status_path,
+            status_interval_s=0.0,
+        )
+
+        with open(status_path, encoding="utf-8") as status_file:
+            payload = json.load(status_file)
+
+    assert callbacks
+    sim_time, diagnostics = callbacks[-1]
+    assert set(diagnostics) == {"dt", "wet_cells", "elapsed_s"}
+    assert sim_time >= 1.0
+    assert diagnostics["dt"] > 0.0
+    assert isinstance(diagnostics["wet_cells"], int)
+    assert diagnostics["elapsed_s"] >= 0.0
+    assert payload["step"] == len(callbacks) - 1
+    assert payload["step_idx"] == payload["step"]
+    assert payload["t"] == sim_time
+    assert payload["dt"] == diagnostics["dt"]
+    assert payload["wet_cells"] == diagnostics["wet_cells"]
+    assert payload["status"] == "done"
+
+
+class TestHeadlessStatusProgress(unittest.TestCase):
+    """Unittest-discoverable wrapper for the real one-second CLI run."""
+
+    def test_one_second_run_reports_solver_step_and_diagnostics(self):
+        _assert_one_second_run_reports_solver_step_and_diagnostics()
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

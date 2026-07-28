@@ -138,6 +138,23 @@ def persist_project_workbench_state(
                 val = widget.text()
         if val is not None:
             widgets_data[attr_name] = {"type": type(widget).__name__, "value": val}
+    # Diagnostic: when zero widgets survived the iteration, surface that at
+    # WARN level (not DEBUG) and report which tab-view attributes were None
+    # so the next QGIS session can pinpoint the broken source. Originally
+    # the count was only logged via `log_fn(f"[DEBUG] persist: saved
+    # {len(widgets_data)} widgets...")` which is invisible unless the user
+    # has verbose logging on; with the recent worktree merge the count
+    # dropped from ~67 to 0 and the user only saw the result.
+    if not widgets_data:
+        try:
+            sources = list(iter_widgets_fn())
+        except Exception as _iter_exc:
+            sources = [("__iter_error__", _iter_exc)]
+        log_fn(
+            f"[WARN] persist: 0 widgets collected. "
+            f"Iterator yielded {len(sources)} items; first 3 = {sources[:3]!r}. "
+            f"Check that _iter_all_persistable_widgets() is finding the tab views."
+        )
 
     payload = {"version": 1, "widgets": widgets_data}
     try:
@@ -279,7 +296,7 @@ def _qt_widgets_module(widget: object) -> Optional[object]:
     parts = qt_mod.split(".")
     if len(parts) >= 2 and parts[0] == "PyQt5":
         try:
-            from PyQt5 import QtWidgets  # noqa: WPS433 — lazy import
+            from qgis.PyQt import QtWidgets
             return QtWidgets
         except ImportError:
             return None

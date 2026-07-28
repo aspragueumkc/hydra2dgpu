@@ -16,10 +16,8 @@ from swe2d.workbench.views.studio_tab_builder import wire_run_dock_signals
 from swe2d.runtime import (
     SWE2DBackendInitializer,
     SWE2DRunController,
-    SWE2DRunDataBuilder,
     SWE2DRunFinalizer,
     SWE2DRunLifecycle,
-    SWE2DRunOptionsBuilder,
     SWE2DRunOrchestrator,
     SWE2DRunRequest,
 )
@@ -30,15 +28,11 @@ from swe2d.workbench.controllers.run_controller import RunController
 from swe2d.workbench.controllers.layer_controller import LayerController
 from swe2d.workbench.controllers.mesh_controller import MeshController
 from swe2d.workbench.controllers.overlay_controller import OverlayController
+from swe2d.workbench.controllers.profile_controller import ProfileController
 from swe2d.workbench.controllers.topology_controller import TopologyController
 
 from swe2d.mesh.gmsh_backend import _gmsh_available
-from swe2d.runtime.backend import (
-    SpatialDiscretization,
-    SolverModelOptions,
-    TemporalScheme,
-    swe2d_gpu_available,
-)
+from swe2d.runtime.backend import swe2d_gpu_available
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +64,7 @@ class WorkbenchDialogBuilder:
         dlg._layer_controller = LayerController(view=dlg)
         dlg._mesh_controller = MeshController(view=dlg)
         dlg._overlay_controller = OverlayController(view=dlg)
+        dlg._profile_controller = ProfileController(view=dlg)
         dlg._topology_controller = TopologyController(view=dlg)
         initialize_workbench_startup_state(
             dlg,
@@ -85,15 +80,9 @@ class WorkbenchDialogBuilder:
             run_orchestrator=SWE2DRunOrchestrator,
             run_request=SWE2DRunRequest,
             run_controller=SWE2DRunController,
-            run_data_builder=SWE2DRunDataBuilder,
-            run_options_builder=SWE2DRunOptionsBuilder,
             backend_initializer=SWE2DBackendInitializer,
             run_finalizer=SWE2DRunFinalizer,
             run_lifecycle=SWE2DRunLifecycle,
-            swe2d_gpu_available=swe2d_gpu_available,
-            temporal_scheme=TemporalScheme,
-            spatial_discretization=SpatialDiscretization,
-            solver_model_options=SolverModelOptions,
         )
         wire_run_dock_signals(dlg)
         run_workbench_post_bootstrap_setup(

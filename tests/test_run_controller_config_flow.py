@@ -134,7 +134,13 @@ class TestOnLoadSimulationConfigFilePicker(unittest.TestCase):
 
 class TestOnSaveSimulationConfigFilePicker(unittest.TestCase):
     """``on_save_simulation_config`` opens a QFileDialog first so the
-    user can choose which GeoPackage to save to."""
+    user can choose which GeoPackage to save to, then a SaveConfigDialog
+    to pick the new GPKG table name."""
+
+    def _patch_dialog(self):
+        return patch(
+            "swe2d.workbench.dialogs.save_config_dialog.SaveConfigDialog"
+        )
 
     def test_cancelled_picker_returns_silently(self):
         """If the user cancels the file picker, return without
@@ -150,47 +156,71 @@ class TestOnSaveSimulationConfigFilePicker(unittest.TestCase):
         """If the user typed a path without an extension, append .gpkg."""
         view = _make_view()
         view.get_save_file_name = MagicMock(return_value="/tmp/myresults")
-        view.get_input_text = MagicMock(return_value=("myconfig", True))
         rc = _make_controller(view)
         with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
+             self._patch_dialog() as mock_dlg_cls, \
              patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
+            mock_dlg_cls.return_value = MagicMock(exec=MagicMock(return_value=0))
             rc.on_save_simulation_config()
-            self.assertEqual(mock_save.call_args.kwargs["gpkg_path"],
-                             "/tmp/myresults.gpkg")
+            kwargs = mock_dlg_cls.call_args.kwargs
+            self.assertEqual(kwargs["gpkg_path"], "/tmp/myresults.gpkg")
 
     def test_valid_save_path_persists_config(self):
-        """If the user picks a real path and enters a config name, the
-        config is persisted to that path."""
+        """If the user picks a real path and enters a table name, the
+        config is persisted under that table."""
         view = _make_view()
         view.get_save_file_name = MagicMock(return_value="/tmp/sim.gpkg")
-        view.get_input_text = MagicMock(return_value=("myconfig", True))
         view._mesh_data = {"mesh_name": "test_mesh"}
         rc = _make_controller(view)
         with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
+             self._patch_dialog() as mock_dlg_cls, \
              patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
+            captured = {}
+
+            def _capture(*args, **kwargs):
+                captured["save_callback"] = kwargs.get("save_callback")
+                mock_dlg = MagicMock()
+                mock_dlg.exec.return_value = 1  # QDialog.Accepted
+                return mock_dlg
+
+            mock_dlg_cls.side_effect = _capture
             rc.on_save_simulation_config()
-            mock_save.assert_called_once()
+            save_cb = captured["save_callback"]
+            self.assertIsNotNone(save_cb, "save_callback was not registered with the dialog")
+            save_cb(
+                "/tmp/sim.gpkg",
+                "swe2d_sim_test_mesh_20260101",
+                "swe2d_sim_test_mesh_20260101",
+                {},
+                "desc",
+                0.0,
+            )
+            self.assertEqual(mock_save.call_count, 1)
             kwargs = mock_save.call_args.kwargs
             self.assertEqual(kwargs["gpkg_path"], "/tmp/sim.gpkg")
-            self.assertEqual(kwargs["config_id"], "myconfig")
+            self.assertEqual(kwargs["table_name"], "swe2d_sim_test_mesh_20260101")
+            self.assertEqual(kwargs["config_id"], "swe2d_sim_test_mesh_20260101")
             self.assertEqual(kwargs["mesh_name"], "test_mesh")
 
-    def test_blank_name_falls_back_to_timestamp(self):
-        """If the user clears the name field, fall back to a timestamp."""
+    def test_dialog_default_table_name_is_prefilled(self):
+        """The SaveConfigDialog must be invoked with a default table
+        name that follows the swe2d_sim_<mesh>_<timestamp> pattern, so
+        the user just confirms the new table to add."""
         view = _make_view()
         view.get_save_file_name = MagicMock(return_value="/tmp/sim.gpkg")
-        view.get_input_text = MagicMock(return_value=("   ", True))
+        view._mesh_data = {"mesh_name": "test_mesh"}
         rc = _make_controller(view)
         with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
-             patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
+             self._patch_dialog() as mock_dlg_cls, \
+             patch("swe2d.services.gpkg_persistence_service.persist_simulation_config"):
+            mock_dlg_cls.return_value = MagicMock(exec=MagicMock(return_value=0))
             rc.on_save_simulation_config()
-            self.assertTrue(
-                mock_save.call_args.kwargs["config_id"].startswith("swe2d_"),
-                f"Expected timestamp config_id, got: {mock_save.call_args.kwargs['config_id']!r}",
-            )
+            default = mock_dlg_cls.call_args.kwargs["default_table_name"]
+            self.assertTrue(default.startswith("swe2d_sim_test_mesh_"),
+                            f"Expected default table name to start with swe2d_sim_test_mesh_, got: {default!r}")
 
 
 if __name__ == "__main__":

@@ -597,7 +597,7 @@ struct SWE2DDeviceState {
         }
     } culvert_ff_ws{};
 
-    // Per-cell external structure flux accumulators for face-based culvert coupling.
+// Per-cell external structure flux accumulators for face-based culvert coupling.
     // Written by swe2d_culvert_face_flux_kernel, consumed by swe2d_update_kernel.
     // Zeroed each step before the face-flux kernel runs.
     double*  d_ext_struct_flux_h  = nullptr;   // [n_cells] net mass flux (L²·L/T = L³/T)
@@ -608,7 +608,9 @@ struct SWE2DDeviceState {
     // of applying external_source_mps for culvert mass transfers.
     bool     use_culvert_face_flux = false;
 
-    // ── 1D pipe network device state ─────────────────────────────────────────
+
+
+    // ── 1D pipe network device state ───────────────────────────────────────
     Pipe1DDeviceState pipe1d;
 };
 
@@ -1273,12 +1275,12 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
     const double* host_structure_flows = nullptr,
-    bool graph_safe = false);
+     bool graph_safe = false);
+
+
 void swe2d_recompute_coupling_for_stage(SWE2DDeviceState* dev, int32_t n_cells,
                                          int32_t n_structures, const double* cell_wse_host,
                                          const double* host_structure_flows, double dt_stage);
-/// Apply pipe-end boundary conditions from surface WSE before pipe1d_step. @host
-void swe2d_gpu_apply_pipe_end_bc(SWE2DDeviceState* dev, int32_t n_cells);
 /// Upload drainage exchange parameters (inlets, outfalls, node geometry). @host
 void swe2d_gpu_upload_drainage_exchange_params(
     SWE2DDeviceState* dev,
@@ -1300,6 +1302,9 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const double* pipe_end_invert, const double* pipe_end_diameter,
     const double* pipe_end_area,
     const double* pipe_end_kin, const double* pipe_end_kout,
+    const int32_t* pipe_end_enable_overflow,
+    const double* pipe_end_overflow_elevation,
+    const double* pipe_end_max_overflow_rate,
     const double* node_max_depth);
 
 /** Upload free outfall node indices and mark them as boundary nodes.
@@ -1396,6 +1401,7 @@ void swe2d_gpu_redistribute_face_flux(
     int32_t n_cells);
 /// Set the coupling time step (used by face-flux depth limiter). @host
 void swe2d_gpu_set_coupling_dt(double dt);
+
 
 // ── 1D pipe network declarations moved to pipe1d.cuh ─────────────────────
 

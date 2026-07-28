@@ -1254,6 +1254,7 @@ class TopologyController:
 
                     pass
         try:
+            view._update_mesh_canvas_layer()
             view._refresh_plot()
         except Exception as _e:
 

@@ -83,7 +83,7 @@ def flow_si_to_model(flow_cms: float) -> float:
 
 def is_us_customary_units(length_unit_name: str) -> bool:
     """Return *True* when *length_unit_name* is ``'ft'`` (US Customary)."""
-    return str(length_unit_name or "m").strip().lower() == "ft"
+    return str(length_unit_name).strip().lower() == "ft"
 
 
 def update_unit_system_from_crs(

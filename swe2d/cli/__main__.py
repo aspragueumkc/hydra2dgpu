@@ -46,6 +46,8 @@ def main():
     replay_parser = sub.add_parser("replay", help="Replay a run from its replay JSON")
     replay_parser.add_argument("--replay-file", type=str, default="", help="Standalone replay JSON file path")
     replay_parser.add_argument("--progress", action="store_true", help="Print progress per step")
+    replay_parser.add_argument("--status-file-path", default="", help="Periodic JSON status file path (for optional QGIS progress monitoring)")
+    replay_parser.add_argument("--status-interval", type=float, default=5.0, help="Status file write interval in seconds (default 5.0)")
 
     args = parser.parse_args()
 
@@ -87,6 +89,8 @@ def main():
                 args.replay_file,
                 log_cb=print,
                 progress_cb=_make_progress(args.progress),
+                status_file_path=args.status_file_path or None,
+                status_interval_s=float(args.status_interval),
             )
 
             class _TupleKeyEncoder(json.JSONEncoder):
@@ -125,8 +129,14 @@ def _load_params(param_source: str) -> dict:
 def _make_progress(enabled: bool):
     if not enabled:
         return None
-    def cb(pct, diag=None):
-        print(f"  progress={pct}%", file=sys.stderr)
+
+    def cb(sim_time_s, diagnostics):
+        print(
+            f"  t={sim_time_s:.3f}s dt={diagnostics['dt']:.6g} "
+            f"wet_cells={diagnostics['wet_cells']}",
+            file=sys.stderr,
+        )
+
     return cb
 
 

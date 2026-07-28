@@ -32,11 +32,11 @@ class TestLiveRunId(unittest.TestCase):
         data._live_run_id = "run_A"
         data._live_times = np.array([0.0, 10.0])
         data._live_line_profile[1] = {
-            "station_m": np.array([0.0, 50.0, 100.0]),
-            "wse_m": np.full((2, 3), 105.0),
-            "bed_m": np.full((2, 3), 95.0),
-            "depth_m": np.full((2, 3), 10.0),
-            "velocity_ms": np.full((2, 3), 1.0),
+            "station": np.array([0.0, 50.0, 100.0]),
+            "wse": np.full((2, 3), 105.0),
+            "bed": np.full((2, 3), 95.0),
+            "depth": np.full((2, 3), 10.0),
+            "velocity": np.full((2, 3), 1.0),
             "flow_qn": np.full((2, 3), 50.0),
             "fr": np.full((2, 3), 0.3),
             "wet": np.ones((2, 3), dtype=np.int32),
@@ -60,18 +60,18 @@ class TestLiveRunId(unittest.TestCase):
         data._live_times = np.array([0.0, 10.0])
         data._live_line_ts[1] = {
             "line_name": "test",
-            "depth_m": np.array([1.0, 2.0]),
-            "velocity_ms": np.array([0.5, 1.0]),
-            "wse_m": np.array([100.0, 101.0]),
-            "bed_m": np.array([95.0, 95.0]),
-            "flow_cms": np.array([10.0, 20.0]),
+            "depth": np.array([1.0, 2.0]),
+            "velocity": np.array([0.5, 1.0]),
+            "wse": np.array([100.0, 101.0]),
+            "bed": np.array([95.0, 95.0]),
+            "flow": np.array([10.0, 20.0]),
             "wet_frac": np.array([1.0, 1.0]),
             "fr": np.array([0.3, 0.4]),
         }
 
         # Matching run_id -> returns live data
         result = load_baked_line_timeseries(data, "run_A", 1)
-        self.assertIn("depth_m", result)
+        self.assertIn("depth", result)
 
         # Non-matching run_id -> returns empty
         result = load_baked_line_timeseries(data, "run_B", 1)

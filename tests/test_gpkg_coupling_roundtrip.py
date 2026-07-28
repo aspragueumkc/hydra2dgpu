@@ -1,3 +1,4 @@
+import unittest
 """Round-trip tests for baked structure/drainage coupling persistence.
 
 The viewers read coupling records as rows with ``t_s`` and ``value`` keys.
@@ -113,3 +114,20 @@ def test_load_coupling_records_filters_by_run_id(
         np.array([r["value"] for r in records], dtype=np.float64),
         np.array([1.0, 2.0], dtype=np.float64),
     )
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

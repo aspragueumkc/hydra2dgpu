@@ -1,3 +1,4 @@
+import unittest
 """End-to-end coupling readback tests via the real headless CLI.
 
 These tests build a small synthetic mesh, run the full CLI pipeline
@@ -83,7 +84,6 @@ def test_cli_run_persists_drainage_link_flow_rows(tmp_path):
         bc_n0, bc_n1, bc_tp, bc_vl,
         params={},  # helper overrides duration_s and output intervals
         duration_s=_T_END,
-        q_in=_Q_IN,
     )
 
     rows = _read_coupling_rows(gpkg)
@@ -118,7 +118,6 @@ def test_cli_run_writes_expected_coupling_schema(tmp_path):
         bc_n0, bc_n1, bc_tp, bc_vl,
         params={},
         duration_s=_T_END,
-        q_in=_Q_IN,
     )
 
     rows = _read_coupling_rows(gpkg)
@@ -240,7 +239,6 @@ def test_cli_run_persists_nonzero_structure_flow(tmp_path):
         bc_n0, bc_n1, bc_tp, bc_vl,
         params={},
         duration_s=_T_END,
-        q_in=_Q_IN,
         structures_cfg=structures_cfg,
         h0=h0,
     )
@@ -286,3 +284,20 @@ def test_cli_run_persists_nonzero_structure_flow(tmp_path):
         assert vals.size > 0
         if mname != "embankment_flow":
             assert np.any(np.abs(vals) > 1e-6), f"diag metric {mname} is all zeros"
+
+class _PytestStyleWrapper(unittest.TestCase):
+    """Auto-generated wrapper for module-level test functions.
+
+    Created by tools/wrap_pytest_style.py so that pytest-style tests
+    (def test_* at module level) become visible to `python3 -m unittest`.
+    Each module-level test is attached as a staticmethod so it can be
+    discovered and run as a unittest TestCase.
+    """
+__wrapped_funcs = []
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and callable(_obj) and not isinstance(_obj, type):
+        setattr(_PytestStyleWrapper, _name, staticmethod(_obj))
+        __wrapped_funcs.append(_name)
+for _name in __wrapped_funcs:
+    del globals()[_name]
+del _name, _obj, __wrapped_funcs

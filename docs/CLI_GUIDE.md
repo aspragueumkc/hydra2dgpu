@@ -3,10 +3,9 @@
 > **Audience**: users running simulations outside QGIS, batch sweeps, CI/CD
 > pipelines, and anyone who wants to script the solver.
 
-The CLI runs the GPU solver directly from a Python process with no QGIS or
-Qt dependency. It reads a mesh from a GeoPackage, applies a JSON params
-file, writes results to a separate GeoPackage, and reports progress via
-stdin or a JSON status file.
+The CLI requires `qgis.core`, but no QGIS GUI, `iface`, or display. It reads
+mesh data from a GeoPackage, applies a JSON params file, writes results to a
+separate GeoPackage, and reports progress via stderr or a JSON status file.
 
 The CLI module lives at `swe2d/cli/`:
 
@@ -15,7 +14,7 @@ The CLI module lives at `swe2d/cli/`:
 | `__main__.py` | Argparse entry point — `python -m swe2d.cli run\|batch` |
 | `headless_runner.py` | `execute_run()` — full simulation pipeline |
 | `batch_runner.py` | Concurrent batch runs via MPS daemon |
-| `gpkg_adapter.py` | Direct sqlite3 reads of mesh/BC/forcing data |
+| `gpkg_adapter.py` | GPKG helper exports backed by `swe2d.core.gpkg_io` |
 
 ---
 
@@ -80,9 +79,8 @@ widget types). Required keys:
         "dt_request": 0.1,
         "n_mann": 0.035,
         "cfl": 0.45,
-        "spatial_scheme": 0,
+        "reconstruction_mode": 0,
         "temporal_scheme": 2,
-        "extreme_rain_mode": false,
         "source_cfl_beta": 0.25,
         "source_max_substeps": 16
     },
@@ -137,6 +135,8 @@ JSON status file every `--status-interval` seconds:
 ```json
 {
     "step": 1234,
+    "step_idx": 1234,
+    "pct": 12.3,
     "t": 12.34,
     "dt": 0.05,
     "wet_cells": 1456,
@@ -144,6 +144,10 @@ JSON status file every `--status-interval` seconds:
     "status": "running"
 }
 ```
+
+`step` and `step_idx` are the actual 0-indexed solver step number reported
+by the runtime context; they are not derived from callback count or progress
+percentage. `pct` is the separate 0–100 simulation progress percentage.
 
 `status` transitions through `"running"` → `"done"` (or `"error"` on
 failure). This lets a separate process — typically the QGIS workbench —
@@ -191,8 +195,15 @@ results = execute_run(
     mesh_gpkg="mesh.gpkg",
     params=params,
     results_gpkg="out.gpkg",
-    progress_callback=lambda t, d: print(f"t={t:.2f}  dt={d['dt']:.4f}"),
+    progress_callback=lambda sim_time_s, diag: print(
+        f"t={sim_time_s:.2f}  dt={diag['dt']:.4f}  wet={diag['wet_cells']}"
+    ),
 )
+
+# `progress_callback` signature:
+#   progress_callback(sim_time_s: float, diagnostics: dict) -> None
+#   - sim_time_s: current simulation time after the completed solver step
+#   - diagnostics: {"dt": current_dt, "wet_cells": n, "elapsed_s": wallclock}
 
 # results["h"], results["hu"], results["hv"] — final state arrays
 # results["max_results"] — max-tracking arrays (if enabled)
