@@ -16,6 +16,10 @@
 .vscode/
 .kimi-code/
 .superpowers/
+# Internal review notes attached to the MCP server
+tools/hydra_mcp/COMPREHENSIVE_REVIEW.md
+tools/hydra_mcp/MCP_PHASE2_REVIEW.md
+tools/hydra_mcp/VERIFICATION_REVIEW.md
 
 # Agent plan / spec docs (superpowers workflow artifacts)
 docs/superpowers/
@@ -23,13 +27,17 @@ docs/plans/
 docs/specs/
 docs/audits/
 docs/audit/
-docs/audits/2026-07-25/
-
-# Private session captures and debug dumps
-docs/session/
-docs/session/**
+docs/audits/**
+docs/archive/
 docs/notes/
 docs/research/
+docs/session/
+docs/session/**
+docs/audits/2026-07-25/
+docs/memory/
+docs/memory/**
+
+# Private session captures and debug dumps
 session-ses_*.md
 pipe1d_debug-*.md
 gui_regresions_from_cli-first_refactor.md
