@@ -166,13 +166,12 @@ function(_configure_swe2d_module target_name py_module_name)
       # Build environments (manylinux containers, wheel CI runners) have no
       # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
       # (runtime symbol resolution happens against the user's driver).
-      # NOTE: no GLOB_RECURSE with '*' in intermediate path components —
-      # GLOB_RECURSE does not expand those.
-      file(GLOB _cuda_libx64 "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/*")
+      # Layout note: Windows network installs put cuda.lib directly in
+      # lib/x64 (no stubs/ dir); Linux puts libcuda.so in lib64/stubs.
       set(_cuda_stub_hits)
       file(GLOB _cuda_stub_hits
-        "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/stubs/cuda.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/lib/x64/stubs/cuda.lib"
+        "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/cuda.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/lib/x64/cuda.lib"
         "/usr/local/cuda/lib64/stubs/libcuda.so"
         "/usr/local/cuda-12.4/lib64/stubs/libcuda.so")
       list(LENGTH _cuda_stub_hits _cuda_stub_count)
@@ -183,8 +182,7 @@ function(_configure_swe2d_module target_name py_module_name)
     if(NOT CUDA_DRIVER_LIB)
       message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
         "CUDAToolkit_LIBRARY_ROOT=${CUDAToolkit_LIBRARY_ROOT} "
-        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES} "
-        "lib/x64=${_cuda_libx64} stubs=${_cuda_stub_hits}")
+        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}")
     endif()
     message(STATUS "Linking CUDA driver lib: ${CUDA_DRIVER_LIB}")
     target_link_libraries(${target_name} PRIVATE ${CUDA_DRIVER_LIB})
