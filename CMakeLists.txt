@@ -161,7 +161,20 @@ function(_configure_swe2d_module target_name py_module_name)
     target_link_libraries(${target_name} PRIVATE CUDA::cudart)
     # CUDA-OpenGL interop (cuGraphicsGLRegisterImage etc.) lives in libcuda.so
     # (NVIDIA driver).  No CMake target — find and link directly.
-    find_library(CUDA_DRIVER_LIB cuda REQUIRED)
+    find_library(CUDA_DRIVER_LIB cuda)
+    if(NOT CUDA_DRIVER_LIB)
+      # Build environments (manylinux containers, wheel CI runners) have no
+      # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub —
+      # runtime symbol resolution happens against the user's driver.
+      find_library(CUDA_DRIVER_LIB cuda
+        PATHS /usr/local/cuda/lib64/stubs
+              "$ENV{CUDA_PATH}/lib/x64/stubs"
+        NO_DEFAULT_PATH)
+    endif()
+    if(NOT CUDA_DRIVER_LIB)
+      message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
+        "install the NVIDIA driver or add the toolkit's stubs dir to the search path")
+    endif()
     message(STATUS "Linking CUDA driver lib: ${CUDA_DRIVER_LIB}")
     target_link_libraries(${target_name} PRIVATE ${CUDA_DRIVER_LIB})
     target_link_libraries(${target_name} PRIVATE OpenGL::GL)

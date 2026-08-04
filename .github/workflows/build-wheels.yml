@@ -68,8 +68,9 @@ jobs:
           # `which nvcc` under set -e killed the before-build when the
           # yum install had silently failed.
           CIBW_ENVIRONMENT_LINUX: "CUDACXX=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda"
-          CIBW_BEFORE_BUILD_WINDOWS: |
-            Write-Output "CUDACXX=$env:CUDA_PATH\bin\nvcc.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+          # No Windows before-build needed: the Jimver action adds
+          # CUDA\v12.4\bin (nvcc.exe) to PATH, so CMake finds it; the old
+          # `Write-Output ... >> $env:GITHUB_ENV` failed with code 255.
           CIBW_ENVIRONMENT_PASS_LINUX: "BACKWATER_USE_CUDA"
           CIBW_ENVIRONMENT_PASS_WINDOWS: "BACKWATER_USE_CUDA CUDA_PATH CUDACXX"
           BACKWATER_USE_CUDA: "ON"
