@@ -18,7 +18,11 @@
 #include "swe2d_ts_muxer.h"
 #include <cuda.h>
 #include <cuda_runtime.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <nvEncodeAPI.h>
 #include <cstdio>
 #include <cstdlib>
@@ -31,28 +35,61 @@ namespace swe2d_nvenc {
 
 namespace {
 
-// dlopen handle for libnvidia-encode.so.  Lazy-loaded on first call.
+#ifdef _WIN32
+// Windows: the NVENC API ships as nvEncodeAPI.dll alongside the driver.
+#define NVENC_LIBRARY_NAME "nvEncodeAPI.dll"
+#else
+// Linux: dlopen of libnvidia-encode.so.1 (NVIDIA driver package).
+#define NVENC_LIBRARY_NAME "libnvidia-encode.so.1"
+#endif
+
+// dlopen/LoadLibrary handle for the NVENC library.  Lazy-loaded on first call.
 void* g_nvenc_lib = nullptr;
 
-// NVENC API function list (populated from libnvidia-encode.so).
+// NVENC API function list (populated from the NVENC library).
 NV_ENCODE_API_FUNCTION_LIST g_nvenc_api = {};
+
+// Load a symbol from the NVENC library (dlsym / GetProcAddress shim).
+void* nvenc_lookup(const char* name) {
+#ifdef _WIN32
+    return reinterpret_cast<void*>(GetProcAddress(
+        static_cast<HMODULE>(g_nvenc_lib), name));
+#else
+    return dlsym(g_nvenc_lib, name);
+#endif
+}
+
+// Error text for a failed library load (dlerror / GetLastError shim).
+const char* nvenc_load_error() {
+#ifdef _WIN32
+    static char buf[128];
+    snprintf(buf, sizeof(buf), "GetLastError=%lu", (unsigned long)GetLastError());
+    return buf;
+#else
+    return dlerror();
+#endif
+}
 
 // One-time initialization of the NVENC API function pointers.
 bool init_nvenc_api() {
     if (g_nvenc_api.version == 0) {
         if (!g_nvenc_lib) {
-            g_nvenc_lib = dlopen("libnvidia-encode.so.1", RTLD_NOW | RTLD_GLOBAL);
+#ifdef _WIN32
+            g_nvenc_lib = static_cast<void*>(LoadLibraryA(NVENC_LIBRARY_NAME));
+#else
+            g_nvenc_lib = dlopen(NVENC_LIBRARY_NAME, RTLD_NOW | RTLD_GLOBAL);
+#endif
             if (!g_nvenc_lib) {
-                fprintf(stderr, "NVENC: dlopen libnvidia-encode.so.1 failed: %s\n",
-                        dlerror());
+                fprintf(stderr, "NVENC: load %s failed: %s\n",
+                        NVENC_LIBRARY_NAME, nvenc_load_error());
                 return false;
             }
         }
         typedef NVENCSTATUS (NVENCAPI *CreateInstance_fn)(NV_ENCODE_API_FUNCTION_LIST*);
         CreateInstance_fn create = (CreateInstance_fn)
-            dlsym(g_nvenc_lib, "NvEncodeAPICreateInstance");
+            nvenc_lookup("NvEncodeAPICreateInstance");
         if (!create) {
-            fprintf(stderr, "NVENC: dlsym NvEncodeAPICreateInstance failed\n");
+            fprintf(stderr, "NVENC: NvEncodeAPICreateInstance not found\n");
             return false;
         }
         memset(&g_nvenc_api, 0, sizeof(g_nvenc_api));

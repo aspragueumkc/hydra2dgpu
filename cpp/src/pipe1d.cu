@@ -2290,6 +2290,10 @@ __global__ void swe2d_unified_face_flux_kernel(
         double A_R, Q_R, y_R;
         // dir: sign convention for dry-node check (matches old boundary kernel)
         const double dir_k = (face_dir) ? face_dir[k] : 1.0;
+        // MSVC/nvcc rejects C99 compound literals ((double[]){...}) — the
+        // GCC extension compiles on Linux but fails on Windows.  Use a
+        // named array instead.
+        const double xsect_params[3] = {wMax_L, yFull_L, 0.0};
 
         switch (mode) {
             case 0: // FREE — dry ghost (atmospheric pressure)
@@ -2307,7 +2311,7 @@ __global__ void swe2d_unified_face_flux_kernel(
                 } else {
                     y_R = 0.0;
                 }
-                A_R = xsect_getAofY(cell_shape_type[L], (double[]){wMax_L, yFull_L, 0.0}, y_R);
+                A_R = xsect_getAofY(cell_shape_type[L], xsect_params, y_R);
                 Q_R = A_R * (A_L_safe > 0.0 ? Q_L / A_L_safe : 0.0);
                 break;
             }
@@ -2315,7 +2319,7 @@ __global__ void swe2d_unified_face_flux_kernel(
             case 2: { // FIXED_WSE — stored value is absolute water-surface elevation
                 const double ghost_wse = (d_ghost_outfall_fixed_wse) ? d_ghost_outfall_fixed_wse[gi] : 0.0;
                 y_R = fmax(0.0, ghost_wse - inv_L);
-                A_R = xsect_getAofY(cell_shape_type[L], (double[]){wMax_L, yFull_L, 0.0}, y_R);
+                A_R = xsect_getAofY(cell_shape_type[L], xsect_params, y_R);
                 Q_R = A_R * (A_L_safe > 0.0 ? Q_L / A_L_safe : 0.0);
                 break;
             }
@@ -2330,7 +2334,7 @@ __global__ void swe2d_unified_face_flux_kernel(
                 } else {
                     y_R = 0.0;
                 }
-                A_R = xsect_getAofY(cell_shape_type[L], (double[]){wMax_L, yFull_L, 0.0}, y_R);
+                A_R = xsect_getAofY(cell_shape_type[L], xsect_params, y_R);
                 Q_R = A_R * (A_L_safe > 0.0 ? Q_L / A_L_safe : 0.0);
                 break;
             }
@@ -2351,7 +2355,7 @@ __global__ void swe2d_unified_face_flux_kernel(
                 } else {
                     y_R = 0.0;
                 }
-                A_R = xsect_getAofY(cell_shape_type[L], (double[]){wMax_L, yFull_L, 0.0}, y_R);
+                A_R = xsect_getAofY(cell_shape_type[L], xsect_params, y_R);
                 Q_R = A_R * (A_L_safe > 0.0 ? Q_L / A_L_safe : 0.0);
                 break;
             }

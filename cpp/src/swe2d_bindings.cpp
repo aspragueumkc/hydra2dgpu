@@ -1093,6 +1093,11 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         "Returns {image: (H,W,4) uint8 ndarray, width, height}.");
 
     // ── Phase 3 — CUDA-OpenGL interop (zero D2H GUI render) ──────────────
+    // The GL interop module is Linux-only: on Windows the toolkit's
+    // cudaGL.h fails to resolve GL types even with <GL/gl.h> included,
+    // and the workbench's GL viewer degrades gracefully without these
+    // bindings (register failures are caught in gpu_viewer_gl_widget.py).
+#if !defined(_WIN32)
     // Register / unregister a GL texture for CUDA write access.  The GL
     // context must be current on the calling thread at register time.
     m.def("swe2d_gpu_register_gl_texture",
@@ -1368,6 +1373,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         "Computes vmin/vmax on device, writes RGBA into the GL texture.\n"
         "Caller must hold the OpenGL context current and have called\n"
         "swe2d_gpu_register_gl_texture.  Returns {ok, bytes_written}.");
+#endif  // !defined(_WIN32) — CUDA-OpenGL interop is Linux-only
 
     // ── Phase 4 — diagnostic ring buffer (per-step DiagRecord on device) ──
     // Init / shutdown — bind the lifetime to the worker's first init.
