@@ -149,7 +149,12 @@ function(_configure_swe2d_module target_name py_module_name)
     )
   endif()
 
-  # Host compiler: optimize for the build machine's CPU and enable fast math
+  # Host compiler: portable release flags. NOT -march=native — a wheel built
+  # with -march=native bakes in the build runner's CPU extensions (e.g.
+  # AVX-512 on modern GitHub-hosted Xeons) and SIGILLs on typical user CPUs
+  # that lack them (AMD Zen 1-3, older Intel). x86-64-v2 = baseline + SSE4.2/
+  # POPCNT/AVX, which covers essentially all post-2009 x86-64 CPUs. The CUDA
+  # .cu files already compile for the sm_* virtual architectures via nvcc.
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
     if(MSVC)
       target_compile_options(${target_name} PRIVATE
@@ -157,7 +162,7 @@ function(_configure_swe2d_module target_name py_module_name)
       )
     else()
       target_compile_options(${target_name} PRIVATE
-        $<$<COMPILE_LANGUAGE:CXX>:-O3 -mtune=native -march=native -ffast-math>
+        $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=x86-64-v2 -ffast-math>
       )
     endif()
   endif()
