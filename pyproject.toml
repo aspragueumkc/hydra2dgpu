@@ -59,3 +59,10 @@ swe2d-cli = "swe2d.cli.__main__:main"
 Homepage  = "https://github.com/aspragueumkc/hydra2dgpu"
 Repository = "https://github.com/aspragueumkc/hydra2dgpu"
 Issues    = "https://github.com/aspragueumkc/hydra2dgpu/issues"
+
+[tool.auditwheel]
+# The wheel links libcuda.so.1 (NVIDIA driver), which is never present in
+# the build container and must never be bundled — exclude it so
+# `auditwheel repair` can apply the manylinux tag.  The driver resolves
+# against the user's machine at runtime.
+exclude = ["libcuda.so.1"]
