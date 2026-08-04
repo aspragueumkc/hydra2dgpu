@@ -238,11 +238,6 @@ function(_configure_swe2d_module target_name py_module_name)
       target_compile_options(${target_name} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/O2 /fp:fast>
       )
-      # MSVC ICE (C1001-class "INTERNAL COMPILER ERROR") on the giant
-      # pybind11 lambda-heavy bindings TU under /O2 — compile it
-      # unoptimized to work around the compiler crash.
-      set_source_files_properties(cpp/src/swe2d_bindings.cpp PROPERTIES
-        COMPILE_OPTIONS "/Od")
     else()
       target_compile_options(${target_name} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-O3 -mtune=native -march=native -ffast-math>

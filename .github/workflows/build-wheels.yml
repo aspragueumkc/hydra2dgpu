@@ -9,13 +9,13 @@ permissions:
   contents: write          # so the release job can attach wheels
 
 jobs:
-  build_wheels:
-    name: Build wheels on ${{ matrix.os }} py${{ matrix.python }}
-    runs-on: ${{ matrix.os }}
+  # ── Linux x86_64 + CUDA via cibuildwheel (manylinux_2_28) ──────────────
+  build-linux:
+    name: Build wheels on ubuntu-22.04 py${{ matrix.python }}
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022]
         # cp312 only: pyproject.toml requires-python >=3.12, so cibuildwheel
         # selects no build identifiers for cp310/cp311 ("No build
         # identifiers selected") and the job fails instantly.
@@ -26,26 +26,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up CUDA 12.4 (Linux)
-        if: runner.os == 'Linux'
+      - name: Set up CUDA 12.4
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
           method: network
           sub-packages: '["nvcc", "cudart"]'
-
-      - name: Set up CUDA 12.4 (Windows)
-        if: runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: '12.4.0'
-          method: network
-
-      - name: Set up MSVC dev cmd (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1.13.0
-        with:
-          arch: x64
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.19
@@ -75,14 +61,104 @@ jobs:
           # not a real cibuildwheel option and is silently ignored).
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair -w {dest_dir} {wheel} --exclude libcuda.so.1"
           CIBW_ENVIRONMENT_LINUX: "CUDACXX=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda"
-          # No Windows before-build needed: the Jimver action adds
-          # CUDA\v12.4\bin (nvcc.exe) to PATH, so CMake finds it; the old
-          # `Write-Output ... >> $env:GITHUB_ENV` failed with code 255.
           CIBW_ENVIRONMENT_PASS_LINUX: "BACKWATER_USE_CUDA"
-          CIBW_ENVIRONMENT_PASS_WINDOWS: "BACKWATER_USE_CUDA CUDA_PATH CUDACXX"
           BACKWATER_USE_CUDA: "ON"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.python }}
+          name: wheels-ubuntu-22.04-${{ matrix.python }}
+          path: ./wheelhouse/*.whl
+
+  # ── Windows x86_64 + CUDA via raw CMake (legacy Jul 2026 flow) ────────
+  # The cibuildwheel path on Windows hits an MSVC internal compiler error
+  # in the giant pybind11 bindings TU (swe2d_bindings.cpp, 100+ m.defs
+  # after the GPU Direct Viewer merge) — the truncated cl output hides
+  # the actual error lines. The pre-viewer Windows build (commit d0303ca2,
+  # Jul 9 2026) used raw `cmake -G "Visual Studio 17 2022"` via MSBuild
+  # + ilammy/msvc-dev-cmd and produced working .pyd files. Restoring that
+  # flow here avoids the ICE; if a real MSVC error re-appears we get a
+  # clean error to bisect rather than an opaque "unable to recover".
+  build-windows-legacy:
+    name: Build wheels on windows-2022 py${{ matrix.python }} (raw CMake)
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["cp312"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up CUDA 12.4
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: '12.4.0'
+          method: network
+
+      - name: Set up MSVC dev cmd (x64)
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Locate Python paths for CMake
+        id: py
+        shell: pwsh
+        run: |
+          $pydir = python -c "import sys; print(sys.prefix)"
+          $inc   = python -c "import sysconfig; print(sysconfig.get_path('include'))"
+          "pydir=$pydir" >> $env:GITHUB_OUTPUT
+          "inc=$inc"     >> $env:GITHUB_OUTPUT
+
+      - name: Configure (Visual Studio 17 2022, x64)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBACKWATER_USE_CUDA=ON `
+            -DCUDAToolkit_ROOT=$env:CUDA_PATH `
+            -DPython3_ROOT_DIR=${{ steps.py.outputs.pydir }} `
+            -DPython3_INCLUDE_DIR=${{ steps.py.outputs.inc }}
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release -- -maxCpuCount
+
+      - name: Install to staging tree
+        shell: pwsh
+        run: |
+          # cmake --install emits the hydra_swe2d/*.pyd + __init__.py
+          # (install(TARGETS ...)) and the swe2d/ Python sources
+          # (install(DIRECTORY swe2d ...)) into the staging tree.
+          cmake --install build --config Release --prefix staging
+
+      - name: Pack wheel
+        shell: pwsh
+        run: |
+          # tools/pack_wheel.py mirrors what scikit-build-core's wheel
+          # builder does for the Linux manylinux wheel: it adds the
+          # tools/ + tests/ trees (not installed by CMake) and the
+          # swe2d_solver.hpp header, then writes dist-info/ + RECORD.
+          $version = (Get-Content pyproject.toml | Select-String -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $wheel   = "hydra_swe2d-${version}-cp312-cp312-win_amd64.whl"
+          python tools/pack_wheel.py `
+            --src-root . `
+            --staging-dir staging `
+            --output-wheel "wheelhouse/$wheel" `
+            --platform-tag win_amd64
+          Write-Host "Built wheel: wheelhouse/$wheel"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-2022-${{ matrix.python }}
           path: ./wheelhouse/*.whl
