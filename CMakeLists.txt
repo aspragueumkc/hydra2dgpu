@@ -31,9 +31,6 @@ include(FetchContent)
 
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 
-# Phase 3 — CUDA-OpenGL interop for zero-D2H GUI rendering.
-find_package(OpenGL REQUIRED)
-
 # Force pybind11 to use modern FindPython mode so it reuses Python3_* from
 # above instead of classic FindPythonInterp/FindPythonLibs (which can pick up
 # unintended virtualenv interpreters/headers).
@@ -105,18 +102,6 @@ if(BACKWATER_USE_CUDA)
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_redistribute.cu)
     list(APPEND SWE2D_GPU_SOURCES cpp/src/pipe1d.cu)
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_reconstruct.cu)
-    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_viewer.cu)
-    # CUDA-OpenGL interop is Linux-only: on Windows the toolkit's cudaGL.h
-    # fails to resolve GL types (the workbench viewer degrades gracefully).
-    if(NOT WIN32)
-      list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_viewer_interop.cu)
-    endif()
-    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_diag_ring.cu)
-    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_viewer_hud.cu)
-    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_nv_utils.cu)
-    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_viewer_nvenc.cu)
-    # Phase 5: TS muxer (plain C, no CUDA) — added to the host sources.
-    list(APPEND SWE2D_CPU_SOURCES cpp/src/swe2d_ts_muxer.c)
     set(SWE2D_CUDA_FOUND TRUE)
     message(STATUS "CUDA ${CUDAToolkit_VERSION} found — 2D solver GPU path enabled")
   else()
@@ -125,75 +110,16 @@ if(BACKWATER_USE_CUDA)
 endif()
 
 function(_configure_swe2d_module target_name py_module_name)
-  # Phase 5: TS muxer (.c, no CUDA) — compile as plain C explicitly.
-  set(_ts_muxer_obj "")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/cpp/src/swe2d_ts_muxer.c")
-    if(NOT CMAKE_C_COMPILER)
-    # Use the C compiler available in the conda env.  The system gcc-13
-    # defaults to C++ for .c files (Ubuntu's gcc-13 is multi-language),
-    # which breaks the TS muxer compile.  Fall back to whichever gcc
-    # is in the mamba env PATH.
-    find_program(_conda_gcc NAMES gcc gcc-13 gcc-12 REQUIRED)
-    set(CMAKE_C_COMPILER "${_conda_gcc}")
-  endif()
-    set(_ts_muxer_obj "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_ts_muxer.c.o")
-    add_custom_command(
-      OUTPUT "${_ts_muxer_obj}"
-      COMMAND ${CMAKE_C_COMPILER} -x c -c -O2 -fPIC
-              -I${CMAKE_SOURCE_DIR}/cpp/src
-              "${CMAKE_SOURCE_DIR}/cpp/src/swe2d_ts_muxer.c"
-              -o "${_ts_muxer_obj}"
-      DEPENDS "${CMAKE_SOURCE_DIR}/cpp/src/swe2d_ts_muxer.c"
-               "${CMAKE_SOURCE_DIR}/cpp/src/swe2d_ts_muxer.h"
-      COMMENT "Compiling TS muxer (Phase 5) for ${target_name}"
-    )
-    add_custom_target(${target_name}_ts_muxer_obj DEPENDS "${_ts_muxer_obj}")
-  endif()
   pybind11_add_module(${target_name}
       ${SWE2D_CPU_SOURCES}
       ${SWE2D_GPU_SOURCES}
   )
-  if(_ts_muxer_obj)
-    target_sources(${target_name} PRIVATE "${_ts_muxer_obj}")
-    add_dependencies(${target_name} ${target_name}_ts_muxer_obj)
-  endif()
 
   target_include_directories(${target_name} PRIVATE cpp/src)
   target_compile_definitions(${target_name} PRIVATE HYDRA_SWE2D_PY_MODULE_NAME=${py_module_name})
 
   if(SWE2D_CUDA_FOUND)
     target_link_libraries(${target_name} PRIVATE CUDA::cudart)
-    # CUDA-OpenGL interop (cuGraphicsGLRegisterImage etc.) lives in libcuda.so
-    # (NVIDIA driver).  No CMake target — find and link directly.
-    find_library(CUDA_DRIVER_LIB cuda)
-    if(NOT CUDA_DRIVER_LIB)
-      # Build environments (manylinux containers, wheel CI runners) have no
-      # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
-      # (runtime symbol resolution happens against the user's driver).
-      # Layout note: Windows network installs put cuda.lib directly in
-      # lib/x64 (no stubs/ dir); Linux puts libcuda.so in lib64/stubs.
-      set(_cuda_stub_hits)
-      file(GLOB _cuda_stub_hits
-        "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/cuda.lib"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/lib/x64/cuda.lib"
-        "/usr/local/cuda/lib64/stubs/libcuda.so"
-        "/usr/local/cuda-12.4/lib64/stubs/libcuda.so")
-      list(LENGTH _cuda_stub_hits _cuda_stub_count)
-      if(_cuda_stub_count GREATER 0)
-        list(GET _cuda_stub_hits 0 CUDA_DRIVER_LIB)
-      endif()
-    endif()
-    if(NOT CUDA_DRIVER_LIB)
-      message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
-        "CUDAToolkit_LIBRARY_ROOT=${CUDAToolkit_LIBRARY_ROOT} "
-        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}")
-    endif()
-    message(STATUS "Linking CUDA driver lib: ${CUDA_DRIVER_LIB}")
-    target_link_libraries(${target_name} PRIVATE ${CUDA_DRIVER_LIB})
-    target_link_libraries(${target_name} PRIVATE OpenGL::GL)
-    # Phase 5: NVENC API header path.  libnvidia-encode.so is dlopen()'d
-    # at runtime (no hard link) — it's in the NVIDIA driver package.
-    target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
     target_compile_definitions(${target_name} PRIVATE HYDRA_HAS_CUDA=1)
     set_property(TARGET ${target_name} PROPERTY CUDA_SEPARABLE_COMPILATION ON)
     # Allow CUDA files to find shared headers
@@ -201,15 +127,6 @@ function(_configure_swe2d_module target_name py_module_name)
     set_source_files_properties(cpp/src/swe2d_gpu_redistribute.cu PROPERTIES LANGUAGE CUDA)
     set_source_files_properties(cpp/src/pipe1d.cu PROPERTIES LANGUAGE CUDA)
     set_source_files_properties(cpp/src/swe2d_reconstruct.cu PROPERTIES LANGUAGE CUDA)
-    set_source_files_properties(cpp/src/swe2d_gpu_viewer.cu PROPERTIES LANGUAGE CUDA)
-    if(NOT WIN32)
-      set_source_files_properties(cpp/src/swe2d_gpu_viewer_interop.cu PROPERTIES LANGUAGE CUDA)
-    endif()
-    set_source_files_properties(cpp/src/swe2d_gpu_diag_ring.cu PROPERTIES LANGUAGE CUDA)
-    set_source_files_properties(cpp/src/swe2d_gpu_viewer_hud.cu PROPERTIES LANGUAGE CUDA)
-    set_source_files_properties(cpp/src/swe2d_nv_utils.cu PROPERTIES LANGUAGE CUDA)
-    set_source_files_properties(cpp/src/swe2d_gpu_viewer_nvenc.cu PROPERTIES LANGUAGE CUDA)
-    # Note: cpp/src/swe2d_ts_muxer.c is plain C — no LANGUAGE_CUDA needed.
     # Relaxed constexpr and extended lambda support for device-side std:: functions
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
@@ -235,14 +152,6 @@ function(_configure_swe2d_module target_name py_module_name)
   # Host compiler: optimize for the build machine's CPU and enable fast math
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
     if(MSVC)
-      # /O1 instead of /O2: the giant pybind11 bindings TU
-      # (swe2d_bindings.cpp — 322-line lambda body for
-      # swe2d_build_unified_mesh) hits an MSVC internal compiler
-      # error at /O2 (C1907 + INTERNAL COMPILER ERROR in cl.exe
-      # on the 62nd m.def). /O1 keeps inlining of hot pybind11
-      # template instantiations without ICE-ing the optimizer.  Cost
-      # is negligible: the bindings TU is Python-interface marshaling,
-      # not a hot numeric loop (those are in the .cu files).
       target_compile_options(${target_name} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/O1 /fp:fast>
       )
@@ -306,22 +215,3 @@ install(FILES   cpp/src/swe2d_solver.hpp
         DESTINATION hydra_swe2d/include
         COMPONENT  hydra_swe2d_development
         OPTIONAL)
-# Python shim that wires the C++ extension symbols into `import hydra_swe2d`.
-# Without this, the wheel has the .so files but no Python wrapper, so
-# `from hydra_swe2d import swe2d_deserialize_mesh` fails with
-# "(unknown location)". Dev workflow never noticed because the source
-# tree's hydra_swe2d/__init__.py was on sys.path via realpath() math.
-install(FILES   hydra_swe2d/__init__.py
-        DESTINATION hydra_swe2d
-        COMPONENT  hydra_swe2d_runtime
-        OPTIONAL)
-
-# Bundle the swe2d/ Python sources into the wheel. scikit-build-core
-# packages whatever CMake installs; without this, the wheel only has the
-# compiled C++ extension and the QGIS plugin crashes on `from swe2d.*`.
-install(DIRECTORY swe2d
-        DESTINATION .
-        COMPONENT  swe2d_sources
-        PATTERN "__pycache__" EXCLUDE
-        PATTERN "*.pyc" EXCLUDE
-        PATTERN "*.pyo" EXCLUDE)
