@@ -19,9 +19,13 @@ RELEASE_TAG = f"v{WHEEL_VERSION}"
 # first-launch BackendInstaller then downloads the matching wheel from
 # this URL into ~/.hydra2dgpu/. Override locally by setting
 # HYDRA_SWE2D_WHEEL_URL — useful for CI smoke tests.
+#
+# GitHub release assets are served under /releases/download/<tag>/<name>,
+# NOT /releases/<tag>/<name> (the latter 404s). The trailing
+# "/releases/download" is part of the download base.
 GITHUB_RELEASES = os.environ.get(
     "HYDRA_SWE2D_WHEEL_URL",
-    "https://github.com/aspragueumkc/hydra2dgpu/releases",
+    "https://github.com/aspragueumkc/hydra2dgpu/releases/download",
 )
 ENV_DIR_NAME = ".hydra2dgpu"
 CACHE_DIR_ENV = "HYDRA2DGPU_CACHE_DIR"
@@ -102,30 +106,37 @@ class BackendInstaller:
         a clear 404 in the install dialog.
         """
         names = self._wheel_candidates()
-        if GITHUB_RELEASES.startswith("http://127.0.0.1"):
+        base = GITHUB_RELEASES.rstrip("/")
+        if base.startswith("http://127.0.0.1"):
             # Local QA mirror — probe is meaningless; take the first.
-            return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
+            return f"{base}/{RELEASE_TAG}/{names[0]}"
+        # GitHub release pages are /github.com/<owner>/<repo>/releases[/download]
+        # — derive the API owner/repo from the path so HYDRA_SWE2D_WHEEL_URL
+        # overrides keep working regardless of the trailing segment.
+        segments = base.split("/")
+        try:
+            gh = segments.index("github.com")
+            owner, repo = segments[gh + 1], segments[gh + 2]
+        except (ValueError, IndexError):
+            owner = repo = None
+        if not owner or not repo:
+            return f"{base}/{RELEASE_TAG}/{names[0]}"
         try:
             from urllib.request import urlopen
             from urllib.error import URLError
-            api = (
-                f"https://api.github.com/repos/"
-                f"{GITHUB_RELEASES.rstrip('/').split('/')[-2]}/"
-                f"{GITHUB_RELEASES.rstrip('/').split('/')[-1]}/"
-                f"releases/tags/{RELEASE_TAG}"
-            )
+            api = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{RELEASE_TAG}"
             with urlopen(api, timeout=15) as resp:
                 import json
                 data = json.loads(resp.read().decode("utf-8"))
             assets = {a["name"] for a in data.get("assets", [])}
         except (URLError, TimeoutError, ValueError, KeyError):
-            return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
+            return f"{base}/{RELEASE_TAG}/{names[0]}"
         for name in names:
             if name in assets:
-                return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{name}"
+                return f"{base}/{RELEASE_TAG}/{name}"
         # Probe succeeded but no candidate matched — fall back to the
         # newest one and let pip surface a useful 404.
-        return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
+        return f"{base}/{RELEASE_TAG}/{names[0]}"
 
     def install(self, progress: ProgressFn) -> None:
         env = self.env_dir()
