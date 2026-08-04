@@ -164,11 +164,11 @@ function(_configure_swe2d_module target_name py_module_name)
     find_library(CUDA_DRIVER_LIB cuda)
     if(NOT CUDA_DRIVER_LIB)
       # Build environments (manylinux containers, wheel CI runners) have no
-      # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub —
+      # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
+      # (${CUDAToolkit_LIBRARY_DIR}/stubs works on Linux and Windows) —
       # runtime symbol resolution happens against the user's driver.
       find_library(CUDA_DRIVER_LIB cuda
-        PATHS /usr/local/cuda/lib64/stubs
-              "$ENV{CUDA_PATH}/lib/x64/stubs"
+        PATHS "${CUDAToolkit_LIBRARY_DIR}/stubs"
         NO_DEFAULT_PATH)
     endif()
     if(NOT CUDA_DRIVER_LIB)

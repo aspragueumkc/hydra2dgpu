@@ -67,6 +67,10 @@ jobs:
           # to a host file from inside the container (no effect) and
           # `which nvcc` under set -e killed the before-build when the
           # yum install had silently failed.
+          # The wheel links libcuda.so.1 (NVIDIA driver) which never exists
+          # in the build container — exclude it from auditwheel repair so
+          # the manylinux tag applies (the driver resolves at runtime).
+          CIBW_REPAIR_LINUX: "auditwheel repair -w {dest_dir} {wheel} --exclude libcuda.so.1"
           CIBW_ENVIRONMENT_LINUX: "CUDACXX=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda"
           # No Windows before-build needed: the Jimver action adds
           # CUDA\v12.4\bin (nvcc.exe) to PATH, so CMake finds it; the old
