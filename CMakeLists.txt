@@ -168,6 +168,7 @@ function(_configure_swe2d_module target_name py_module_name)
       # (runtime symbol resolution happens against the user's driver).
       # NOTE: no GLOB_RECURSE with '*' in intermediate path components —
       # GLOB_RECURSE does not expand those.
+      file(GLOB _cuda_libx64 "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/*")
       set(_cuda_stub_hits)
       file(GLOB _cuda_stub_hits
         "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/stubs/cuda.lib"
@@ -182,7 +183,8 @@ function(_configure_swe2d_module target_name py_module_name)
     if(NOT CUDA_DRIVER_LIB)
       message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
         "CUDAToolkit_LIBRARY_ROOT=${CUDAToolkit_LIBRARY_ROOT} "
-        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}")
+        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES} "
+        "lib/x64=${_cuda_libx64} stubs=${_cuda_stub_hits}")
     endif()
     message(STATUS "Linking CUDA driver lib: ${CUDA_DRIVER_LIB}")
     target_link_libraries(${target_name} PRIVATE ${CUDA_DRIVER_LIB})
