@@ -1072,9 +1072,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 cudaFreeHost(p);
             });
             // C-contiguous layout (height, width, 4) — pybind11 infers
-            // the strides from the shape.  Use std::vector<ssize_t>
+            // the strides from the shape.  Use std::vector<py::ssize_t>
             // explicitly since ShapeContainer is a vector alias.
-            std::vector<ssize_t> shape = {(ssize_t)height, (ssize_t)width, 4};
+            std::vector<py::ssize_t> shape = {(py::ssize_t)height, (py::ssize_t)width, 4};
             py::array_t<uint8_t> arr(shape, h_rgba, capsule);
             py::dict out;
             out["image"] = arr;
