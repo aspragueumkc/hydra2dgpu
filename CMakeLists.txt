@@ -215,3 +215,12 @@ install(FILES   cpp/src/swe2d_solver.hpp
         DESTINATION hydra_swe2d/include
         COMPONENT  hydra_swe2d_development
         OPTIONAL)
+# Python shim that wires the C++ extension symbols into `import hydra_swe2d`.
+# Without this, the wheel has the .so files but no Python wrapper, so
+# `from hydra_swe2d import swe2d_deserialize_mesh` fails with
+# "(unknown location)". Dev workflow never noticed because the source
+# tree's hydra_swe2d/__init__.py was on sys.path via realpath() math.
+install(FILES   hydra_swe2d/__init__.py
+        DESTINATION hydra_swe2d
+        COMPONENT  hydra_swe2d_runtime
+        OPTIONAL)

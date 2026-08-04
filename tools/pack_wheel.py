@@ -166,16 +166,21 @@ def _write_dist_info(
 
     _stage_license(src_root, dist_info)
 
-    # RECORD — sha256+size for every file in the wheel except dist-info
+    # RECORD — sha256+size for every file in the wheel. Per PEP 427 every
+    # file must be listed except RECORD itself (which appears with an empty
+    # hash+size as the last entry). dist-info/* files (METADATA, WHEEL,
+    # entry_points.txt, top_level.txt, licenses/LICENSE) ARE included — a
+    # wheel whose RECORD omits them makes pip reject the install.
     record_lines: list[str] = []
+    record_rel = f"{dist_info.name}/RECORD"
     for path in sorted(p for p in staging_dir.rglob("*") if p.is_file()):
-        if path.is_relative_to(dist_info):
-            continue
         rel = path.relative_to(staging_dir).as_posix()
+        if rel == record_rel:
+            continue
         data = path.read_bytes()
         sha = hashlib.sha256(data).hexdigest()
         record_lines.append(f"{rel},sha256={sha},{len(data)}")
-    record_lines.append(f"{dist_info.name}/RECORD,,")
+    record_lines.append(f"{record_rel},,")
     (dist_info / "RECORD").write_text(
         "\n".join(record_lines) + "\n", encoding="utf-8",
     )
