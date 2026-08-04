@@ -83,7 +83,6 @@ class RunController:
         self._current_run_id = ""
         self._batch_manager = None
         self._batch_dialog = None
-        self._gpu_viewer_dialogs = []  # phase 6: keep refs alive
 
     @property
     def batch_manager(self):
@@ -682,97 +681,6 @@ class RunController:
         if self._simulation_worker is not None:
             self._simulation_worker.request_cancel()
         view._log("Cancellation requested...")
-
-    # ── GPU Direct Viewer (Phase 6) ───────────────────────────────────
-    def open_gpu_direct_viewer(self, mesh_data, parent) -> None:
-        """Open the standalone GPU Direct Viewer dialog.
-
-        Owns the keep-alive list for the dialog so Python's GC doesn't
-        drop it while the user is interacting.  Multiple opens are
-        allowed (each becomes a separate dialog).  Falls back to the
-        install dialog if the hydra-swe2d backend isn't available.
-
-        The dialog is GPU-direct only (no CPU rasterizer fallback —
-        the high-perf canvas overlay covers that case).  When a
-        simulation is currently running, the active ``SimulationWorker``
-        owns the underlying ``SWE2DSolver`` whose device pointer is
-        registered with CUDA-OpenGL interop.  Outside a run, the
-        dialog opens with no live data and shows "waiting for run…".
-
-        Parameters mirror ``GPUViewerDialog.__init__``:
-            mesh_data  dict with cell_x / cell_y arrays (may be empty
-                        for a dialog opened before a simulation loads)
-            parent     Qt widget (typically the workbench dialog)
-        """
-        view = self._view
-        from qgis.PyQt import QtWidgets as _QtWidgets
-        try:
-            from swe2d.workbench.views.gpu_viewer_dialog import (
-                GPUViewerDialog,
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).error(
-                "GPU Direct Viewer import failed: %s", exc,
-            )
-            QtWidgets.QMessageBox.warning(
-                parent,
-                "HYDRA2DGPU",
-                f"GPU Direct Viewer import failed: {exc}",
-            )
-            return
-        # Resolve the active solver / worker, if any.  The GL render
-        # path needs a real PySolver to fetch the dev_ptr; without it
-        # the widget stays idle (waiting message).  No CPU fallback
-        # path — that responsibility belongs to the high-perf canvas
-        # overlay.
-        active_solver = None
-        if self._simulation_worker is not None and self._simulation_worker.isRunning():
-            active_solver = self._simulation_worker.get_active_solver()
-            if active_solver is not None:
-                view._log(
-                    "GPU Direct Viewer: using GPU-direct (zero-D2H) path."
-                )
-            else:
-                view._log(
-                    "GPU Direct Viewer: run in progress but solver "
-                    "not yet exposed — waiting."
-                )
-        else:
-            view._log(
-                "GPU Direct Viewer: no active run — dialog will wait."
-            )
-        try:
-            dlg = GPUViewerDialog(
-                mesh_data=mesh_data, parent=parent,
-                # Callable so the widget picks up the solver when a run
-                # starts AFTER the dialog was opened (common workflow).
-                get_solver_fn=lambda: (
-                    self._simulation_worker.get_active_solver()
-                    if self._simulation_worker is not None
-                    and self._simulation_worker.isRunning()
-                    else None
-                ),
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).error(
-                "GPU Direct Viewer init failed: %s", exc,
-            )
-            QtWidgets.QMessageBox.warning(
-                parent,
-                "HYDRA2DGPU",
-                f"GPU Direct Viewer init failed: {exc}",
-            )
-            return
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
-        # Keep alive — drop on close.
-        self._gpu_viewer_dialogs.append(dlg)
-        dlg.destroyed.connect(
-            lambda _ref=dlg: self._gpu_viewer_dialogs.remove(_ref)
-            if _ref in self._gpu_viewer_dialogs else None
-        )
-        view._log("GPU Direct Viewer opened.")
 
     # ── Batch simulation dialog ──────────────────────────────────────
     def open_batch_simulation_dialog(self) -> None:

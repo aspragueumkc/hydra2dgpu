@@ -81,10 +81,11 @@ class Sink(Protocol):
     def backend_ready(self, backend: Any) -> None:
         """Called once the active SWE2DBackend has been built and initialized.
 
-        Used by the GPU Direct Viewer to grab the live solver handle
-        (``backend._solver_h``) so the GL render path can register the
-        device pointer with the GL texture.  Optional — sinks that don't
-        need it (CLI loggers, mocks) don't have to implement it.
+        Used by the simulation worker to stash the backend reference on
+        the sink so GUI consumers (snapshot, results readback) can grab
+        the live solver handle without going through the worker.
+        Optional — sinks that don't need it (CLI loggers, mocks) don't
+        have to implement it.
         """
         ...
 

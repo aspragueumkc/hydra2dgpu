@@ -51,11 +51,6 @@ Authoritative plans and specs currently in flight. Authoritative history (comple
 | [MCP Phase 3 — Behavioral GUI Testing Implementation Plan](plans/2026-07-24-mcp-phase3-behavioral-gui-testing.md) | 2026-07-24 | MCP Phase 3 — QTest-driven behavioral GUI tools (click/key/run/screenshot) |
 | [HYDRA MCP Server Plan — Agent-Assisted Production Use, Testing & Design](plans/HYDRA_MCP_SERVER_PLAN.md) | 2026-07-24 | Original 6-phase MCP server plan (agent-assisted production use + GUI testing) |
 | [Docs Lifecycle Migration Implementation Plan](plans/2026-07-25-docs-lifecycle-migration.md) | 2026-07-25 | THIS PLAN — restructure docs/{plans,specs}/ + docs/archive/ with frontmatter |
-| [GPU-Direct Viewer Implementation Plan](plans/2026-07-26-gpu-direct-viewer.md) | 2026-07-26 | Phase 1 — LiveSnapshotReader + GPUViewerDialog + MCP tools (`gpu_viewer_open` / `_set_field` / `_read_snapshot` / `_screenshot`) — **superseded by Phase 2** |
-| [GPU-Direct Viewer Phase 2 — CLI Headless Renderer](plans/2026-07-26-gpu-direct-viewer-phase2-cli.md) | 2026-07-26 | CUDA color kernel + `hydra_viewer` CLI (`single` / `multi` / `live` modes → PNG) — **superseded by Phase 3** |
-| [GPU-Direct Viewer Phase 3 — CUDA-OpenGL Interop](plans/2026-07-26-gpu-direct-viewer-phase3-interop.md) | 2026-07-26 | Driver-API interop (`cuGraphicsGLRegisterImage` in `libcuda.so`) + `GPUViewerGLWidget` (QOpenGLWidget) + dialog wiring for zero-D2H GUI render — **superseded by Phase 4** |
-| [GPU-Direct Viewer Phase 4 — HUD + Diagnostic Ring](plans/2026-07-26-gpu-direct-viewer-phase4-hud.md) | 2026-07-26 | `DiagRecord` device ring buffer (`swe2d_gpu_push_diag` / `_read_latest_diag`) + HUD render kernel with embedded 5×7 font + on-screen diagnostic overlay — **superseded by Phase 5** |
-| [GPU-Direct Viewer Phase 5 — NVENC Recording](plans/2026-07-26-gpu-direct-viewer-phase5-nvenc.md) | 2026-07-26 | Direct NVENC H.264 hardware encoding + custom 200-line MPEG-TS muxer (zero D2H for the encoded bitstream; live-streaming capable: pause/buffer/seek/FF/RW) |
 
 ### Active Specs
 

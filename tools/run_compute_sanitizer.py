@@ -47,8 +47,6 @@ GPU_TESTS = [
     ("drainage_network", "tests.test_swe2d_gpu_drainage_network"),
     ("coupling_kernel", "tests.test_swe2d_gpu_coupling_kernel"),
     ("full_solver_structures", "tests.test_swe2d_gpu_full_solver_structures"),
-    ("viewer_interop", "tests.test_swe2d_gpu_viewer_interop"),
-    ("viewer_interop_egl", "tests.test_swe2d_gpu_viewer_interop_egl"),
 ]
 
 SANITIZER_TOOLS = ["memcheck", "racecheck", "initcheck", "synccheck"]

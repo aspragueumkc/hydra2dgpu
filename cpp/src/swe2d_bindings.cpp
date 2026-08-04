@@ -719,6 +719,279 @@ struct PySolver {
 #define HYDRA_SWE2D_PY_MODULE_NAME hydra_swe2d
 #endif
 
+// Helper for the giant ``swe2d_build_unified_mesh`` m.def (40+ args, ~260-line
+// body).  Hoisted out of the pybind11 lambda so MSVC's optimizer doesn't ICE
+// at /O2 on the 47th m.def's monomorphized template — the body is plain
+// Python-side glue that defers all real work to ``swe2d_build_pipe1d_mesh``.
+// Returns void; matches the old lambda's signature byte-for-byte so the
+// m.def wrapper below preserves keyword names + defaults + docstring.
+static void swe2d_build_unified_mesh_impl(
+    uintptr_t dev_ptr,
+    int32_t n_links,
+    py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_from,
+    py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_to,
+    py::array_t<double, py::array::c_style|py::array::forcecast> L,
+    py::array_t<double, py::array::c_style|py::array::forcecast> D,
+    py::array_t<double, py::array::c_style|py::array::forcecast> n_mann,
+    py::array_t<double, py::array::c_style|py::array::forcecast> S0,
+    py::array_t<double, py::array::c_style|py::array::forcecast> node_invert,
+    py::object node_inlet_loss_k_obj = py::none(),
+    py::object node_outlet_loss_k_obj = py::none(),
+    int32_t n_manhole_cells = 0,
+    py::object manhole_node_ids = py::none(),
+    py::object manhole_invert = py::none(),
+    py::object manhole_surface_area = py::none(),
+    py::object manhole_max_depth = py::none(),
+    py::object manhole_rim = py::none(),
+    py::object manhole_diameter = py::none(),
+    int32_t n_inlet_cells = 0,
+    py::object inlet_node_ids = py::none(),
+    py::object inlet_invert = py::none(),
+    py::object inlet_surface_area = py::none(),
+    py::object inlet_max_depth = py::none(),
+    py::object inlet_diameter = py::none(),
+    py::object inlet_cell_length_obj = py::none(),
+    py::object inlet_cell_width_obj = py::none(),
+    py::object mcl_obj = py::none(),
+    double grav_slot_cfl = 0.0,
+    py::object node_is_outfall = py::none(),
+    int32_t n_pipe_ends = 0,
+    py::object pipe_end_node_ids = py::none(),
+    py::object link_shape_type_obj = py::none(),
+    py::object link_width_obj = py::none(),
+    py::object link_height_obj = py::none(),
+    py::object link_inlet_loss_k_obj = py::none(),
+    py::object link_outlet_loss_k_obj = py::none(),
+    py::object link_upstream_offset_obj = py::none(),
+    py::object link_downstream_offset_obj = py::none(),
+    py::object inlet_face_node_obj = py::none(),
+    py::object inlet_face_2d_cell_obj = py::none(),
+    py::object inlet_face_type_obj = py::none(),
+    py::object inlet_face_grate_len_obj = py::none(),
+    py::object inlet_face_grate_wid_obj = py::none(),
+    py::object inlet_face_grate_open_obj = py::none(),
+    py::object inlet_face_curb_len_obj = py::none(),
+    py::object inlet_face_curb_ht_obj = py::none(),
+    py::object inlet_face_curb_throat_obj = py::none(),
+    py::object inlet_face_slot_len_obj = py::none(),
+    py::object inlet_face_slot_wid_obj = py::none(),
+    py::object inlet_face_crest_obj = py::none(),
+    py::object inlet_face_cd_obj = py::none(),
+    py::object inlet_face_qmax_obj = py::none())
+{
+    auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+
+    // Compute link_invert_in/out from node_invert and link topology,
+    // plus optional per-link upstream/downstream offsets (e.g. when a
+    // pipe's invert sits above its node's invert elevation).
+    auto lf = link_from.unchecked<1>();
+    auto lt = link_to.unchecked<1>();
+    auto ni = node_invert.unchecked<1>();
+    std::vector<double> link_invert_in(n_links);
+    std::vector<double> link_invert_out(n_links);
+    // Parse optional offset arrays
+    auto to_f64_ptr_l = [](const py::object& o) -> const double* {
+        if (o.is_none()) return nullptr;
+        auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
+        return (arr.size() > 0) ? arr.data() : nullptr;
+    };
+    const double* up_off = to_f64_ptr_l(link_upstream_offset_obj);
+    const double* dn_off = to_f64_ptr_l(link_downstream_offset_obj);
+    for (int32_t i = 0; i < n_links; ++i) {
+        link_invert_in[i]  = ni(lf(i)) + (up_off ? up_off[i] : 0.0);
+        link_invert_out[i] = ni(lt(i)) + (dn_off ? dn_off[i] : 0.0);
+    }
+
+    // Default loss coefficients (zero), node surface area / max depth
+    std::vector<double> default_loss(n_links, 0.0);
+    int32_t n_nodes = static_cast<int32_t>(ni.size());
+    std::vector<double> default_nsa(n_nodes, 1.0e10);
+    std::vector<double> default_nmd(n_nodes, 10.0);
+
+    // Helpers for optional arrays
+    auto to_i32_ptr = [](const py::object& o) -> const int32_t* {
+        if (o.is_none()) return nullptr;
+        auto arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(o);
+        return (arr.size() > 0) ? arr.data() : nullptr;
+    };
+    auto to_f64_ptr = [](const py::object& o) -> const double* {
+        if (o.is_none()) return nullptr;
+        auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
+        return (arr.size() > 0) ? arr.data() : nullptr;
+    };
+    auto i32_sz = [](const py::object& o) -> int32_t {
+        if (o.is_none()) return 0;
+        return static_cast<int32_t>(py::cast<py::array_t<int32_t>>(o).size());
+    };
+    auto f64_size = [](const py::object& o) -> int32_t {
+        if (o.is_none()) return 0;
+        return static_cast<int32_t>(py::cast<py::array_t<double>>(o).size());
+    };
+
+    // Per-link max_cell_length: accept scalar float (broadcast to n_links)
+    // or per-link array.  If absent (None), nullptr disables subdivision.
+    std::vector<double> link_mcl_broadcast;
+    const double* link_mcl_ptr = nullptr;
+    if (!mcl_obj.is_none()) {
+        if (py::isinstance<py::float_>(mcl_obj) || py::isinstance<py::int_>(mcl_obj)) {
+            link_mcl_broadcast.assign(n_links, py::cast<double>(mcl_obj));
+            link_mcl_ptr = link_mcl_broadcast.data();
+        } else {
+            link_mcl_ptr = to_f64_ptr(mcl_obj);
+        }
+    }
+
+    // Convert manhole structure params → volume-equivalent rectangular
+    std::vector<double> m_cl, m_cw, m_ch;
+    const double* m_cl_p = nullptr, *m_cw_p = nullptr, *m_ch_p = nullptr;
+    if (n_manhole_cells > 0) {
+        auto md = py::cast<py::array_t<double>>(manhole_diameter).unchecked<1>();
+        auto mh = py::cast<py::array_t<double>>(manhole_max_depth).unchecked<1>();
+        m_cl.resize(n_manhole_cells); m_cw.resize(n_manhole_cells); m_ch.resize(n_manhole_cells);
+        for (int32_t i = 0; i < n_manhole_cells; ++i) {
+            double d = md(i);
+            m_cl[i] = d;
+            m_cw[i] = M_PI * d / 4.0;
+            m_ch[i] = mh(i);
+        }
+        m_cl_p = m_cl.data(); m_cw_p = m_cw.data(); m_ch_p = m_ch.data();
+    }
+
+    // Convert inlet structure params → volume-equivalent rectangular
+    std::vector<double> i_cl, i_cw, i_ch;
+    const double* i_cl_p = nullptr, *i_cw_p = nullptr, *i_ch_p = nullptr;
+    const double* i_cell_len_in = to_f64_ptr(inlet_cell_length_obj);
+    const double* i_cell_wid_in = to_f64_ptr(inlet_cell_width_obj);
+    int32_t n_cell_len = f64_size(inlet_cell_length_obj);
+    int32_t n_cell_wid = f64_size(inlet_cell_width_obj);
+    if (n_inlet_cells > 0) {
+        auto id = py::cast<py::array_t<double>>(inlet_diameter).unchecked<1>();
+        auto ih = py::cast<py::array_t<double>>(inlet_max_depth).unchecked<1>();
+        i_cl.resize(n_inlet_cells); i_cw.resize(n_inlet_cells); i_ch.resize(n_inlet_cells);
+        for (int32_t i = 0; i < n_inlet_cells; ++i) {
+            double d = id(i);
+            double len = (i_cell_len_in != nullptr && i < n_cell_len) ? i_cell_len_in[i] : d;
+            double wid = (i_cell_wid_in != nullptr && i < n_cell_wid) ? i_cell_wid_in[i] : M_PI * d / 4.0;
+            i_cl[i] = len;
+            i_cw[i] = wid;
+            i_ch[i] = ih(i);
+        }
+        i_cl_p = i_cl.data(); i_cw_p = i_cw.data(); i_ch_p = i_ch.data();
+    }
+
+    // Build node classification arrays from optional inputs.
+    // Default: all zeros → WALL boundary (zero flux).
+    std::vector<int32_t> node_class_vec(n_nodes, 0);
+
+    // node_is_outfall
+    const int32_t* outfall_ptr = nullptr;
+    if (!node_is_outfall.is_none()) {
+        auto of_arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(node_is_outfall);
+        if (of_arr.size() >= n_nodes) {
+            outfall_ptr = of_arr.data();
+        }
+    }
+    if (outfall_ptr == nullptr) {
+        // Default to all zeros → no outfalls (WALL boundary)
+        outfall_ptr = node_class_vec.data();
+    }
+
+    // node_is_inlet: derived from inlet_node_ids
+    std::vector<int32_t> inlet_class_vec;
+    const int32_t* inlet_class_ptr = nullptr;
+    if (n_inlet_cells > 0) {
+        inlet_class_vec.assign(n_nodes, 0);
+        auto in_ids = py::cast<py::array_t<int32_t>>(inlet_node_ids).unchecked<1>();
+        for (int32_t i = 0; i < n_inlet_cells; ++i) {
+            int32_t ni = in_ids(i);
+            if (ni >= 0 && ni < n_nodes) inlet_class_vec[ni] = 1;
+        }
+        inlet_class_ptr = inlet_class_vec.data();
+    }
+    // else: keep nullptr → no INLET_BC faces
+
+    // node_is_pipe_end: derived from pipe_end_node_ids
+    std::vector<int32_t> pipe_end_class_vec;
+    const int32_t* pipe_end_class_ptr = nullptr;
+    if (n_pipe_ends > 0) {
+        pipe_end_class_vec.assign(n_nodes, 0);
+        auto pe_ids = py::cast<py::array_t<int32_t>>(pipe_end_node_ids).unchecked<1>();
+        for (int32_t i = 0; i < n_pipe_ends; ++i) {
+            int32_t ni = pe_ids(i);
+            if (ni >= 0 && ni < n_nodes) pipe_end_class_vec[ni] = 1;
+        }
+        pipe_end_class_ptr = pipe_end_class_vec.data();
+    }
+
+    // link_inlet_loss_k / link_outlet_loss_k — optional per-link loss coefficients
+    const double* link_inlet_loss_k_ptr = nullptr;
+    const double* link_outlet_loss_k_ptr = nullptr;
+    if (!link_inlet_loss_k_obj.is_none()) {
+        auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_inlet_loss_k_obj);
+        if (arr.size() >= n_links) {
+            link_inlet_loss_k_ptr = arr.data();
+        }
+    }
+    if (!link_outlet_loss_k_obj.is_none()) {
+        auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_outlet_loss_k_obj);
+        if (arr.size() >= n_links) {
+            link_outlet_loss_k_ptr = arr.data();
+        }
+    }
+    // Fallback to zero loss if not provided
+    if (link_inlet_loss_k_ptr == nullptr) link_inlet_loss_k_ptr = default_loss.data();
+    if (link_outlet_loss_k_ptr == nullptr) link_outlet_loss_k_ptr = default_loss.data();
+
+    // Per-node entrance/exit loss coefficients (optional, may be null)
+    const double* node_inlet_loss_k_ptr = to_f64_ptr(node_inlet_loss_k_obj);
+    const double* node_outlet_loss_k_ptr = to_f64_ptr(node_outlet_loss_k_obj);
+
+    swe2d_build_pipe1d_mesh(
+        n_links,
+        link_from.data(), link_to.data(),
+        L.data(), D.data(), n_mann.data(),
+        link_inlet_loss_k_ptr, link_outlet_loss_k_ptr,
+        node_invert.data(),
+        node_inlet_loss_k_ptr,
+        node_outlet_loss_k_ptr,
+        default_nsa.data(), default_nmd.data(),
+        link_invert_in.data(), link_invert_out.data(),
+        link_mcl_ptr,
+        grav_slot_cfl,
+        to_i32_ptr(link_shape_type_obj),
+        to_f64_ptr(link_width_obj),
+        to_f64_ptr(link_height_obj),
+        &dev->pipe1d,
+        i32_sz(manhole_node_ids), to_i32_ptr(manhole_node_ids),
+        m_cl_p, m_cw_p, m_ch_p,
+        i32_sz(inlet_node_ids), to_i32_ptr(inlet_node_ids),
+        i_cl_p, i_cw_p, i_ch_p,
+        outfall_ptr,
+        inlet_class_ptr,
+        pipe_end_class_ptr,
+        dev->n_cells,
+        i32_sz(inlet_face_node_obj), to_i32_ptr(inlet_face_node_obj),
+        to_i32_ptr(inlet_face_2d_cell_obj),
+        to_i32_ptr(inlet_face_type_obj),
+        to_f64_ptr(inlet_face_grate_len_obj),
+        to_f64_ptr(inlet_face_grate_wid_obj),
+        to_f64_ptr(inlet_face_grate_open_obj),
+        to_f64_ptr(inlet_face_curb_len_obj),
+        to_f64_ptr(inlet_face_curb_ht_obj),
+        to_f64_ptr(inlet_face_curb_throat_obj),
+        to_f64_ptr(inlet_face_slot_len_obj),
+        to_f64_ptr(inlet_face_slot_wid_obj),
+        to_f64_ptr(inlet_face_crest_obj),
+        to_f64_ptr(inlet_face_cd_obj),
+        to_f64_ptr(inlet_face_qmax_obj),
+        0, nullptr, nullptr, nullptr, 0, nullptr);
+
+    // (removed Phase 2.1): manhole_rim → d_node_rim upload path retired.
+    // Manhole rim now lives on per-cell d_cell_rim (sized [n_cells_all]
+    // indexed by manhole cell index) which is uploaded inside
+    // swe2d_build_pipe1d_mesh directly. See plan §3.3.
+}
+
 PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.doc() = "2D SWE hybrid GPU/CPU solver on unstructured polygon mesh";
 
@@ -1866,273 +2139,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     // Phase 2.5 — Python bindings for the unified (face-indexed) pipe1D API
     // ═══════════════════════════════════════════════════════════════════════════
 
-    m.def("swe2d_build_unified_mesh",
-        [](uintptr_t dev_ptr,
-           int32_t n_links,
-           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_from,
-           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_to,
-           py::array_t<double, py::array::c_style|py::array::forcecast> L,
-           py::array_t<double, py::array::c_style|py::array::forcecast> D,
-           py::array_t<double, py::array::c_style|py::array::forcecast> n_mann,
-           py::array_t<double, py::array::c_style|py::array::forcecast> S0,
-            py::array_t<double, py::array::c_style|py::array::forcecast> node_invert,
-            py::object node_inlet_loss_k_obj = py::none(),
-            py::object node_outlet_loss_k_obj = py::none(),
-            int32_t n_manhole_cells,
-           py::object manhole_node_ids,
-           py::object manhole_invert,
-           py::object manhole_surface_area,
-           py::object manhole_max_depth,
-           py::object manhole_rim,
-           py::object manhole_diameter,
-           int32_t n_inlet_cells,
-            py::object inlet_node_ids,
-            py::object inlet_invert,
-            py::object inlet_surface_area,
-            py::object inlet_max_depth,
-            py::object inlet_diameter,
-            py::object inlet_cell_length_obj = py::none(),
-            py::object inlet_cell_width_obj = py::none(),
-            py::object mcl_obj = py::none(),
-            double grav_slot_cfl = 0.0,
-            py::object node_is_outfall = py::none(),
-             int32_t n_pipe_ends = 0,
-             py::object pipe_end_node_ids = py::none(),
-             py::object link_shape_type_obj = py::none(),
-             py::object link_width_obj = py::none(),
-             py::object link_height_obj = py::none(),
-             py::object link_inlet_loss_k_obj = py::none(),
-              py::object link_outlet_loss_k_obj = py::none(),
-              py::object link_upstream_offset_obj = py::none(),
-              py::object link_downstream_offset_obj = py::none(),
-              // ── Inlet capture face params (SURFACE_2D_INLET class 4, HEC-22) ──
-             py::object inlet_face_node_obj = py::none(),
-             py::object inlet_face_2d_cell_obj = py::none(),
-             py::object inlet_face_type_obj = py::none(),
-             py::object inlet_face_grate_len_obj = py::none(),
-             py::object inlet_face_grate_wid_obj = py::none(),
-             py::object inlet_face_grate_open_obj = py::none(),
-             py::object inlet_face_curb_len_obj = py::none(),
-             py::object inlet_face_curb_ht_obj = py::none(),
-             py::object inlet_face_curb_throat_obj = py::none(),
-             py::object inlet_face_slot_len_obj = py::none(),
-             py::object inlet_face_slot_wid_obj = py::none(),
-             py::object inlet_face_crest_obj = py::none(),
-             py::object inlet_face_cd_obj = py::none(),
-             py::object inlet_face_qmax_obj = py::none()) -> void
-        {
-            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
-
-            // Compute link_invert_in/out from node_invert and link topology,
-            // plus optional per-link upstream/downstream offsets (e.g. when a
-            // pipe's invert sits above its node's invert elevation).
-            auto lf = link_from.unchecked<1>();
-            auto lt = link_to.unchecked<1>();
-            auto ni = node_invert.unchecked<1>();
-            std::vector<double> link_invert_in(n_links);
-            std::vector<double> link_invert_out(n_links);
-            // Parse optional offset arrays
-            auto to_f64_ptr_l = [](const py::object& o) -> const double* {
-                if (o.is_none()) return nullptr;
-                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
-                return (arr.size() > 0) ? arr.data() : nullptr;
-            };
-            const double* up_off = to_f64_ptr_l(link_upstream_offset_obj);
-            const double* dn_off = to_f64_ptr_l(link_downstream_offset_obj);
-            for (int32_t i = 0; i < n_links; ++i) {
-                link_invert_in[i]  = ni(lf(i)) + (up_off ? up_off[i] : 0.0);
-                link_invert_out[i] = ni(lt(i)) + (dn_off ? dn_off[i] : 0.0);
-            }
-
-            // Default loss coefficients (zero), node surface area / max depth
-            std::vector<double> default_loss(n_links, 0.0);
-            int32_t n_nodes = static_cast<int32_t>(ni.size());
-            std::vector<double> default_nsa(n_nodes, 1.0e10);
-            std::vector<double> default_nmd(n_nodes, 10.0);
-
-            // Helpers for optional arrays
-            auto to_i32_ptr = [](const py::object& o) -> const int32_t* {
-                if (o.is_none()) return nullptr;
-                auto arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(o);
-                return (arr.size() > 0) ? arr.data() : nullptr;
-            };
-            auto to_f64_ptr = [](const py::object& o) -> const double* {
-                if (o.is_none()) return nullptr;
-                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(o);
-                return (arr.size() > 0) ? arr.data() : nullptr;
-            };
-            auto i32_sz = [](const py::object& o) -> int32_t {
-                if (o.is_none()) return 0;
-                return static_cast<int32_t>(py::cast<py::array_t<int32_t>>(o).size());
-            };
-            auto f64_size = [](const py::object& o) -> int32_t {
-                if (o.is_none()) return 0;
-                return static_cast<int32_t>(py::cast<py::array_t<double>>(o).size());
-            };
-
-            // Per-link max_cell_length: accept scalar float (broadcast to n_links)
-            // or per-link array.  If absent (None), nullptr disables subdivision.
-            std::vector<double> link_mcl_broadcast;
-            const double* link_mcl_ptr = nullptr;
-            if (!mcl_obj.is_none()) {
-                if (py::isinstance<py::float_>(mcl_obj) || py::isinstance<py::int_>(mcl_obj)) {
-                    link_mcl_broadcast.assign(n_links, py::cast<double>(mcl_obj));
-                    link_mcl_ptr = link_mcl_broadcast.data();
-                } else {
-                    link_mcl_ptr = to_f64_ptr(mcl_obj);
-                }
-            }
-
-            // Convert manhole structure params → volume-equivalent rectangular
-            std::vector<double> m_cl, m_cw, m_ch;
-            const double* m_cl_p = nullptr, *m_cw_p = nullptr, *m_ch_p = nullptr;
-            if (n_manhole_cells > 0) {
-                auto md = py::cast<py::array_t<double>>(manhole_diameter).unchecked<1>();
-                auto mh = py::cast<py::array_t<double>>(manhole_max_depth).unchecked<1>();
-                m_cl.resize(n_manhole_cells); m_cw.resize(n_manhole_cells); m_ch.resize(n_manhole_cells);
-                for (int32_t i = 0; i < n_manhole_cells; ++i) {
-                    double d = md(i);
-                    m_cl[i] = d;
-                    m_cw[i] = M_PI * d / 4.0;
-                    m_ch[i] = mh(i);
-                }
-                m_cl_p = m_cl.data(); m_cw_p = m_cw.data(); m_ch_p = m_ch.data();
-            }
-
-            // Convert inlet structure params → volume-equivalent rectangular
-            std::vector<double> i_cl, i_cw, i_ch;
-            const double* i_cl_p = nullptr, *i_cw_p = nullptr, *i_ch_p = nullptr;
-            const double* i_cell_len_in = to_f64_ptr(inlet_cell_length_obj);
-            const double* i_cell_wid_in = to_f64_ptr(inlet_cell_width_obj);
-            int32_t n_cell_len = f64_size(inlet_cell_length_obj);
-            int32_t n_cell_wid = f64_size(inlet_cell_width_obj);
-            if (n_inlet_cells > 0) {
-                auto id = py::cast<py::array_t<double>>(inlet_diameter).unchecked<1>();
-                auto ih = py::cast<py::array_t<double>>(inlet_max_depth).unchecked<1>();
-                i_cl.resize(n_inlet_cells); i_cw.resize(n_inlet_cells); i_ch.resize(n_inlet_cells);
-                for (int32_t i = 0; i < n_inlet_cells; ++i) {
-                    double d = id(i);
-                    double len = (i_cell_len_in != nullptr && i < n_cell_len) ? i_cell_len_in[i] : d;
-                    double wid = (i_cell_wid_in != nullptr && i < n_cell_wid) ? i_cell_wid_in[i] : M_PI * d / 4.0;
-                    i_cl[i] = len;
-                    i_cw[i] = wid;
-                    i_ch[i] = ih(i);
-                }
-                i_cl_p = i_cl.data(); i_cw_p = i_cw.data(); i_ch_p = i_ch.data();
-            }
-
-            // Build node classification arrays from optional inputs.
-            // Default: all zeros → WALL boundary (zero flux).
-            std::vector<int32_t> node_class_vec(n_nodes, 0);
-
-            // node_is_outfall
-            const int32_t* outfall_ptr = nullptr;
-            if (!node_is_outfall.is_none()) {
-                auto of_arr = py::cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>(node_is_outfall);
-                if (of_arr.size() >= n_nodes) {
-                    outfall_ptr = of_arr.data();
-                }
-            }
-            if (outfall_ptr == nullptr) {
-                // Default to all zeros → no outfalls (WALL boundary)
-                outfall_ptr = node_class_vec.data();
-            }
-
-            // node_is_inlet: derived from inlet_node_ids
-            std::vector<int32_t> inlet_class_vec;
-            const int32_t* inlet_class_ptr = nullptr;
-            if (n_inlet_cells > 0) {
-                inlet_class_vec.assign(n_nodes, 0);
-                auto in_ids = py::cast<py::array_t<int32_t>>(inlet_node_ids).unchecked<1>();
-                for (int32_t i = 0; i < n_inlet_cells; ++i) {
-                    int32_t ni = in_ids(i);
-                    if (ni >= 0 && ni < n_nodes) inlet_class_vec[ni] = 1;
-                }
-                inlet_class_ptr = inlet_class_vec.data();
-            }
-            // else: keep nullptr → no INLET_BC faces
-
-            // node_is_pipe_end: derived from pipe_end_node_ids
-            std::vector<int32_t> pipe_end_class_vec;
-            const int32_t* pipe_end_class_ptr = nullptr;
-            if (n_pipe_ends > 0) {
-                pipe_end_class_vec.assign(n_nodes, 0);
-                auto pe_ids = py::cast<py::array_t<int32_t>>(pipe_end_node_ids).unchecked<1>();
-                for (int32_t i = 0; i < n_pipe_ends; ++i) {
-                    int32_t ni = pe_ids(i);
-                    if (ni >= 0 && ni < n_nodes) pipe_end_class_vec[ni] = 1;
-                }
-                pipe_end_class_ptr = pipe_end_class_vec.data();
-            }
-
-            // link_inlet_loss_k / link_outlet_loss_k — optional per-link loss coefficients
-            const double* link_inlet_loss_k_ptr = nullptr;
-            const double* link_outlet_loss_k_ptr = nullptr;
-            if (!link_inlet_loss_k_obj.is_none()) {
-                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_inlet_loss_k_obj);
-                if (arr.size() >= n_links) {
-                    link_inlet_loss_k_ptr = arr.data();
-                }
-            }
-            if (!link_outlet_loss_k_obj.is_none()) {
-                auto arr = py::cast<py::array_t<double, py::array::c_style|py::array::forcecast>>(link_outlet_loss_k_obj);
-                if (arr.size() >= n_links) {
-                    link_outlet_loss_k_ptr = arr.data();
-                }
-            }
-            // Fallback to zero loss if not provided
-            if (link_inlet_loss_k_ptr == nullptr) link_inlet_loss_k_ptr = default_loss.data();
-            if (link_outlet_loss_k_ptr == nullptr) link_outlet_loss_k_ptr = default_loss.data();
-
-            // Per-node entrance/exit loss coefficients (optional, may be null)
-            const double* node_inlet_loss_k_ptr = to_f64_ptr(node_inlet_loss_k_obj);
-            const double* node_outlet_loss_k_ptr = to_f64_ptr(node_outlet_loss_k_obj);
-
-            swe2d_build_pipe1d_mesh(
-                n_links,
-                link_from.data(), link_to.data(),
-                L.data(), D.data(), n_mann.data(),
-                link_inlet_loss_k_ptr, link_outlet_loss_k_ptr,
-                node_invert.data(),
-                node_inlet_loss_k_ptr,
-                node_outlet_loss_k_ptr,
-                default_nsa.data(), default_nmd.data(),
-                link_invert_in.data(), link_invert_out.data(),
-                link_mcl_ptr,
-                grav_slot_cfl,
-                to_i32_ptr(link_shape_type_obj),
-                to_f64_ptr(link_width_obj),
-                to_f64_ptr(link_height_obj),
-                &dev->pipe1d,
-                i32_sz(manhole_node_ids), to_i32_ptr(manhole_node_ids),
-                m_cl_p, m_cw_p, m_ch_p,
-                i32_sz(inlet_node_ids), to_i32_ptr(inlet_node_ids),
-                i_cl_p, i_cw_p, i_ch_p,
-                outfall_ptr,
-                inlet_class_ptr,
-                pipe_end_class_ptr,
-                dev->n_cells,
-                i32_sz(inlet_face_node_obj), to_i32_ptr(inlet_face_node_obj),
-                to_i32_ptr(inlet_face_2d_cell_obj),
-                to_i32_ptr(inlet_face_type_obj),
-                to_f64_ptr(inlet_face_grate_len_obj),
-                to_f64_ptr(inlet_face_grate_wid_obj),
-                to_f64_ptr(inlet_face_grate_open_obj),
-                to_f64_ptr(inlet_face_curb_len_obj),
-                to_f64_ptr(inlet_face_curb_ht_obj),
-                to_f64_ptr(inlet_face_curb_throat_obj),
-                to_f64_ptr(inlet_face_slot_len_obj),
-                to_f64_ptr(inlet_face_slot_wid_obj),
-                to_f64_ptr(inlet_face_crest_obj),
-                to_f64_ptr(inlet_face_cd_obj),
-                to_f64_ptr(inlet_face_qmax_obj),
-                0, nullptr, nullptr, nullptr, 0, nullptr);
-
-            // (removed Phase 2.1): manhole_rim → d_node_rim upload path retired.
-            // Manhole rim now lives on per-cell d_cell_rim (sized [n_cells_all]
-            // indexed by manhole cell index) which is uploaded inside
-            // swe2d_build_pipe1d_mesh directly. See plan §3.3.
-        },
+    m.def("swe2d_build_unified_mesh", &swe2d_build_unified_mesh_impl,
         py::arg("dev_ptr"),
         py::arg("n_links"),
         py::arg("link_from"), py::arg("link_to"),

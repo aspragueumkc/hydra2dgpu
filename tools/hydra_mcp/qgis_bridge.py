@@ -197,17 +197,6 @@ def _find_active_studio_dialog() -> Optional[Any]:
     return None
 
 
-# ── GPU Direct Viewer (Phase 1) ──────────────────────────────────────────────
-# Singleton state for the GPUViewerDialog opened by the MCP gpu_viewer_open
-# tool.  Module-level (not per-bridge) so the dialog outlives a single RPC.
-_HYDRA_GPU_VIEWER_SINGLETON: Dict[str, Any] = {}
-
-
-def _gpu_viewer_singleton() -> Dict[str, Any]:
-    """Return the active GPUViewerDialog + LiveSnapshotReader singleton."""
-    return _HYDRA_GPU_VIEWER_SINGLETON
-
-
 def _find_widget_by_name(name: str, root: Optional[QWidget] = None) -> Optional[QWidget]:
     """Find a widget anywhere under *root* (or any top-level window) by objectName."""
     if root is not None:
@@ -773,14 +762,6 @@ class HydraMcpBridge(QObject):
                 result = self._handle_set_studio_dock_tab(params)
             elif method == "list_dock_tab_pages":
                 result = self._handle_list_dock_tab_pages(params)
-            elif method == "gpu_viewer_open":
-                result = self._handle_gpu_viewer_open(params)
-            elif method == "gpu_viewer_set_field":
-                result = self._handle_gpu_viewer_set_field(params)
-            elif method == "gpu_viewer_read_snapshot":
-                result = self._handle_gpu_viewer_read_snapshot(params)
-            elif method == "gpu_viewer_screenshot":
-                result = self._handle_gpu_viewer_screenshot(params)
             else:
                 self._send_error(socket, msg_id, -32601, f"unknown method: {method}")
                 return
@@ -1526,66 +1507,6 @@ class HydraMcpBridge(QObject):
         return _resolve_root_widget(root_name)
 
     # ── GPU Direct Viewer handlers (Phase 1) ──────────────────────────────
-
-    def _handle_gpu_viewer_open(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Open the standalone GPUViewerDialog and store in singleton."""
-        from swe2d.workbench.views.gpu_viewer_dialog import GPUViewerDialog
-        from swe2d.workbench.services.live_snapshot_reader import LiveSnapshotReader
-
-        mesh_data = params.get("mesh_data") or {}
-        solver = params.get("solver")  # caller may pass a solver handle
-        reader = LiveSnapshotReader(solver=solver)
-        dlg = GPUViewerDialog(reader=reader, mesh_data=mesh_data)
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
-        _HYDRA_GPU_VIEWER_SINGLETON["dlg"] = dlg
-        _HYDRA_GPU_VIEWER_SINGLETON["reader"] = reader
-        _HYDRA_GPU_VIEWER_SINGLETON["mesh_data"] = mesh_data
-        return {"ok": True, "field": dlg.get_field()}
-
-    def _handle_gpu_viewer_set_field(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Set the field on the open viewer."""
-        dlg = _HYDRA_GPU_VIEWER_SINGLETON.get("dlg")
-        if dlg is None:
-            raise RuntimeError("no GPU viewer open; call gpu_viewer_open first")
-        field = params.get("field")
-        if field not in ("depth", "speed"):
-            raise RuntimeError(f"invalid field {field!r}; must be 'depth' or 'speed'")
-        dlg.set_field(field)
-        return {"ok": True, "field": dlg.get_field()}
-
-    def _handle_gpu_viewer_read_snapshot(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Read the latest snapshot as base64-encoded numpy arrays."""
-        import base64
-        reader = _HYDRA_GPU_VIEWER_SINGLETON.get("reader")
-        if reader is None:
-            raise RuntimeError("no GPU viewer open; call gpu_viewer_open first")
-        snap = reader.read_latest()
-        if not snap:
-            return {"ok": False, "error": "no snapshot available (no run in progress?)"}
-        return {
-            "ok": True,
-            "t_s": float(snap["t_s"]),
-            "n_cells": int(snap["h"].size),
-            "h_b64":  base64.b64encode(bytes(snap["h"])).decode("ascii"),
-            "hu_b64": base64.b64encode(bytes(snap["hu"])).decode("ascii"),
-            "hv_b64": base64.b64encode(bytes(snap["hv"])).decode("ascii"),
-        }
-
-    def _handle_gpu_viewer_screenshot(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Screenshot the open viewer to *out_path*."""
-        dlg = _HYDRA_GPU_VIEWER_SINGLETON.get("dlg")
-        if dlg is None:
-            raise RuntimeError("no GPU viewer open; call gpu_viewer_open first")
-        out_path = params.get("out_path")
-        if not out_path:
-            raise RuntimeError("out_path is required")
-        fmt = (params.get("format") or "png").upper()
-        pixmap = dlg.grab()
-        ok = pixmap.save(out_path, fmt)
-        return {"ok": bool(ok), "out_path": out_path, "format": fmt}
-
 
 _HYDRA_MCP_BRIDGE_INSTANCE: Optional["HydraMcpBridge"] = None
 
