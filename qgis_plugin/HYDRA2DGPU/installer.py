@@ -12,7 +12,7 @@ import venv
 from pathlib import Path
 from typing import Callable
 
-WHEEL_VERSION = "1.3.0"
+WHEEL_VERSION = "0.3.0"
 RELEASE_TAG = f"v{WHEEL_VERSION}"
 # Source of truth for the wheel download URL. The plugin zip (built by
 # tools/package_plugin.py) is installed by the QGIS Plugin Manager; the

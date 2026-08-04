@@ -100,7 +100,7 @@ def main() -> int:
     name = _plugin_name()
     version = _plugin_version()
     OUT_DIR.mkdir(exist_ok=True)
-    # The versioned filename (e.g. HYDRA2DGPU-1.3.0.zip) is the single
+    # The versioned filename (e.g. HYDRA2DGPU-0.3.0.zip) is the single
     # release asset. QGIS identifies the plugin by the top-level folder
     # inside the zip (which always matches metadata.txt::name=), not by
     # the zip's own filename. Stale zips from previous versions are

@@ -41,7 +41,7 @@ the GPU backend for you on first launch.
 1. **Download** `HYDRA2DGPU-<version>.zip` from
    [GitHub Releases](https://github.com/aspragueumkc/hydra2dgpu/releases).
    The asset is named with the plugin version (e.g.
-   `HYDRA2DGPU-1.3.0.zip`) so you can tell which release it belongs to.
+   `HYDRA2DGPU-0.3.0.zip`) so you can tell which release it belongs to.
 
    > The plugin is **not** in the official QGIS plugin repository yet; use
    > the GitHub release zip and QGIS's *Install from ZIP* flow described
