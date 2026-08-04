@@ -166,14 +166,14 @@ function(_configure_swe2d_module target_name py_module_name)
       # Build environments (manylinux containers, wheel CI runners) have no
       # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
       # (runtime symbol resolution happens against the user's driver).
-      # Locate it by globbing the toolkit root — the module/env variables
-      # are unreliable inside scikit-build-core's cmake subprocess.
+      # NOTE: no GLOB_RECURSE with '*' in intermediate path components —
+      # GLOB_RECURSE does not expand those.
       set(_cuda_stub_hits)
-      file(GLOB_RECURSE _cuda_stub_hits
-        "${CUDAToolkit_LIBRARY_ROOT}/stubs/cuda*"
-        "${CUDAToolkit_LIBRARY_ROOT}/lib/*/stubs/cuda*"
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/*/lib/*/stubs/cuda*"
-        "/usr/local/cuda*/lib64/stubs/libcuda*")
+      file(GLOB _cuda_stub_hits
+        "${CUDAToolkit_LIBRARY_ROOT}/lib/x64/stubs/cuda.lib"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/lib/x64/stubs/cuda.lib"
+        "/usr/local/cuda/lib64/stubs/libcuda.so"
+        "/usr/local/cuda-12.4/lib64/stubs/libcuda.so")
       list(LENGTH _cuda_stub_hits _cuda_stub_count)
       if(_cuda_stub_count GREATER 0)
         list(GET _cuda_stub_hits 0 CUDA_DRIVER_LIB)
