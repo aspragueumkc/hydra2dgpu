@@ -68,7 +68,10 @@ jobs:
 
   # ── Build + unit tests (requires hydra_swe2d native module) ───────────
   build-and-cpu-tests:
-    runs-on: ubuntu-latest
+    # Pin 22.04: Jimver/cuda-toolkit's network method fails on 24.04
+    # (sudo exit 100 during the NVIDIA repo install).  build-wheels.yml
+    # uses the same 22.04 + action combo successfully.
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
 
@@ -126,11 +129,21 @@ jobs:
       run: |
         bash tests/run_headless_qgis_tests.sh --qgis
 
+    - name: Provision QGIS env (micromamba)
+      uses: mamba-org/setup-micromamba@v2
+      with:
+        environment-file: ci/qgis-env.yml
+        cache-environment: true
+
     - name: HYDRA fast-fail (QGIS + MCP walk)
       run: |
         PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
-          HYDRA_MCP_INTEGRATION=1 \
-          mamba run -n qgis_stable bash tools/fast_fail.sh
+          QT_QPA_PLATFORM=offscreen \
+          micromamba run -n hydra-ci bash tools/fast_fail.sh
+      # Note: no HYDRA_MCP_INTEGRATION here — the MCP widget-walk stage is
+      # env-gated and needs a live bridge (production-style QGIS session),
+      # which this apt-QGIS job does not provide; the walk is covered by
+      # the local production-path gate (tools/release_install_test.sh).
 
     - name: Run behavioral MCP GUI tests
       run: |

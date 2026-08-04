@@ -16,7 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
-        python: ["cp310", "cp311", "cp312"]
+        # cp312 only: pyproject.toml requires-python >=3.12, so cibuildwheel
+        # selects no build identifiers for cp310/cp311 ("No build
+        # identifiers selected") and the job fails instantly.
+        python: ["cp312"]
 
     steps:
       - uses: actions/checkout@v4
@@ -49,12 +52,22 @@ jobs:
         env:
           CIBW_BUILD: ${{ matrix.python }}-*
           CIBW_SKIP: "pp* *-musllinux* *-win32 *-manylinux_i686"
+          # manylinux_2_28 (AlmaLinux 8): CUDA 12.4 dropped CentOS 7, so the
+          # default manylinux2014 image (cibuildwheel v2.19 default for
+          # cp<=311) cannot install the CUDA toolkit.
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_BEFORE_BUILD_LINUX: |
-            yum install -y cuda-toolkit-12-4 || true
-            echo "CUDACXX=$(which nvcc)" >> $GITHUB_ENV
+            yum install -y https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+            yum install -y cuda-toolkit-12-4
+          # CUDACXX/CUDA_HOME must reach the container build via
+          # CIBW_ENVIRONMENT_LINUX: the old `echo ... >> $GITHUB_ENV` wrote
+          # to a host file from inside the container (no effect) and
+          # `which nvcc` under set -e killed the before-build when the
+          # yum install had silently failed.
+          CIBW_ENVIRONMENT_LINUX: "CUDACXX=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda"
           CIBW_BEFORE_BUILD_WINDOWS: |
             Write-Output "CUDACXX=$env:CUDA_PATH\bin\nvcc.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
-          CIBW_ENVIRONMENT_PASS_LINUX: "BACKWATER_USE_CUDA CUDA_HOME CUDACXX"
+          CIBW_ENVIRONMENT_PASS_LINUX: "BACKWATER_USE_CUDA"
           CIBW_ENVIRONMENT_PASS_WINDOWS: "BACKWATER_USE_CUDA CUDA_PATH CUDACXX"
           BACKWATER_USE_CUDA: "ON"
 
