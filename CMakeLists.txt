@@ -166,25 +166,23 @@ function(_configure_swe2d_module target_name py_module_name)
       # Build environments (manylinux containers, wheel CI runners) have no
       # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
       # (runtime symbol resolution happens against the user's driver).
-      # The stub dir sits under the toolkit's lib dir; the implicit linker
-      # dirs reported by nvcc are the most reliable source for it on both
-      # platforms (env vars / CMake module vars can be unset in
-      # scikit-build-core's cmake subprocess).
-      set(_stub_candidates)
-      foreach(_dir ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
-        list(APPEND _stub_candidates "${_dir}/stubs")
-      endforeach()
-      list(APPEND _stub_candidates "${CUDAToolkit_LIBRARY_DIR}/stubs")
-      foreach(_stub_dir ${_stub_candidates})
-        find_library(CUDA_DRIVER_LIB cuda PATHS "${_stub_dir}" NO_DEFAULT_PATH)
-        if(CUDA_DRIVER_LIB)
-          break()
-        endif()
-      endforeach()
+      # Locate it by globbing the toolkit root — the module/env variables
+      # are unreliable inside scikit-build-core's cmake subprocess.
+      set(_cuda_stub_hits)
+      file(GLOB_RECURSE _cuda_stub_hits
+        "${CUDAToolkit_LIBRARY_ROOT}/stubs/cuda*"
+        "${CUDAToolkit_LIBRARY_ROOT}/lib/*/stubs/cuda*"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/*/lib/*/stubs/cuda*"
+        "/usr/local/cuda*/lib64/stubs/libcuda*")
+      list(LENGTH _cuda_stub_hits _cuda_stub_count)
+      if(_cuda_stub_count GREATER 0)
+        list(GET _cuda_stub_hits 0 CUDA_DRIVER_LIB)
+      endif()
     endif()
     if(NOT CUDA_DRIVER_LIB)
       message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
-        "install the NVIDIA driver or add the toolkit's stubs dir to the search path")
+        "CUDAToolkit_LIBRARY_ROOT=${CUDAToolkit_LIBRARY_ROOT} "
+        "implicit dirs=${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}")
     endif()
     message(STATUS "Linking CUDA driver lib: ${CUDA_DRIVER_LIB}")
     target_link_libraries(${target_name} PRIVATE ${CUDA_DRIVER_LIB})
