@@ -4,7 +4,6 @@
 
 #include "swe2d_solver.hpp"
 #include "swe2d_numerics.hpp"
-#include "swe2d_gpu_diag_ring.cuh"
 
 #ifdef HYDRA_HAS_CUDA
 #  include "swe2d_gpu.cuh"
@@ -435,23 +434,6 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                 throw std::runtime_error(std::string("cudaStreamSynchronize failed: ")
                     + cudaGetErrorString(sync_err));
             }
-        }
-        // Phase 4.1 — push the per-step diag into the device ring buffer
-        // so the GUI HUD can read it without per-step D2H.  Only push
-        // when sync_diag_this_step actually populated the CFL/WSE/mass
-        // fields (max_courant >= 0) — otherwise we'd publish stale -1
-        // sentinels from the previous sync interval.  Silent on ring-init
-        // errors (the diag ring is a best-effort log; missing a step
-        // doesn't break the sim).
-        if (diag.max_courant >= 0.0) {
-            swe2d_diag_ring::push(
-                s->t,
-                diag.dt,
-                diag.gpu_active ? 1 : 0,
-                diag.wet_cells,
-                diag.max_courant,
-                diag.max_wse_elev_error,
-                diag.mass_total);
         }
         return diag;
     }
