@@ -235,8 +235,16 @@ function(_configure_swe2d_module target_name py_module_name)
   # Host compiler: optimize for the build machine's CPU and enable fast math
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
     if(MSVC)
+      # /O1 instead of /O2: the giant pybind11 bindings TU
+      # (swe2d_bindings.cpp — 322-line lambda body for
+      # swe2d_build_unified_mesh) hits an MSVC internal compiler
+      # error at /O2 (C1907 + INTERNAL COMPILER ERROR in cl.exe
+      # on the 62nd m.def). /O1 keeps inlining of hot pybind11
+      # template instantiations without ICE-ing the optimizer.  Cost
+      # is negligible: the bindings TU is Python-interface marshaling,
+      # not a hot numeric loop (those are in the .cu files).
       target_compile_options(${target_name} PRIVATE
-        $<$<COMPILE_LANGUAGE:CXX>:/O2 /fp:fast>
+        $<$<COMPILE_LANGUAGE:CXX>:/O1 /fp:fast>
       )
     else()
       target_compile_options(${target_name} PRIVATE
