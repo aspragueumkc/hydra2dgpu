@@ -46,6 +46,24 @@ stage "wired-in:qt-shim" python3 -m unittest -v \
 stage "wired-in:parity" python3 -m unittest -v \
   tests.test_run_context_parity || exit 1
 
+# Gate 3.5: gui-behavioral (catches real headless-QGIS GUI regressions).
+# One process — all modules share the ensure_qgis_app() singleton safely.
+# Spec: docs/specs/2026-08-02-gui-test-coverage-design.md §6.
+# Import the collector before unittest imports any Qt/pyqtgraph module.  It
+# turns asynchronous callback tracebacks into a hard stage failure.
+stage "gui-behavioral" env QT_API=pyqt5 PYQTGRAPH_QT_LIB=PyQt5 \
+  python3 -m tests.fail_on_qt_callback_errors \
+  tests.test_qgis_real_env tests.test_graph_editor_service \
+  tests.test_graph_editor_dialog tests.test_hydrograph_editor \
+  tests.test_topo_attr_table_dialog tests.test_gui_services \
+  tests.test_studio_viewer_pg tests.test_studio_viewer \
+  tests.test_temporal_dock tests.test_map_tools \
+  tests.test_profile_chain_widget tests.test_detached_dialogs \
+  tests.test_gpkg_inspection_dialogs \
+  tests.test_viewer_dialogs tests.test_workbench_wiring \
+  tests.test_workbench_api_misc tests.test_signal_helpers \
+  tests.test_pyqtgraph_qvariant tests.test_qt_callback_collector || exit 1
+
 # Gate 4: MCP widget walk (only when HYDRA_MCP_INTEGRATION=1)
 if [ "${HYDRA_MCP_INTEGRATION:-0}" = "1" ]; then
   stage "mcp-smoke" python3 -m unittest -v \

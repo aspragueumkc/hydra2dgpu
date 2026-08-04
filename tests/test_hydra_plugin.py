@@ -1,40 +1,64 @@
-"""Tests for the hydra_plugin.py QGIS plugin entry point.
+"""Tests for the HYDRA2DGPU QGIS plugin entry point.
 
-Run with real PyQt5 from the qgis_stable environment:
+The plugin module lives at ``qgis_plugin/HYDRA2DGPU/hydra_plugin.py`` and is
+importable under a real (headless, offscreen) QGIS application — no mocks.
 
-    mamba run -n qgis_stable python3 -m unittest tests.test_hydra_plugin -v
+Run inside the qgis_stable mamba env:
+
+    python3 -m unittest tests.test_hydra_plugin -v
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from qgis.PyQt.QtWidgets import QApplication as _QApp
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis, stub_iface
 
-_test_app = _QApp.instance()
-if _test_app is None:
-    _test_app = _QApp([])
-
-from tests.mocks.qgis_env import install_qgis_mocks
-
-install_qgis_mocks()
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PLUGIN_DIR = os.path.join(_REPO_ROOT, "qgis_plugin", "HYDRA2DGPU")
 
 
+def _import_hydra_plugin():
+    """Import the plugin entry module from its shipped location."""
+    if _PLUGIN_DIR not in sys.path:
+        sys.path.insert(0, _PLUGIN_DIR)
+    import hydra_plugin
+
+    return hydra_plugin
+
+
+@requires_qgis
 class TestHydraPluginOpenPanelAction(unittest.TestCase):
-    """Verify the 'Open HYDRA2DGPU Panel' action triggers run()."""
+    """Verify the plugin entry point drives the workbench launch path."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
+        cls._hp = _import_hydra_plugin()
 
     def setUp(self):
-        self._iface = MagicMock()
-        self._iface.mainWindow.return_value = MagicMock()
+        self._iface = stub_iface()
+
+    def tearDown(self):
+        # launch_swe2d_workbench_studio records the active dialog in a module
+        # global — never let a mock leak into other tests.
+        import swe2d.workbench.views.studio_host_methods as _shm
+
+        _shm._studio_active_dialog = None
 
     def _make_plugin(self):
-        from hydra_plugin import HydraQgisPlugin
-        return HydraQgisPlugin(self._iface)
+        return self._hp.HydraQgisPlugin(self._iface)
 
     def test_open_panel_action_triggers_launch(self):
-        """run() calls launch_swe2d_workbench_studio."""
-        with patch("swe2d_workbench_qt.launch_swe2d_workbench_studio") as mock_launch:
+        """run() calls launch_swe2d_workbench_studio with our iface."""
+        with patch.object(
+            self._hp.HydraQgisPlugin, "_backend_available", return_value=True
+        ), patch(
+            "swe2d.workbench.studio_dialog.launch_swe2d_workbench_studio"
+        ) as mock_launch:
             plugin = self._make_plugin()
             plugin.run()
             mock_launch.assert_called_once()
@@ -47,137 +71,117 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
         Regression: the function used ``self._log()`` in exception handlers
         but is a module-level function — ``self`` was undefined.
         """
-        from swe2d_workbench_qt import launch_swe2d_workbench_studio
+        from swe2d.workbench.views.studio_host_methods import (
+            launch_swe2d_workbench_studio,
+        )
 
-        iface = MagicMock()
+        iface = stub_iface()
         iface.mainWindow.side_effect = RuntimeError("no main window")
 
-        with patch("swe2d_workbench_qt.SWE2DWorkbenchStudioDialog") as mock_dlg_cls, \
-             patch("swe2d_workbench_qt._build_studio_component_docks",
-                   return_value={}) as mock_build, \
-             patch("swe2d_workbench_qt._install_studio_host_controls") as mock_install:
+        with patch(
+            "swe2d.workbench.studio_dialog.SWE2DWorkbenchStudioDialog"
+        ) as mock_dlg_cls, patch(
+            "swe2d.workbench.views.studio_host_methods._persist_workbench_was_open"
+        ):
             mock_dlg = MagicMock()
             mock_dlg_cls.return_value = mock_dlg
-            mock_dlg._studio_update_status = MagicMock()
-            launch_swe2d_workbench_studio(
-                parent=None, iface=iface
-            )
-            mock_build.assert_called_once()
-            mock_install.assert_called_once()
+            dlg = launch_swe2d_workbench_studio(parent=None, iface=iface)
+            self.assertIs(dlg, mock_dlg)
 
     def test_launch_propagates_dialog_init_error(self):
         """If SWE2DWorkbenchStudioDialog.__init__ fails, error propagates."""
-        from swe2d_workbench_qt import launch_swe2d_workbench_studio
+        from swe2d.workbench.views.studio_host_methods import (
+            launch_swe2d_workbench_studio,
+        )
 
-        iface = MagicMock()
-        iface.mainWindow.return_value = MagicMock()
-
-        with patch("swe2d_workbench_qt.SWE2DWorkbenchStudioDialog",
-                   side_effect=ImportError("simulated init failure")):
+        with patch(
+            "swe2d.workbench.studio_dialog.SWE2DWorkbenchStudioDialog",
+            side_effect=ImportError("simulated init failure"),
+        ):
             with self.assertRaises(ImportError):
-                launch_swe2d_workbench_studio(
-                    parent=None, iface=iface
-                )
+                launch_swe2d_workbench_studio(parent=None, iface=self._iface)
 
     def test_init_gui_creates_menu(self):
-        """initGui() creates main_menu with the expected objectName."""
-        import hydra_plugin as _hp
+        """initGui() creates main_menu with the expected objectName (real Qt)."""
+        from qgis.PyQt.QtWidgets import QMainWindow, QMenu
 
-        def _named():
-            m = MagicMock()
-            m._on = ""
-            m.setObjectName = lambda n: setattr(m, "_on", str(n))
-            m.objectName = lambda: m._on
-            return m
+        plugins_menu = QMenu("Plugins")
+        main_window = QMainWindow()
+        self._iface.pluginMenu.return_value = plugins_menu
+        self._iface.mainWindow.return_value = main_window
 
-        fake_menu = _named()
-        fake_menu.title.return_value = ""
-        fake_menu._acts = []
-        fake_menu.addAction = lambda *a: (
-            (lambda act: (fake_menu._acts.append(act), act)[1])(_named()) if not a or not isinstance(a[0], MagicMock)
-            else (fake_menu._acts.append(a[0]), a[0])[1]
-        )
-        fake_menu.actions = lambda: list(fake_menu._acts)
-        fake_menu.removeAction = lambda act: fake_menu._acts.remove(act) if act in fake_menu._acts else None
-        fake_menu.menuAction = MagicMock
-
-        fake_action = _named()
-        fake_action.text = lambda: ""
-        fake_action.triggered = MagicMock()
-        fake_action.trigger = MagicMock()
-
-        with patch.multiple(_hp, QMenu=MagicMock(return_value=fake_menu),
-                            QAction=MagicMock(return_value=fake_action),
-                            QMainWindow=MagicMock):
-            plugin = self._make_plugin()
-            plugin.initGui()
+        plugin = self._make_plugin()
+        plugin.initGui()
+        self.addCleanup(plugin.unload)
 
         self.assertIsNotNone(plugin.main_menu)
         self.assertEqual(plugin.main_menu.objectName(), "HYDRA2DGMainMenu")
+        action_names = {a.objectName() for a in plugin.main_menu_actions}
+        self.assertIn("HYDRA2DMenuOpenWorkbenchAction", action_names)
+        self.assertIn("HYDRA2DMenuCloseWorkbenchAction", action_names)
+        self.assertIn("HYDRA2DMenuSettingsAction", action_names)
 
     def test_unload_clears_menu(self):
         """unload() removes the menu and clears action list."""
-        import hydra_plugin as _hp
+        from qgis.PyQt.QtWidgets import QMainWindow, QMenu
 
-        def _named():
-            m = MagicMock()
-            m._on = ""
-            m.setObjectName = lambda n: setattr(m, "_on", str(n))
-            m.objectName = lambda: m._on
-            return m
+        plugins_menu = QMenu("Plugins")
+        main_window = QMainWindow()
+        self._iface.pluginMenu.return_value = plugins_menu
+        self._iface.mainWindow.return_value = main_window
 
-        fake_menu = _named()
-        fake_menu.title.return_value = ""
-        fake_menu._acts = []
-        fake_menu.addAction = lambda *a: (
-            (lambda act: (fake_menu._acts.append(act), act)[1])(_named()) if not a or not isinstance(a[0], MagicMock)
-            else (fake_menu._acts.append(a[0]), a[0])[1]
-        )
-        fake_menu.actions = lambda: list(fake_menu._acts)
-        fake_menu.removeAction = lambda act: fake_menu._acts.remove(act) if act in fake_menu._acts else None
-        fake_menu.menuAction = MagicMock
-
-        fake_action = _named()
-        fake_action.text = lambda: ""
-        fake_action.triggered = MagicMock()
-        fake_action.trigger = MagicMock()
-
-        with patch.multiple(_hp, QMenu=MagicMock(return_value=fake_menu),
-                            QAction=MagicMock(return_value=fake_action),
-                            QMainWindow=MagicMock):
-            plugin = self._make_plugin()
-            plugin.initGui()
-            plugin.unload()
+        plugin = self._make_plugin()
+        plugin.initGui()
+        plugin.unload()
 
         self.assertIsNone(plugin.main_menu)
         self.assertEqual(len(plugin.main_menu_actions), 0)
 
     def test_harden_qt_quit_behavior(self):
-        """_harden_qt_quit_behavior sets the hardened flag."""
-        from hydra_plugin import HydraQgisPlugin
-        plugin = HydraQgisPlugin(self._iface)
-        plugin._harden_qt_quit_behavior()
-        self.assertTrue(plugin._qt_quit_hardened)
+        """_harden_qt_quit_behavior sets quitOnLastWindowClosed False (real app)."""
+        from qgis.PyQt.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        self.assertIsNotNone(app)
+        original = bool(app.quitOnLastWindowClosed())
+        plugin = self._make_plugin()
+        try:
+            plugin._harden_qt_quit_behavior()
+            self.assertTrue(plugin._qt_quit_hardened)
+            self.assertFalse(app.quitOnLastWindowClosed())
+        finally:
+            plugin._restore_qt_quit_behavior()
+        self.assertEqual(bool(app.quitOnLastWindowClosed()), original)
 
     def test_restore_qt_quit_behavior(self):
-        """_restore_qt_quit_behavior clears the hardened flag."""
-        from hydra_plugin import HydraQgisPlugin
-        plugin = HydraQgisPlugin(self._iface)
+        """_restore_qt_quit_behavior clears the flag and restores the property."""
+        from qgis.PyQt.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        self.assertIsNotNone(app)
+        original = bool(app.quitOnLastWindowClosed())
+        plugin = self._make_plugin()
         plugin._harden_qt_quit_behavior()
         plugin._restore_qt_quit_behavior()
         self.assertFalse(plugin._qt_quit_hardened)
+        self.assertEqual(bool(app.quitOnLastWindowClosed()), original)
 
     def test_on_project_read_restarts_active_workbench(self):
         """When a QGIS project is read and the workbench is active, the
         workbench must be torn down and re-launched so the new project's
         persisted widget values are discovered from a clean state."""
-        from hydra_plugin import HydraQgisPlugin
-        plugin = HydraQgisPlugin(self._iface)
+        plugin = self._make_plugin()
 
-        with patch("swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio") as mock_launch, \
-             patch("swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock") as mock_remove, \
-             patch("swe2d.workbench.views.studio_host_methods._capture_and_persist_window_state") as mock_capture, \
-             patch("swe2d.workbench.views.studio_host_methods._studio_active_dialog", new=MagicMock()) as _:
+        with patch(
+            "swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio"
+        ) as mock_launch, patch(
+            "swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock"
+        ) as mock_remove, patch(
+            "swe2d.workbench.views.studio_host_methods._capture_and_persist_window_state"
+        ) as mock_capture, patch(
+            "swe2d.workbench.views.studio_host_methods._studio_active_dialog",
+            new=MagicMock(),
+        ):
             plugin._restart_workbench_for_project()
             mock_capture.assert_called_once()
             mock_remove.assert_called_once()
@@ -186,29 +190,40 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
     def test_on_project_read_noop_when_workbench_inactive(self):
         """If the workbench is not active, _on_project_read does NOT
         auto-open it — only an open workbench gets restarted."""
-        from hydra_plugin import HydraQgisPlugin
-        plugin = HydraQgisPlugin(self._iface)
+        plugin = self._make_plugin()
 
-        with patch("swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio") as mock_launch, \
-             patch("swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock") as mock_remove, \
-             patch("swe2d.workbench.views.studio_host_methods._studio_active_dialog", new=None):
+        with patch(
+            "swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio"
+        ) as mock_launch, patch(
+            "swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock"
+        ) as mock_remove, patch(
+            "swe2d.workbench.views.studio_host_methods._studio_active_dialog",
+            new=None,
+        ):
             plugin._restart_workbench_for_project()
             mock_remove.assert_not_called()
             mock_launch.assert_not_called()
 
 
+@requires_qgis
 class TestHydraPluginImports(unittest.TestCase):
     """Verify module-level symbols import correctly."""
 
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
+
     def test_settings_dialog_is_qdialog_subclass(self):
-        from hydra_plugin import HYDRASettingsDialog
         from qgis.PyQt.QtWidgets import QDialog
-        self.assertTrue(issubclass(HYDRASettingsDialog, QDialog))
+
+        hp = _import_hydra_plugin()
+        self.assertTrue(issubclass(hp.HYDRASettingsDialog, QDialog))
 
     def test_rogue_window_guard_is_qobject_subclass(self):
-        from hydra_plugin import _RogueWindowCloseGuard
         from qgis.PyQt.QtCore import QObject
-        self.assertTrue(issubclass(_RogueWindowCloseGuard, QObject))
+
+        hp = _import_hydra_plugin()
+        self.assertTrue(issubclass(hp._RogueWindowCloseGuard, QObject))
 
 
 if __name__ == "__main__":

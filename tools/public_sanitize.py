@@ -23,6 +23,9 @@ SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*['\"][^'\"\\s][^'\"]*['\"]"
 )
 BINARY_SUFFIXES = {".dll", ".dylib", ".pyd", ".so"}
+# Files that ALWAYS stay private (never sync to public), regardless of the
+# manifest. Keeping the manifest itself out of public is non-negotiable.
+ALWAYS_PRIVATE = {".publicsync-ignore"}
 
 
 def tracked_paths(repo: Path) -> list[str]:
@@ -72,6 +75,8 @@ def export_tracked(repo: Path, export_dir: Path, exclusions: list[str], use_work
     export_dir.mkdir(parents=True)
     paths = [(p, repo / p) for p in tracked_paths(repo)]
     for path, source in paths:
+        if path in ALWAYS_PRIVATE:
+            continue
         if is_excluded(path, exclusions):
             continue
         destination = export_dir / path
@@ -163,6 +168,8 @@ def export_working_tree_with_exclusions(repo: Path, export_dir: Path, exclusions
     export_dir.mkdir(parents=True)
     for path in repo.rglob("*"):
         relative = path.relative_to(repo).as_posix()
+        if relative in ALWAYS_PRIVATE:
+            continue
         first_component = relative.split("/", 1)[0]
         if first_component == ".git":
             continue

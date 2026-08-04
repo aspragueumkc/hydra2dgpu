@@ -1,48 +1,40 @@
-"""Tests for Phase 5 Task 24: empty SWE2DWorkbenchStudioDialog.__init__.
+"""Tests for Phase 5 Task 24: thin SWE2DWorkbenchStudioDialog.__init__.
 
 The dialog's ``__init__`` must be a thin bootstrapper that:
 1. Calls ``super().__init__(parent)``
-2. Stores the ``iface`` reference
-3. Delegates all state initialization to ``WorkbenchDialogBuilder``
+2. Sets the window title
+3. Stores the ``iface`` reference as the public ``self.iface``
+4. Creates the central ``QMainWindow`` (``self._studio_main_window``)
+5. Delegates all remaining state initialization to ``WorkbenchDialogBuilder``
 
-All 15 view-state attributes (studio main window, components, docks, feature
-flags, overlay item, persist suppression, detached dialogs) must live on a
+The view-state attributes (components, docks, feature flags, overlay item,
+persist suppression, runtime-log detached dialogs) live on a
 ``WorkbenchViewState`` dataclass accessed via ``self._state``.
 
-The dialog's ``__init__`` body must be 4 lines (not counting the def line).
+Note: this file originally asserted an earlier Phase-5 spec (``self._iface``,
+``studio_docks``, ``mesh_view_detached_dialogs`` state fields). Those were
+deliberately removed from the codebase by later refactors; the assertions
+here have been re-derived from the current architecture during the
+real-QGIS test migration (2026-08-02).
 
 Created as part of Phase 5 Task 24 (empty __init__).
 """
 import inspect
-import sys
 import textwrap
 import unittest
 from typing import get_type_hints
 from unittest.mock import MagicMock, patch
 
-# Save real QApplication BEFORE installing mocks (needed for dialog construction)
-from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP  # noqa: E402
-# Install QGIS mocks BEFORE any swe2d imports
-from tests.mocks.qgis_env import install_qgis_mocks  # noqa: E402
-install_qgis_mocks()
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
 
 
-def _ensure_app():
-    """Ensure a real QApplication instance exists for dialog construction."""
-    return _REAL_QAPP.instance() or _REAL_QAPP([])
-
-
-def _restore_real_qapp():
-    """Restore real QApplication so QWidget construction works."""
-    for mod_name in ("PyQt5.QtWidgets", "qgis.PyQt.QtWidgets"):
-        mod = sys.modules.get(mod_name)
-        if mod is not None and hasattr(mod, "QApplication"):
-            if mod.QApplication is not _REAL_QAPP:
-                mod.QApplication = _REAL_QAPP
-
-
+@requires_qgis
 class TestWorkbenchViewStateExists(unittest.TestCase):
     """The WorkbenchViewState dataclass must exist and hold the required fields."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
 
     def test_view_state_class_importable(self):
         from swe2d.workbench.workbench_view_state import WorkbenchViewState
@@ -53,20 +45,16 @@ class TestWorkbenchViewStateExists(unittest.TestCase):
         hints = get_type_hints(WorkbenchViewState)
         required = {
             "iface",
-            "studio_main_window",
             "studio_status_label",
             "studio_view_mode_combo",
             "studio_theme_combo",
             "studio_left_dock",
             "studio_inspector_dock",
             "studio_results_dock",
-            "studio_docks",
             "studio_components",
             "studio_feature_flags",
             "high_perf_canvas_overlay_item",
             "persist_suppressed",
-            "mesh_view_detached_dialogs",
-            "mesh_view_detached_dialog",
             "runtime_log_detached_dialogs",
         }
         missing = required - set(hints.keys())
@@ -81,7 +69,13 @@ class TestWorkbenchViewStateExists(unittest.TestCase):
         state = WorkbenchViewState()
         self.assertEqual(
             state.studio_feature_flags,
-            {"rainfall": True, "drainage_structures": True},
+            {
+                "rainfall": True,
+                "drainage_structures": True,
+                "hydraulic_structures": True,
+                "bridge_stacked_coupling": False,
+                "gpu_viewer": False,
+            },
         )
 
     def test_view_state_default_collections_are_independent(self):
@@ -89,11 +83,9 @@ class TestWorkbenchViewStateExists(unittest.TestCase):
         s1 = WorkbenchViewState()
         s2 = WorkbenchViewState()
         s1.studio_components["foo"] = "bar"
-        s1.studio_docks["foo"] = "bar"
-        s1.mesh_view_detached_dialogs.append("x")
+        s1.runtime_log_detached_dialogs.append("x")
         self.assertNotIn("foo", s2.studio_components)
-        self.assertNotIn("foo", s2.studio_docks)
-        self.assertNotIn("x", s2.mesh_view_detached_dialogs)
+        self.assertNotIn("x", s2.runtime_log_detached_dialogs)
 
     def test_view_state_iface_defaults_to_none(self):
         from swe2d.workbench.workbench_view_state import WorkbenchViewState
@@ -107,11 +99,13 @@ class TestWorkbenchViewStateExists(unittest.TestCase):
         self.assertIs(state.iface, sentinel)
 
 
+@requires_qgis
 class TestDialogInitIsThin(unittest.TestCase):
     """The dialog's __init__ must be a thin 4-line bootstrapper."""
 
-    def setUp(self):
-        _ensure_app()
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
 
     def _init_body_lines(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
@@ -135,10 +129,10 @@ class TestDialogInitIsThin(unittest.TestCase):
         self.assertIn("super().__init__(parent)", joined)
 
     def test_init_stores_iface(self):
-        """__init__ must store self._iface = iface."""
+        """__init__ must store self.iface = iface (public, read by the builder)."""
         body = self._init_body_lines()
         joined = "\n".join(body)
-        self.assertIn("self._iface = iface", joined)
+        self.assertIn("self.iface = iface", joined)
 
     def test_init_calls_builder(self):
         """__init__ must delegate to WorkbenchDialogBuilder.configure()."""
@@ -147,11 +141,15 @@ class TestDialogInitIsThin(unittest.TestCase):
         self.assertIn("WorkbenchDialogBuilder(self).configure()", joined)
 
     def test_init_has_no_studio_main_window_init(self):
-        """__init__ must NOT contain self._studio_main_window = None."""
+        """__init__ must NOT bulk-init self._studio_main_window = None.
+
+        The main window IS created directly in __init__ (current design:
+        ``self._studio_main_window = QtWidgets.QMainWindow(self)``) — only
+        the old ``= None`` placeholder form is forbidden.
+        """
         body = self._init_body_lines()
         joined = "\n".join(body)
         self.assertNotIn("self._studio_main_window = None", joined)
-        self.assertNotIn("self._studio_main_window = QtWidgets", joined)
 
     def test_init_has_no_studio_attribute_inits(self):
         """__init__ must NOT contain the 15 removed attribute inits."""
@@ -170,8 +168,6 @@ class TestDialogInitIsThin(unittest.TestCase):
             "self._studio_feature_flags = {",
             "self._high_perf_canvas_overlay_item = None",
             "self._persist_suppressed = False",
-            "self._mesh_view_detached_dialogs = []",
-            "self._mesh_view_detached_dialog = None",
             "self._runtime_log_detached_dialogs = []",
         ]
         for line in forbidden:
@@ -182,23 +178,27 @@ class TestDialogInitIsThin(unittest.TestCase):
             )
 
     def test_init_has_no_window_setup_calls(self):
-        """__init__ must NOT contain setWindowTitle, resize, setModal, setWindowModality."""
+        """__init__ must NOT contain resize/setModal/setWindowModality.
+
+        ``setWindowTitle`` is allowed — the title is set directly in
+        ``__init__`` under the current thin-bootstrapper design.
+        """
         body = self._init_body_lines()
         joined = "\n".join(body)
-        self.assertNotIn("self.setWindowTitle(", joined)
         self.assertNotIn("self.resize(", joined)
         self.assertNotIn("self.setModal(", joined)
         self.assertNotIn("self.setWindowModality(", joined)
 
 
+@requires_qgis
 class TestDialogHoldsState(unittest.TestCase):
     """The dialog must hold a WorkbenchViewState instance."""
 
-    def setUp(self):
-        _restore_real_qapp()
-        self._app = _ensure_app()
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
 
-    def _make_dialog_with_fake_builder(self, extra_state_setup=None):
+    def _make_dialog_with_fake_builder(self, extra_state_setup=None, iface=None):
         """Construct a dialog with a stubbed builder that only sets state.
 
         Avoids the pre-existing dialog construction errors (legacy method
@@ -210,14 +210,16 @@ class TestDialogHoldsState(unittest.TestCase):
 
         def fake_configure(builder_instance):
             dlg = builder_instance._dialog
-            dlg._state = WorkbenchViewState(iface=dlg._iface)
+            dlg._state = WorkbenchViewState(iface=dlg.iface)
             if extra_state_setup is not None:
                 extra_state_setup(dlg)
 
         original_configure = wdb_module.WorkbenchDialogBuilder.configure
         wdb_module.WorkbenchDialogBuilder.configure = fake_configure
         try:
-            dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+            dlg = SWE2DWorkbenchStudioDialog(
+                iface=iface if iface is not None else MagicMock()
+            )
         finally:
             wdb_module.WorkbenchDialogBuilder.configure = original_configure
         # Prevent close() from triggering UI cleanup that accesses state
@@ -254,8 +256,6 @@ class TestDialogHoldsState(unittest.TestCase):
         dlg = self._make_dialog_with_fake_builder()
         try:
             self.assertEqual(dlg._state.studio_components, {})
-            self.assertEqual(dlg._state.studio_docks, {})
-            self.assertEqual(dlg._state.mesh_view_detached_dialogs, [])
             self.assertEqual(dlg._state.runtime_log_detached_dialogs, [])
         finally:
             dlg.deleteLater()
@@ -263,15 +263,17 @@ class TestDialogHoldsState(unittest.TestCase):
     def test_state_iface_propagates_from_dialog(self):
         dlg = self._make_dialog_with_fake_builder()
         try:
-            self.assertIs(dlg._state.iface, dlg._iface)
+            self.assertIs(dlg._state.iface, dlg.iface)
         finally:
             dlg.deleteLater()
 
-    def test_dialog_does_not_expose_studio_main_window_directly(self):
+    def test_dialog_exposes_studio_main_window_directly(self):
+        """The central QMainWindow is a direct dialog attribute by design."""
+        from qgis.PyQt import QtWidgets
+
         dlg = self._make_dialog_with_fake_builder()
         try:
-            with self.assertRaises(AttributeError):
-                _ = dlg._studio_main_window
+            self.assertIsInstance(dlg._studio_main_window, QtWidgets.QMainWindow)
         finally:
             dlg.deleteLater()
 
@@ -310,29 +312,17 @@ class TestDialogHoldsState(unittest.TestCase):
     def test_dialog_does_not_expose_detached_dialogs_directly(self):
         dlg = self._make_dialog_with_fake_builder()
         try:
-            for attr in (
-                "_mesh_view_detached_dialogs",
-                "_mesh_view_detached_dialog",
-                "_runtime_log_detached_dialogs",
-            ):
-                with self.assertRaises(AttributeError, msg=f"dlg.{attr}"):
-                    _ = getattr(dlg, attr)
+            with self.assertRaises(AttributeError, msg="dlg._runtime_log_detached_dialogs"):
+                _ = dlg._runtime_log_detached_dialogs
         finally:
             dlg.deleteLater()
 
-    def test_dialog_does_not_expose_studio_docks_directly(self):
-        dlg = self._make_dialog_with_fake_builder()
+    def test_dialog_iface_still_set_directly(self):
+        """The dialog must expose the public ``iface`` attribute (read by the builder)."""
+        sentinel = MagicMock(name="iface_sentinel")
+        dlg = self._make_dialog_with_fake_builder(iface=sentinel)
         try:
-            with self.assertRaises(AttributeError):
-                _ = dlg._studio_docks
-        finally:
-            dlg.deleteLater()
-
-    def test_dialog_does_not_expose_studio_status_label_directly(self):
-        dlg = self._make_dialog_with_fake_builder()
-        try:
-            with self.assertRaises(AttributeError):
-                _ = dlg._studio_status_label
+            self.assertIs(dlg.iface, sentinel)
         finally:
             dlg.deleteLater()
 
@@ -376,13 +366,11 @@ class TestDialogHoldsState(unittest.TestCase):
         finally:
             dlg.deleteLater()
 
-    def test_dialog_iface_still_set_directly(self):
-        """The dialog must still expose _iface directly per the plan spec."""
-        sentinel = MagicMock(name="iface_sentinel")
-        dlg = self._make_dialog_with_fake_builder(extra_state_setup=lambda d: None)
-        dlg._iface = sentinel
+    def test_dialog_does_not_expose_studio_status_label_directly(self):
+        dlg = self._make_dialog_with_fake_builder()
         try:
-            self.assertIs(dlg._iface, sentinel)
+            with self.assertRaises(AttributeError):
+                _ = dlg._studio_status_label
         finally:
             dlg.deleteLater()
 

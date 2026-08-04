@@ -6,13 +6,8 @@ pytest-style test files (test_bridge_stacked_*.py) and unittest-based
 tests via ``@pytest.mark.usefixtures``.
 
 Usage:
-    # In a unittest class:
-    @pytest.mark.usefixtures("ensure_mock_qgis")
-    class TestMyFeature(unittest.TestCase):
-        ...
-
-    # In a pytest test function:
-    def test_something(ensure_mock_qgis):
+    # In a pytest test function requiring a real headless QGIS:
+    def test_something(real_qgis):
         ...
 """
 
@@ -49,35 +44,18 @@ if _HYDRA_BUILD_DIR and os.path.isdir(_HYDRA_BUILD_DIR):
 # Fixtures
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@pytest.fixture(scope="function")
-def ensure_mock_qgis():
-    """Install mock QGIS modules before any test that imports swe2d code.
+@pytest.fixture(scope="session")
+def real_qgis():
+    """Session-scoped real headless QgsApplication.
 
-    This fixture ensures that ``from qgis.core import QgsProject`` etc.
-    work in a headless environment without a real QGIS installation.
+    Must be the only QGIS-app initializer in the test process (see
+    docs/plans/2026-08-02-real-qgis-test-migration.md §Non-negotiables).
     """
-    from tests.mocks.qgis_env import install_qgis_mocks
-    install_qgis_mocks()
-    yield
-
-    # Optionally reset QgsProject singleton between tests
-    from tests.mocks.qgis_env import MockQgsProject
-    MockQgsProject._instance = None
-
-
-@pytest.fixture
-def mock_project():
-    """Return a fresh mock QgsProject instance."""
-    from tests.mocks.qgis_env import MockQgsProject
-    MockQgsProject._instance = None
-    return MockQgsProject.instance()
-
-
-@pytest.fixture
-def mock_vector_layer():
-    """Return a fresh mock QgsVectorLayer."""
-    from tests.mocks.qgis_env import MockQgsVectorLayer
-    return MockQgsVectorLayer()
+    import importlib.util
+    if importlib.util.find_spec("qgis.core") is None:
+        pytest.skip("real QGIS env required (qgis_stable mamba env)")
+    from tests.qgis_real_env import ensure_qgis_app
+    yield ensure_qgis_app()
 
 
 @pytest.fixture
@@ -131,6 +109,7 @@ def pytest_collection_modifyitems(config, items):
     """Auto-skip tests that require unavailable dependencies."""
     import importlib
 
+    _has_qgis = importlib.util.find_spec("qgis.core") is not None
     _has_solver = importlib.util.find_spec("hydra_swe2d") is not None
     _has_gmsh = importlib.util.find_spec("gmsh") is not None
     _has_gpu = False
@@ -143,6 +122,8 @@ def pytest_collection_modifyitems(config, items):
 
     for item in items:
         markers = {m.name for m in item.iter_markers()}
+        if "qgis" in markers and not _has_qgis:
+            item.add_marker(pytest.mark.skip(reason="real QGIS not importable"))
         if "solver" in markers and not _has_solver:
             item.add_marker(pytest.mark.skip(reason="hydra_swe2d not built"))
         if "gmsh" in markers and not _has_gmsh:

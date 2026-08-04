@@ -19,6 +19,7 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
         self.field_specs = list(field_specs)
         self.sort_fields = list(sort_fields or [])
         self._row_feature_ids: List[int] = []
+        self._original_feature_ids: set[int] = set()
 
         self.setWindowTitle(title)
         self.resize(920, 440)
@@ -118,16 +119,19 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
         """Populate the table widget from the current layer features."""
         self.table.setRowCount(0)
         self._row_feature_ids = []
+        self._original_feature_ids = set()
         for ft in self._sorted_features():
             row = self.table.rowCount()
             self.table.insertRow(row)
-            self._row_feature_ids.append(int(ft.id()))
+            feature_id = int(ft.id())
+            self._row_feature_ids.append(feature_id)
+            self._original_feature_ids.add(feature_id)
             for col, spec in enumerate(self.field_specs):
                 field_name = spec[0]
                 try:
                     value = ft[field_name]
                 except (KeyError, ValueError, TypeError):
-                    self._log("[WARNING] Exception parsing feature value")
+                    logger_wb.warning("Exception parsing feature value", exc_info=True)
                     value = None
                 self._set_editor(row, col, value, spec)
 
@@ -161,6 +165,14 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
 
             field_idx = {spec[0]: self.layer.fields().indexOf(spec[0]) for spec in self.field_specs}
             provider = self.layer.dataProvider()
+            current_feature_ids = {
+                fid for fid in self._row_feature_ids if fid >= 0
+            }
+            removed_feature_ids = self._original_feature_ids - current_feature_ids
+            if removed_feature_ids and not provider.deleteFeatures(
+                sorted(removed_feature_ids)
+            ):
+                raise RuntimeError("Failed to delete removed feature rows.")
 
             for row, fid in enumerate(self._row_feature_ids):
                 if fid < 0:
@@ -186,5 +198,8 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
                 try:
                     self.layer.rollBack()
                 except Exception:
-                    self._log("[WARNING] Unexpected Exception silently caught — review this handler")
+                    logger_wb.warning(
+                        "Unexpected Exception silently caught — review this handler",
+                        exc_info=True,
+                    )
             QtWidgets.QMessageBox.warning(self, "Topology Editor", f"Failed to save layer edits: {exc}")

@@ -89,6 +89,14 @@ class TestGPUDamBreak1D(unittest.TestCase):
         h, hu, hv = mod.swe2d_get_state(solver)
         mod.swe2d_destroy(solver)
 
+        # GPU solver permutes cells (RCMK). get_state returns solver-internal
+        # order; map back to build order before comparing against coordinates.
+        perm = np.asarray(mod.swe2d_get_cell_perm(mesh), dtype=np.int64)
+        if perm.size == h.size:
+            inv_perm = np.empty_like(perm)
+            inv_perm[perm] = np.arange(perm.size)
+            h = h[inv_perm]
+
         mid_row = self.NY // 2
         start = mid_row * self.NX * 2
         end = start + self.NX * 2

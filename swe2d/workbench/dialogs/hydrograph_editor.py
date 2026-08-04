@@ -8,6 +8,8 @@ from typing import List
 
 from qgis.PyQt import QtWidgets
 
+from swe2d.workbench.services.text_parser_service import parse_hydrograph_text
+
 
 class HydrographEditorDialog(QtWidgets.QDialog):
     def __init__(self, side: str, initial_text: str = "", parent=None):
@@ -135,6 +137,15 @@ class HydrographEditorDialog(QtWidgets.QDialog):
                     w.writerow([t, v])
         except OSError as exc:
             QtWidgets.QMessageBox.warning(self, "Hydrograph CSV", f"Failed to save CSV: {exc}")
+
+    def accept(self) -> None:
+        """Validate the table contents before closing as accepted."""
+        try:
+            parse_hydrograph_text(self.hydrograph_text())
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Hydrograph", str(exc))
+            return
+        super().accept()
 
     def hydrograph_text(self) -> str:
         """Serialize the table contents to a semicolon-separated string."""

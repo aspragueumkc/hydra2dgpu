@@ -222,6 +222,8 @@ class MeshController:
         view._log(f"Created 2D model GeoPackage: {out_path}")
         view.set_layer_status_text("2D model GeoPackage created.")
         view._load_2d_model_geopackage(path_override=out_path)
+        # Auto-select each layer combo to the matching freshly-created layer.
+        view._layer_controller.auto_select_model_layers()
 
     # ── Layer combo orchestration ─────────────────────────────────────
     # ── High-perf canvas overlay toggle ───────────────────────────────

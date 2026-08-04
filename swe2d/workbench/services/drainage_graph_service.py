@@ -45,8 +45,11 @@ def load_drainage_graph(gpkg_path: str) -> DrainageGraph:
     try:
         cur = conn.cursor()
 
+        # Case-insensitive lookup: the model-GPKG writer creates tables
+        # under display names (SWE2D_Drainage_Links).
         cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_drainage_links'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name)=LOWER(?)",
+            ("swe2d_drainage_links",),
         )
         if cur.fetchone() is None:
             return DrainageGraph(node_ids=[], link_ids=[])
@@ -56,9 +59,9 @@ def load_drainage_graph(gpkg_path: str) -> DrainageGraph:
         )
         link_rows = list(cur.fetchall())
 
-        node_table_exists = False
         cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_drainage_nodes'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name)=LOWER(?)",
+            ("swe2d_drainage_nodes",),
         )
         node_table_exists = cur.fetchone() is not None
         node_rows = []

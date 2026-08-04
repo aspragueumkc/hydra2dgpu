@@ -26,8 +26,7 @@ import unittest
 
 import numpy as np
 
-from tests.mocks.qgis_env import install_qgis_mocks
-install_qgis_mocks()
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
 
 from tests._swe2d_test_helpers import (
     _make_cartesian_quad_mesh,
@@ -88,11 +87,13 @@ SCALAR_FIELDS = (
 )
 
 
+@requires_qgis
 class TestWidgetStateRoundTrip(unittest.TestCase):
     """ctx → widget_state_dict → flat_params → ctx' preserves scalar fields."""
 
     @classmethod
     def setUpClass(cls):
+        ensure_qgis_app()
         cls.fixture = MeshFixture().build()
         cls.addClassCleanup(cls.fixture.close)
 

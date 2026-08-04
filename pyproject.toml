@@ -10,6 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy==2.4.6",
     "gmsh>=4.12",
+    # Workbench (Studio viewer / graph editor) imports this at runtime.
+    "pyqtgraph>=0.14",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +44,13 @@ BACKWATER_USE_CUDA = "ON"
 # what CMakeLists.txt's install(TARGETS ...) rules emit, which excludes
 # swe2d/ entirely. The QGIS plugin imports `swe2d.*` on initGui(), so
 # `swe2d/` MUST be in the wheel for the plugin to start.
-packages = ["swe2d"]
+#
+# tests/ and tools/ are bundled so the production-path install test
+# (tools/release_install_test.sh) can run the full suite from the
+# installed wheel in qgis_clean without the repo on sys.path; tools/
+# also makes the MCP bridge importable in production (hydra_plugin.py
+# imports tools.hydra_mcp.qgis_bridge).
+packages = ["swe2d", "tests", "tools"]
 
 [project.scripts]
 swe2d-cli = "swe2d.cli.__main__:main"

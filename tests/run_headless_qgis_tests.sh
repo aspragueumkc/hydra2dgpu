@@ -11,9 +11,6 @@
 #   4. Collects results and shuts down
 #
 # Usage:
-#   # Run the mocked GUI tests (no QGIS needed, uses mock qgis.core):
-#   bash tests/run_headless_qgis_tests.sh --mock
-#
 #   # Run tests in conda qgis_stable environment (real QGIS libs via mamba):
 #   bash tests/run_headless_qgis_tests.sh --conda
 #
@@ -25,7 +22,7 @@
 #   bash tests/run_headless_qgis_tests.sh --qgis
 #
 #   # Run a specific test file:
-#   bash tests/run_headless_qgis_tests.sh --mock tests.test_workbench_gui
+#   bash tests/run_headless_qgis_tests.sh --conda tests.test_workbench_gui
 #   bash tests/run_headless_qgis_tests.sh --conda tests.test_swe2d_gpu_dambreak
 #
 # Prerequisites for --conda mode:
@@ -47,7 +44,7 @@ cd "$REPO_ROOT"
 # ── Config ─────────────────────────────────────────────────────────────────
 TEST_PATTERN="${2:-tests.test_workbench_gui}"
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/tests/results}"
-MODE="${1:---mock}"
+MODE="${1:---conda}"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -60,24 +57,6 @@ NC='\033[0m' # No Colour
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
-
-# ── Mode: Mock QGIS (no real QGIS needed) ─────────────────────────────────
-run_mock_tests() {
-    info "Running mocked GUI tests (no QGIS required)..."
-    info "Test pattern: $TEST_PATTERN"
-
-    PYTHONPATH="$PYTHONPATH:$REPO_ROOT:$REPO_ROOT/build:$REPO_ROOT/tests" \
-        python3 -m unittest -v "$TEST_PATTERN" \
-        | tee "$RESULTS_DIR/mock_test_output.log"
-
-    local exit_code="${PIPESTATUS[0]}"
-    if [ "$exit_code" -eq 0 ]; then
-        info "All mock tests passed."
-    else
-        error "Mock tests failed (exit code $exit_code)."
-    fi
-    return "$exit_code"
-}
 
 # ── Mode: Conda environment QGIS (qgis_stable) ────────────────────────────
 run_conda_tests() {
@@ -190,7 +169,6 @@ PYEOF
 #!/usr/bin/env bash
 export PYTHONPATH="${PYTHONPATH:-}:$REPO_ROOT:$REPO_ROOT/build:$REPO_ROOT/tests"
 exec qgis --noplugins --noversioncheck \
-     --project "$REPO_ROOT/tests/mocks/empty_project.qgs" \
      --code "$py_arg"
 SHEOF
     chmod +x "$wrapper"
@@ -208,7 +186,7 @@ run_qgis_tests() {
     # Find QGIS Python
     QGIS_PYTHON="${QGIS_PYTHON:-$(which qgis 2>/dev/null || true)}"
     if [ ! -x "$QGIS_PYTHON" ]; then
-        error "QGIS not found. Install QGIS or use --mock mode."
+        error "QGIS not found. Install QGIS or use --conda mode."
         error "Set QGIS_PYTHON=/path/to/qgis if installed in a non-standard location."
         return 1
     fi
@@ -267,7 +245,6 @@ PYEOF
     info "Launching QGIS headless test runner..."
     PYTHONPATH="$PYTHONPATH:$REPO_ROOT:$REPO_ROOT/build:$REPO_ROOT/tests" \
         "$QGIS_PYTHON" --noplugins --noversioncheck \
-                       --project "$REPO_ROOT/tests/mocks/empty_project.qgs" \
                        --code "$TEST_RUNNER" \
                        2>&1 | tee "$RESULTS_DIR/qgis_test_output.log" || true
 
@@ -294,9 +271,6 @@ else:
 # ── Main ───────────────────────────────────────────────────────────────────
 main() {
     case "$MODE" in
-        --mock|-m)
-            run_mock_tests
-            ;;
         --conda|-c)
             run_conda_tests
             ;;
@@ -307,10 +281,9 @@ main() {
             run_qgis_tests
             ;;
         *)
-            echo "Usage: $0 [--mock|--conda|--exec|--qgis] [test_pattern|script_path|python_code]"
+            echo "Usage: $0 [--conda|--exec|--qgis] [test_pattern|script_path|python_code]"
             echo ""
-            echo "  --mock   Run mocked tests (no QGIS required) [default]"
-            echo "  --conda  Run unittest in conda qgis_stable environment"
+            echo "  --conda  Run unittest in conda qgis_stable environment [default]"
             echo "  --exec   Start conda QGIS and run Python code/script"
             echo "           Pass a file path to run as --code script"
             echo "           Pass inline Python to execute in QGIS console"

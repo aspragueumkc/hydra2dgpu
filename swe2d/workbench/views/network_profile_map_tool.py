@@ -12,7 +12,7 @@ import logging
 from typing import List, Optional, Tuple
 
 from qgis.core import QgsFeature, QgsMapLayer
-from qgis.gui import QgsMapTool, QgsMapToolIdentifyFeature
+from qgis.gui import QgsMapTool, QgsMapToolIdentify, QgsMapToolIdentifyFeature
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 
 from swe2d.workbench.services.drainage_graph_service import (
@@ -46,14 +46,21 @@ class NetworkProfileMapTool(QgsMapTool):
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def _identify_link(self, event) -> Optional[QgsFeature]:
-        try:
-            result = self._identify.identifyFeatureAt(event.pos())
-            if result is None:
-                return None
-            feat, _ok = result if isinstance(result, tuple) else (result, True)
-            return feat
-        except Exception:
-            return None
+        # QgsMapToolIdentifyFeature has no ``identifyFeatureAt`` on QGIS 3.44;
+        # ``identify(x, y, mode, layerType)`` is the real API and returns
+        # IdentifyResult objects.  Fail loudly — a silent ``return None`` here
+        # is what hid the missing-method bug.
+        pos = event.pos()
+        results = self._identify.identify(
+            pos.x(),
+            pos.y(),
+            QgsMapToolIdentify.TopDownStopAtFirst,
+            QgsMapToolIdentify.VectorLayer,
+        )
+        for result in results:
+            if result.mLayer == self._layer:
+                return result.mFeature
+        return None
 
     def canvasReleaseEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.RightButton:

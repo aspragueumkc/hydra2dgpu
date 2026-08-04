@@ -15,6 +15,7 @@ No GPU required.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -24,9 +25,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-# Headless: use the mocked qgis.env so we don't need a real QGIS app.
-from tests.mocks.qgis_env import install_qgis_mocks
-install_qgis_mocks()
+# Real headless QGIS harness — no mocks.  Only classes that exercise
+# QgsVectorLayer/geometry need @requires_qgis; the rest are pure
+# service-layer tests (qgis imports in swe2d.core are function-local).
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
 
 from tests._swe2d_test_helpers import (
     _make_cartesian_quad_mesh,
@@ -64,70 +66,99 @@ class MeshFixture:
         return self
 
     def close(self):
-        import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
+@requires_qgis
 class TestDrainageGpkgAdapter(unittest.TestCase):
     """The QGIS-backed drainage adapter loads valid GPKG layers."""
 
-    def test_valid_mock_gpkg_returns_pipe_network_config(self):
-        import sys
-        from unittest.mock import patch
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
 
-        from tests.mocks.qgis_env import (
-            MockQgsFeature,
-            MockQgsFields,
-            MockQgsGeometry,
-            MockQgsPointXY,
-            MockQgsVectorLayer,
+    def test_valid_gpkg_returns_pipe_network_config(self):
+        from qgis.PyQt.QtCore import QVariant
+        from qgis.core import (
+            QgsCoordinateTransformContext,
+            QgsFeature,
+            QgsField,
+            QgsGeometry,
+            QgsPointXY,
+            QgsVectorFileWriter,
+            QgsVectorLayer,
         )
+
         from swe2d.core.gpkg_io import (
             _build_drainage_config_from_gpkg_layers,
         )
 
-        node_fields = MockQgsFields([
-            "node_id", "invert_elev", "rim_elev", "max_depth", "node_type",
+        tmpdir = tempfile.mkdtemp(prefix="rcb_drain_")
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        gpkg = os.path.join(tmpdir, "drainage.gpkg")
+
+        def _memory_layer(wkb_name, name, fields):
+            layer = QgsVectorLayer(f"{wkb_name}?crs=EPSG:4326", name, "memory")
+            self.assertTrue(layer.isValid())
+            layer.dataProvider().addAttributes(fields)
+            layer.updateFields()
+            return layer
+
+        def _write_to_gpkg(layer, layer_name, *, first):
+            options = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName = "GPKG"
+            options.layerName = layer_name
+            options.actionOnExistingFile = (
+                QgsVectorFileWriter.CreateOrOverwriteFile
+                if first
+                else QgsVectorFileWriter.CreateOrOverwriteLayer
+            )
+            err, _new_name, msg, _new_layer = QgsVectorFileWriter.writeAsVectorFormatV3(
+                layer, gpkg, QgsCoordinateTransformContext(), options
+            )
+            self.assertEqual(err, QgsVectorFileWriter.NoError, msg)
+
+        node_layer = _memory_layer("Point", "drain_nodes", [
+            QgsField("node_id", QVariant.String),
+            QgsField("invert_elev", QVariant.Double),
+            QgsField("rim_elev", QVariant.Double),
+            QgsField("max_depth", QVariant.Double),
+            QgsField("node_type", QVariant.String),
         ])
-        node_layer = MockQgsVectorLayer()
-        node_layer._fields = node_fields
         for node_id, x, y in (("N1", 1.0, 1.0), ("N2", 8.0, 1.0)):
-            feature = MockQgsFeature(node_fields, {
-                "node_id": node_id,
-                "invert_elev": 0.0,
-                "rim_elev": 1.0,
-                "max_depth": 1.0,
-                "node_type": "junction",
-            })
-            feature.setGeometry(MockQgsGeometry.fromPointXY(MockQgsPointXY(x, y)))
-            node_layer._features.append(feature)
+            feature = QgsFeature(node_layer.fields())
+            feature.setAttribute("node_id", node_id)
+            feature.setAttribute("invert_elev", 0.0)
+            feature.setAttribute("rim_elev", 1.0)
+            feature.setAttribute("max_depth", 1.0)
+            feature.setAttribute("node_type", "junction")
+            feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            node_layer.dataProvider().addFeatures([feature])
 
-        link_fields = MockQgsFields([
-            "link_id", "from_node", "to_node", "length", "diameter", "roughness_n",
+        link_layer = _memory_layer("LineString", "drain_links", [
+            QgsField("link_id", QVariant.String),
+            QgsField("from_node", QVariant.String),
+            QgsField("to_node", QVariant.String),
+            QgsField("length", QVariant.Double),
+            QgsField("diameter", QVariant.Double),
+            QgsField("roughness_n", QVariant.Double),
         ])
-        link_layer = MockQgsVectorLayer()
-        link_layer._fields = link_fields
-        link_feature = MockQgsFeature(link_fields, {
-            "link_id": "L1",
-            "from_node": "N1",
-            "to_node": "N2",
-            "length": 7.0,
-            "diameter": 1.0,
-            "roughness_n": 0.013,
-        })
-        link_feature.setGeometry(MockQgsGeometry.fromPolylineXY([
-            MockQgsPointXY(1.0, 1.0), MockQgsPointXY(8.0, 1.0),
+        link_feature = QgsFeature(link_layer.fields())
+        link_feature.setAttribute("link_id", "L1")
+        link_feature.setAttribute("from_node", "N1")
+        link_feature.setAttribute("to_node", "N2")
+        link_feature.setAttribute("length", 7.0)
+        link_feature.setAttribute("diameter", 1.0)
+        link_feature.setAttribute("roughness_n", 0.013)
+        link_feature.setGeometry(QgsGeometry.fromPolylineXY([
+            QgsPointXY(1.0, 1.0), QgsPointXY(8.0, 1.0),
         ]))
-        link_layer._features.append(link_feature)
+        link_layer.dataProvider().addFeatures([link_feature])
 
-        def vector_layer_factory(uri, _name, _provider):
-            if uri.endswith("|layername=drain_nodes"):
-                return node_layer
-            if uri.endswith("|layername=drain_links"):
-                return link_layer
-            self.fail(f"Unexpected mock GPKG layer URI: {uri}")
+        _write_to_gpkg(node_layer, "drain_nodes", first=True)
+        _write_to_gpkg(link_layer, "drain_links", first=False)
 
         mesh_data = {
             "node_x": np.array([0.0, 10.0, 0.0], dtype=np.float64),
@@ -135,22 +166,16 @@ class TestDrainageGpkgAdapter(unittest.TestCase):
             "node_z": np.zeros(3, dtype=np.float64),
             "cell_nodes": np.array([0, 1, 2], dtype=np.int32),
         }
-        # ``install_qgis_mocks`` registers ``qgis.core`` as a synthetic
-        # module in ``sys.modules`` (no parent package); patch the
-        # already-loaded reference directly so the adapter's local import
-        # resolves our factory.
-        qgis_core = sys.modules["qgis.core"]
-        with patch.object(qgis_core, "QgsVectorLayer", side_effect=vector_layer_factory):
-            config = _build_drainage_config_from_gpkg_layers(
-                mesh_data=mesh_data,
-                drainage_gpkg="mock_drainage.gpkg",
-                nodes_layer="drain_nodes",
-                links_layer="drain_links",
-                cell_min_bed=np.array([0.0], dtype=np.float64),
-                gravity=9.81,
-                config={},
-                log_fn=lambda _message: None,
-            )
+        config = _build_drainage_config_from_gpkg_layers(
+            mesh_data=mesh_data,
+            drainage_gpkg=gpkg,
+            nodes_layer="drain_nodes",
+            links_layer="drain_links",
+            cell_min_bed=np.array([0.0], dtype=np.float64),
+            gravity=9.81,
+            config={},
+            log_fn=lambda _message: None,
+        )
 
         self.assertIsNotNone(config)
         self.assertTrue(config.enabled)

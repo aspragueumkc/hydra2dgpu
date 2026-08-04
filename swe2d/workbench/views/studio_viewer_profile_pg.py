@@ -34,9 +34,15 @@ logger = logging.getLogger(__name__)
 
 try:
     import pyqtgraph as pg
-    _HAVE_PG = True
 except ImportError:
     _HAVE_PG = False
+else:
+    from swe2d.workbench.pyqtgraph_compat import (
+        install_qgis_pyqtgraph_item_change_fix,
+    )
+
+    install_qgis_pyqtgraph_item_change_fix()
+    _HAVE_PG = True
 
 
 # ── Unit helpers (mirrors results_render_service._unit_labels) ───────

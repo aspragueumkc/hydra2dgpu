@@ -795,7 +795,14 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         Python GC doesn't drop the dialog while the user is interacting
         with it.  Multiple opens are allowed (each becomes a separate
         dialog).
+
+        Hidden by default — see
+        ``docs/specs/2026-07-29-gpu-viewer-hide-and-user-guide-coverage.md``.
+        The keyword-matcher hides the tab/page; this guard catches any
+        stray signal/script call while the flag is off.
         """
+        if not self._state.studio_feature_flags.get("gpu_viewer", False):
+            return
         if not self._backend_ready_for_run_preflight():
             self._show_install_dialog()
             return
@@ -1789,6 +1796,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 "structure", "culvert", "weir", "orifice", "gate", "spillway",
             ),
             "bridge_stacked_coupling": ("bridge_stacked",),
+            # Experimental GPU Direct Viewer — hidden by default. See
+            # docs/specs/2026-07-29-gpu-viewer-hide-and-user-guide-coverage.md.
+            "gpu_viewer": ("gpu", "viewer"),
         }
 
     def _studio_widget_text_blob(self, widget: QtWidgets.QWidget) -> str:

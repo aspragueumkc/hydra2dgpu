@@ -25,6 +25,12 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 import pyqtgraph as pg
+from swe2d.workbench.pyqtgraph_compat import (
+    install_qgis_pyqtgraph_item_change_fix,
+)
+
+install_qgis_pyqtgraph_item_change_fix()
+from qgis.core import QgsVectorLayer
 
 from swe2d.workbench.services.graph_editor_service import (
     csv_columns,
@@ -193,7 +199,18 @@ class GraphEditorDialog(QDialog):
         bbox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
         bbox.accepted.connect(self._on_save)
         bbox.rejected.connect(self.reject)
-        right_layout.addWidget(bbox)
+        self._apply_btn = QPushButton("Apply Graph to Feature…")
+        self._apply_btn.setToolTip(
+            "Write the current graph's id into the hyetograph_id / "
+            "hydrograph_id field of a selected feature in "
+            "swe2d_rain_gages, swe2d_bc_lines, or swe2d_internal_flow_sources."
+        )
+        self._apply_btn.clicked.connect(self._on_apply_graph)
+        action_row = QHBoxLayout()
+        action_row.addWidget(self._apply_btn)
+        action_row.addStretch(1)
+        action_row.addWidget(bbox)
+        right_layout.addLayout(action_row)
 
         splitter.addWidget(right)
         splitter.setSizes([250, 650])
@@ -381,7 +398,11 @@ class GraphEditorDialog(QDialog):
         if picker.exec() != QDialog.Accepted:
             return
         time_col, value_col = picker.selected_columns()
-        data = parse_csv(path, time_col, value_col)
+        try:
+            data = parse_csv(path, time_col, value_col)
+        except ValueError as exc:
+            QMessageBox.warning(self, "CSV Error", str(exc))
+            return
         if not data:
             QMessageBox.information(self, "CSV Import", "No valid data rows found.")
             return
@@ -490,6 +511,17 @@ class GraphEditorDialog(QDialog):
                 self._graph_list.setCurrentItem(item)
                 break
 
+    def _on_apply_graph(self):
+        if self._current_id is None or self._current_type is None:
+            QMessageBox.warning(
+                self, "Apply Graph", "Select a graph in the list first."
+            )
+            return
+        dlg = ApplyGraphDialog(
+            self._gpkg_path, self._current_type, self._current_id, self
+        )
+        dlg.exec_()
+
     def _mark_dirty(self):
         self._dirty = True
         self._update_plot()
@@ -536,3 +568,194 @@ class _ColumnPicker(QDialog):
 
     def selected_columns(self) -> Tuple[str, str]:
         return self._time_combo.currentText(), self._value_combo.currentText()
+
+
+# Map graph_type -> (layer_name, id_field_name) pairs the user can apply to.
+_APPLY_TARGETS: Dict[str, List[Tuple[str, str]]] = {
+    "hyetographs": [
+        ("swe2d_rain_gages", "hyetograph_id"),
+    ],
+    "hydrographs": [
+        ("swe2d_bc_lines", "hydrograph_id"),
+        ("swe2d_internal_flow_sources", "hydrograph_id"),
+    ],
+}
+
+
+class ApplyGraphDialog(QDialog):
+    """Pick a feature in a target layer and write the graph id into it."""
+
+    def __init__(
+        self,
+        gpkg_path: str,
+        graph_type: str,
+        graph_id: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._gpkg_path = gpkg_path
+        self._graph_type = graph_type
+        self._graph_id = graph_id
+        self._targets = _APPLY_TARGETS.get(graph_type, [])
+        if not self._targets:
+            QMessageBox.warning(
+                self, "Apply Graph", f"Unknown graph type: {graph_type}"
+            )
+            self.reject()
+            return
+
+        kind = "hyetograph" if graph_type == "hyetographs" else "hydrograph"
+        self.setWindowTitle(f"Apply {kind} '{graph_id}' to feature")
+        self.resize(620, 420)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(
+            QLabel(
+                f"Pick a feature to receive graph id "
+                f"<b>{self._graph_id}</b>:"
+            )
+        )
+
+        layer_row = QHBoxLayout()
+        layer_row.addWidget(QLabel("Layer:"))
+        self._layer_combo = QComboBox()
+        for layer_name, field_name in self._targets:
+            self._layer_combo.addItem(layer_name, (layer_name, field_name))
+        self._layer_combo.currentIndexChanged.connect(self._load_features)
+        layer_row.addWidget(self._layer_combo)
+        layout.addLayout(layer_row)
+
+        self._feature_table = QTableWidget(0, 3)
+        self._feature_table.setHorizontalHeaderLabels(
+            ["fid", "current value", "notes"]
+        )
+        self._feature_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._feature_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._feature_table.horizontalHeader().setStretchLastSection(True)
+        self._feature_table.itemDoubleClicked.connect(
+            lambda *_: self._on_accept()
+        )
+        layout.addWidget(self._feature_table, stretch=1)
+
+        bbox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bbox.accepted.connect(self._on_accept)
+        bbox.rejected.connect(self.reject)
+        layout.addWidget(bbox)
+
+        self._load_features()
+
+    def _selected_target(self) -> Tuple[str, str]:
+        idx = self._layer_combo.currentIndex()
+        layer_name, field_name = self._layer_combo.itemData(idx)
+        return layer_name, field_name
+
+    def _load_features(self):
+        layer_name, field_name = self._selected_target()
+        layer = _open_layer(self._gpkg_path, layer_name)
+        if layer is None:
+            self._feature_table.setRowCount(0)
+            return
+
+        field_names_set = set(layer.fields().names())
+        note_names = [n for n in ("name", "source_id", "gage_id") if n in field_names_set]
+        has_bc_type = "bc_type" in field_names_set
+
+        # Catalog of all BC types (Wall=1, Inflow Q=2, ..., Timeseries Flow Q=102,
+        # Timeseries Stage=103) lives in map_tab_view._BC_OPTIONS — pull it once
+        # here so the notes column matches the rest of the UI's bc_type labels.
+        from swe2d.workbench.views.map_tab_view import _BC_OPTIONS as _BC_FULL
+        bc_full = {code: label for label, code in _BC_FULL}
+
+        def _fmt_bc(value) -> str:
+            try:
+                code = int(value)
+            except (TypeError, ValueError):
+                return str(value)
+            label = bc_full.get(code)
+            if not label:
+                return f"{code}"
+            return f"{code} ({label})"
+
+        self._feature_table.setRowCount(0)
+        for feat in layer.getFeatures():
+            row = self._feature_table.rowCount()
+            self._feature_table.insertRow(row)
+            self._feature_table.setItem(row, 0, QTableWidgetItem(str(feat.id())))
+            current = feat[field_name] if feat.fields().lookupField(field_name) >= 0 else ""
+            self._feature_table.setItem(row, 1, QTableWidgetItem(str(current or "")))
+            note_parts = []
+            if has_bc_type and feat["bc_type"] not in (None, ""):
+                note_parts.append(f"bc_type={_fmt_bc(feat['bc_type'])}")
+            for n in note_names:
+                if feat.fields().lookupField(n) >= 0 and feat[n] not in (None, ""):
+                    note_parts.append(f"{n}={feat[n]}")
+            self._feature_table.setItem(row, 2, QTableWidgetItem(", ".join(note_parts)))
+        self._feature_table.resizeColumnsToContents()
+
+    def _on_accept(self):
+        layer_name, field_name = self._selected_target()
+        sel = self._feature_table.selectionModel().selectedRows()
+        if not sel:
+            QMessageBox.information(
+                self, "Apply Graph", "Select a feature row first."
+            )
+            return
+
+        fid = int(self._feature_table.item(sel[0].row(), 0).text())
+        if not _apply_graph_to_feature(
+            self._gpkg_path, layer_name, field_name, fid, self._graph_id
+        ):
+            QMessageBox.warning(
+                self, "Apply Graph",
+                f"Could not write '{self._graph_id}' into {layer_name} "
+                f"(fid={fid}). Check that the GPKG is not read-only.",
+            )
+            return
+
+        QMessageBox.information(
+            self, "Apply Graph",
+            f"Graph '{self._graph_id}' applied to {layer_name} feature {fid}.",
+        )
+        self.accept()
+
+
+def _open_layer(gpkg_path: str, layer_name: str):
+    """Open a GPKG layer for OGR read/write; return None if it fails."""
+    from qgis.core import QgsVectorLayer
+
+    lyr = QgsVectorLayer(
+        f"{gpkg_path}|layername={layer_name}", layer_name, "ogr"
+    )
+    if not lyr.isValid():
+        return None
+    return lyr
+
+
+def _apply_graph_to_feature(
+    gpkg_path: str,
+    layer_name: str,
+    field_name: str,
+    feature_id: int,
+    graph_id: str,
+) -> bool:
+    """Write ``graph_id`` into ``field_name`` of one feature. Returns True on success."""
+    layer = _open_layer(gpkg_path, layer_name)
+    if layer is None:
+        return False
+    if layer.fields().lookupField(field_name) < 0:
+        return False
+
+    if not layer.startEditing():
+        return False
+    feat = layer.getFeature(feature_id)
+    if not feat.isValid():
+        layer.rollBack()
+        return False
+    feat[field_name] = graph_id
+    layer.updateFeature(feat)
+    if not layer.commitChanges():
+        return False
+    return True

@@ -8,32 +8,29 @@ on:
   workflow_dispatch:  # allow manual trigger
 
 jobs:
-  # ── Mocked unit tests (fast, no QGIS needed) ──────────────────────────
-  mock-tests:
+  # ── Headless real-QGIS tests (conda-forge qgis, offscreen) ─────────────
+  headless-qgis-tests:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.12"]
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+    - name: Provision QGIS env (micromamba)
+      uses: mamba-org/setup-micromamba@v2
       with:
-        python-version: ${{ matrix.python-version }}
+        environment-file: ci/qgis-env.yml
+        cache-environment: true
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install numpy gmsh>=4.12
-        # pdoc for optional doc build verification
-        pip install pdoc>=14.0
-
-    - name: HYDRA fast-fail (mock env)
+    - name: HYDRA fast-fail (real headless QGIS)
       run: |
         PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
-          mamba run -n qgis_stable bash tools/fast_fail.sh
+          QT_QPA_PLATFORM=offscreen \
+          micromamba run -n hydra-ci bash tools/fast_fail.sh
+
+    - name: Set up Python (lint/audit tools)
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
 
     - name: Python security audit (Bandit)
       run: |
@@ -51,6 +48,7 @@ jobs:
 
     - name: Verify pdoc builds without errors
       run: |
+        pip install pdoc>=14.0
         cd docs && pdoc ../swe2d --skip-errors --docformat numpy --output-dir /tmp/pdoc-check
 
     - name: C++ host-code static analysis (Cppcheck)

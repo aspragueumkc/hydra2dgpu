@@ -1,7 +1,7 @@
 """RunContext parity diff test — CLI-first refactor Phase 0 equivalence gate.
 
-Builds one ``RunContext`` from the GUI Studio dialog (mocked ``qgis.*``,
-real PyQt5 widgets — the ``test_workbench_gui.py:467-500`` pattern) and
+Builds one ``RunContext`` from the GUI Studio dialog (real headless QGIS —
+see ``tests/qgis_real_env.py``) and
 one from ``swe2d.runtime.run_context_builder.build_run_context_from_dict``
 fed the ``swe2d-replay/1`` JSON exported from the SAME dialog widget state
 (``RunController.collect_widget_state_for_save`` + ``_build_replay_payload``
@@ -29,23 +29,15 @@ import enum
 import math
 import os
 import shutil
-import sys
 import tempfile
 import threading
 import unittest
 from dataclasses import fields as _dc_fields
 from typing import Any, Dict, List, Tuple
-from unittest.mock import MagicMock
 
 import numpy as np
 
-# ── Install QGIS mocks BEFORE any swe2d module imports ────────────────
-from tests.mocks.qgis_env import install_qgis_mocks
-# Save real QApplication before mocks replace it (dialog lifecycle needs it)
-from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP
-
-install_qgis_mocks()
-
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis, stub_iface
 from tests._swe2d_test_helpers import (
     _channel_bc_edges,
     _gpu_available,
@@ -174,9 +166,6 @@ class ParityFixture:
         self.ctx_gui = None
         self.payload: Dict[str, Any] = {}
         self.ctx_cli = None
-        # Saved globals patched in _build_dialog, restored in close().
-        self._saved_qapps: List[Tuple[Any, Any]] = []  # (module, original QApplication)
-        self._saved_qgsproject_instance: Any = None
 
     # ── construction ────────────────────────────────────────────────────
     def build(self) -> "ParityFixture":
@@ -191,17 +180,8 @@ class ParityFixture:
             except Exception:
                 pass
             self.dlg = None
-        # Restore the module-level globals patched in _build_dialog so
-        # later test modules see the pristine mocked environment.
-        import sys as _sys
-        for mod, original in self._saved_qapps:
-            mod.QApplication = original
-        self._saved_qapps.clear()
-        if self._saved_qgsproject_instance is not None:
-            _qcore = _sys.modules.get("qgis.core")
-            if _qcore is not None:
-                _qcore.QgsProject.instance = self._saved_qgsproject_instance
-            self._saved_qgsproject_instance = None
+        from qgis.core import QgsProject
+        QgsProject.instance().clear()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def _persist_mesh(self) -> None:
@@ -220,46 +200,19 @@ class ParityFixture:
         )
 
     def _build_dialog(self) -> None:
-        import sys as _sys
-        # Restore the real QApplication (mocks replaced it with a stub).
-        # Originals are saved and put back in close() — the
-        # test_workbench_gui.py:467-500 save/restore pattern.
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        if _pyqt5_qt is not None:
-            self._saved_qapps.append((_pyqt5_qt, _pyqt5_qt.QApplication))
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        if _qgis_qt is not None:
-            self._saved_qapps.append((_qgis_qt, _qgis_qt.QApplication))
-            _qgis_qt.QApplication = _REAL_QAPP
-        self._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-
-        # Make the mocked QgsProject report an invalid CRS so the GUI unit
-        # service defaults to SI — matching the CLI's derivation from the
-        # (empty) mesh CRS WKT.  NOTE: use sys.modules — a plain
-        # ``import qgis.core`` would execute the real qgis package __init__.
-        _qcore = _sys.modules["qgis.core"]
-
-        class _FakeCrs:
-            def isValid(self):
-                return False
-
-        class _FakeProject:
-            def crs(self):
-                return _FakeCrs()
-
-            def mapLayers(self):
-                return {}
-
-        self._saved_qgsproject_instance = _qcore.QgsProject.instance
-        _qcore.QgsProject.instance = classmethod(lambda cls: _FakeProject())
-
+        ensure_qgis_app()
         from qgis.PyQt import QtWidgets as _qt_widgets
+        from qgis.core import QgsProject
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+
+        # A cleared real QgsProject has an invalid CRS and no layers, so
+        # the GUI unit service defaults to SI — matching the CLI's
+        # derivation from the (empty) mesh CRS WKT.
+        QgsProject.instance().clear()
 
         # A real QMainWindow as iface.mainWindow(): dock widgets are
         # parented to it, and _find_widget falls back to searching it.
-        self.iface = MagicMock()
+        self.iface = stub_iface()
         self.iface.mainWindow.return_value = _qt_widgets.QMainWindow()
         dlg = SWE2DWorkbenchStudioDialog(iface=self.iface)
         self.dlg = dlg
@@ -495,12 +448,14 @@ def diff_run_contexts(ctx_gui, ctx_cli) -> List[Tuple[str, str, str]]:
 # Tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available (GUI options builder requires it)")
 class TestRunContextParity(unittest.TestCase):
     """GUI-built vs CLI-built RunContext recursive diff gate."""
 
     @classmethod
     def setUpClass(cls):
+        ensure_qgis_app()
         # Register cleanup BEFORE build() so a mid-setup failure (e.g. a
         # FallbackTracker silent-fallback error) cannot leak the patched
         # globals / dialog into later test modules.

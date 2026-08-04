@@ -1,150 +1,233 @@
-"""Runtime import-boundary tests.
+"""Clean-subprocess import-boundary tests (MVP Rule 3).
 
-These tests verify that the canonical CLI / runtime import path does NOT
-load Qt (``qgis.PyQt``, ``qgis.gui``, or ``PyQt5``) at import time.  The CLI
-is supposed to be Qt-free in the headless path — see
-``docs/COMPREHENSIVE_REVIEW.md`` C-5 and ``docs/CLI_FIRST_REFACTOR_PLAN.md`` §2.2.
+Every service-layer module must be importable with ``qgis`` and ``PyQt5``
+completely blocked.  The previous design installed fake qgis modules and
+inspected ``sys.modules`` in-process — a mock that defeats the purpose,
+since it asserts the service layer is Qt-free while polluting ``sys.modules``
+with fakes.  This redesign spawns a clean ``sys.executable -c``
+subprocess per module with a meta-path blocker that makes any ``qgis`` /
+``PyQt5`` import raise ``ImportError``, then asserts the import succeeded and
+no Qt module slipped into ``sys.modules`` anyway.
 
-The existing ``tests/test_mvp_imports.py`` enforces the boundary at AST
-parse time (no static ``from swe2d.workbench…`` lines in CLI source).
-This file adds the complementary *runtime* check: even if a lazy import
-slips in, we want to know whether it triggers Qt at module load.
+Service roots (``.opencode/rules/MVP_ARCHITECTURE.md`` Rule 3 + layer diagram):
 
-The check is a *delta* on the set of Qt modules in ``sys.modules``: we
-snapshot Qt modules right before the import under test, then assert that
-no new Qt modules were added by that import.  This is robust against
-test pollution — other tests in the same session (e.g. the builder tests
-in ``test_run_context_builder.py``) install Qt mocks and therefore
-populate ``sys.modules`` with Qt entries before this module runs.  The
-absolute "no Qt in sys.modules" check would (and did) produce false
-positives in that case.
+- ``swe2d/runtime/``
+- ``swe2d/boundary_and_forcing/``
+- ``swe2d/mesh/``
+- ``swe2d/results/``
+- ``swe2d/workbench/services/``  (the ``*service*.py`` layer)
 
-Implemented as a ``unittest.TestCase`` (not pytest functions) because the
-project root ``__init__.py`` is the QGIS plugin entry point and pytest's
-package-discovery mode tries to import it during collection, which fails
-in headless environments.  ``python -m unittest`` is the project's
-canonical test runner — see ``.github/workflows/test.yml``.
+Packages are walked with ``pkgutil.iter_modules`` so new service modules are
+checked automatically.  The CLI Qt-free surface (``swe2d.cli``, ``swe2d.core``)
+is covered by the same mechanism — see ``docs/COMPREHENSIVE_REVIEW.md`` C-5.
+
+The test itself needs no qgis, no mocks, and no harness imports — it only
+spawns subprocesses.  Run with the project's canonical runner:
+
+    python3 -m unittest -v tests.test_import_boundary
 """
 
 from __future__ import annotations
 
-import importlib
+import os
+import pkgutil
+import subprocess
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_SUBPROCESS_TIMEOUT_S = 30
+_MAX_WORKERS = 8
+
+# Packages walked for the MVP-3 hard rule (Qt-free service layer).
+_SERVICE_PACKAGE_ROOTS = (
+    "swe2d.runtime",
+    "swe2d.boundary_and_forcing",
+    "swe2d.mesh",
+    "swe2d.results",
+    "swe2d.workbench.services",
+)
+
+# CLI / public-API modules that must also stay Qt-free so the headless CLI
+# works without QGIS (docs/CLI_FIRST_REFACTOR_PLAN.md §2.2).  Not walked —
+# the CLI surface is intentionally small and explicit.
+_CLI_QT_FREE_MODULES = (
+    "swe2d.cli",
+    "swe2d.cli.gpkg_adapter",
+    "swe2d.cli.headless_runner",
+    "swe2d.core",
+    "swe2d.core.builder",
+    "swe2d.workbench.workers",  # Qt symbols are lazy via PEP 562 __getattr__
+)
+
+# Tier 2 — known Qt-bound modules sitting inside service roots.
+#
+# These are PRE-EXISTING MVP Rule 3 violations, documented here so the test
+# suite stays green while making the violation set explicit and shrink-only:
+# test_known_qt_bound_modules_still_fail asserts each of these DOES fail the
+# blocked import.  Fixing a module (making it Qt-free) fails that test with
+# instructions to shrink this list; adding a new Qt import to any other
+# service module fails the tier-1 test.  The set cannot grow silently and
+# cannot go stale.
+_KNOWN_QT_BOUND = frozenset({
+    # Top-level `from qgis.PyQt import QtCore` — a QObject playback
+    # controller; belongs in workbench/views, not the results service layer.
+    "swe2d.results.animation",
+    # Top-level Qt import inside an `if True:` block (line ~999); a Qt
+    # canvas-overlay renderer; belongs in workbench/views.
+    "swe2d.results.high_perf_viewer",
+    # Top-level `from qgis.PyQt.QtCore import QObject, pyqtSignal` — a
+    # QObject batch runner; needs a Qt-free core + thin Qt wrapper split.
+    "swe2d.workbench.services.batch_manager",
+})
+
+# Subprocess preamble: block qgis/PyQt5 at the meta-path level, import the
+# target module, then verify nothing Qt-flavoured landed in sys.modules.
+_CHECK_SCRIPT = """\
+import importlib
+import sys
 
 
-_QT_MODULE_PREFIXES = ("qgis.PyQt", "qgis.gui", "PyQt5")
+class _QtBlocker:
+    def find_spec(self, name, path=None, target=None):
+        if name == "qgis" or name.startswith("qgis.") \\
+                or name == "PyQt5" or name.startswith("PyQt5."):
+            raise ImportError(f"MVP-3 blocked Qt import: {name}")
+        return None
 
 
-def _qt_modules_loaded() -> list[str]:
-    return [m for m in sys.modules if any(m == p or m.startswith(p + ".") for p in _QT_MODULE_PREFIXES)]
+sys.meta_path.insert(0, _QtBlocker())
+importlib.import_module(sys.argv[1])
+qt = sorted(
+    m for m in sys.modules
+    if m == "qgis" or m.startswith("qgis.") or m.startswith("PyQt5")
+)
+if qt:
+    print("QT MODULES LOADED:", qt, file=sys.stderr)
+    sys.exit(1)
+"""
 
 
-def _qt_modules_loaded_before() -> frozenset:
-    """Snapshot the Qt modules currently in ``sys.modules``.
+def _walk_service_modules() -> list[str]:
+    """Fully-qualified names of every module under the service roots."""
+    names: list[str] = []
+    for root in _SERVICE_PACKAGE_ROOTS:
+        package = __import__(root, fromlist=["__path__"])
+        names.extend(
+            m.name for m in pkgutil.iter_modules(package.__path__, root + ".")
+        )
+    return sorted(names)
 
-    Returned as a ``frozenset`` so it can be used as the ``before`` set
-    in a delta check: ``after - before`` is the set of Qt modules the
-    import under test newly introduced.
+
+def _subprocess_env() -> dict:
+    """Environment for the clean subprocess.
+
+    Prepends the repo root and build/ to the inherited PYTHONPATH.  The
+    inherited value MUST be preserved: the mamba env's activate.d scripts put
+    QGIS's own ``share/qgis/python`` there, and clobbering it changes which
+    modules are importable.  qgis/PyQt5 remain blocked by the meta-path
+    hook regardless — being importable-but-blocked is exactly the tier-1
+    scenario (a stray ``import qgis`` must fail loudly, not silently pass
+    because qgis happened to be absent).
     """
-    return frozenset(_qt_modules_loaded())
+    env = dict(os.environ)
+    entries = [str(_REPO_ROOT), str(_REPO_ROOT / "build")]
+    inherited = env.get("PYTHONPATH", "")
+    if inherited:
+        entries.append(inherited)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
+    return env
 
 
-def _reset_swe2d_modules() -> None:
-    """Drop every cached ``swe2d.*`` module so the import is observed fresh."""
-    for mod in list(sys.modules):
-        if mod == "swe2d" or mod.startswith("swe2d."):
-            del sys.modules[mod]
+def _check_module(module: str, env: dict) -> tuple[str, int, str]:
+    """Run the blocked-import check for one module; return (name, rc, tail)."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _CHECK_SCRIPT, module],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT_S,
+        cwd=_REPO_ROOT,
+        env=env,
+    )
+    output = (proc.stderr or proc.stdout).strip().splitlines()
+    tail = output[-1] if output else ""
+    return module, proc.returncode, tail
+
+
+def _run_checks(modules: list[str]) -> dict[str, tuple[int, str]]:
+    env = _subprocess_env()
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        results = list(pool.map(lambda m: _check_module(m, env), modules))
+    return {name: (rc, tail) for name, rc, tail in results}
 
 
 class TestImportBoundary(unittest.TestCase):
-    """Runtime Qt-import boundary checks for the CLI / runtime paths.
+    """MVP Rule 3 enforcement via clean, qgis-blocked subprocesses."""
 
-    Each test uses a *delta* check: it snapshots the Qt modules loaded
-    before the import under test, performs the import, then asserts that
-    no new Qt modules were added.  This is unaffected by Qt modules that
-    other tests in the same session have already pulled into
-    ``sys.modules`` (e.g. via ``tests.mocks.qgis_env``).
-    """
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._service_modules = _walk_service_modules()
+        cls._tier1_modules = [
+            m for m in cls._service_modules if m not in _KNOWN_QT_BOUND
+        ]
+        cls._results = _run_checks(cls._tier1_modules + list(_CLI_QT_FREE_MODULES))
+        cls._known_results = _run_checks(sorted(_KNOWN_QT_BOUND))
 
-    def setUp(self) -> None:
-        _reset_swe2d_modules()
+    def test_service_layer_is_qt_free(self):
+        """Every service-layer module imports with qgis/PyQt5 blocked."""
+        for module in self._tier1_modules:
+            rc, tail = self._results[module]
+            with self.subTest(module=module):
+                self.assertEqual(
+                    rc,
+                    0,
+                    f"{module} must import cleanly with qgis/PyQt5 blocked "
+                    f"(MVP Rule 3). Subprocess said: {tail}",
+                )
 
-    def tearDown(self) -> None:
-        _reset_swe2d_modules()
+    def test_cli_surface_is_qt_free(self):
+        """The headless CLI / public API must not need Qt at import time."""
+        for module in _CLI_QT_FREE_MODULES:
+            rc, tail = self._results[module]
+            with self.subTest(module=module):
+                self.assertEqual(
+                    rc,
+                    0,
+                    f"{module} must import cleanly with qgis/PyQt5 blocked "
+                    f"(headless CLI contract). Subprocess said: {tail}",
+                )
 
-    def _assert_no_new_qt(self, before: frozenset, label: str) -> None:
-        """Helper: fail if any new Qt module appeared during the import."""
-        new_qt = set(_qt_modules_loaded()) - before
-        self.assertFalse(
-            new_qt,
-            f"{label} must not import Qt at module load time, added: {sorted(new_qt)}",
+    def test_known_qt_bound_modules_still_fail(self):
+        """Guardrail: the documented violation set is exact and shrink-only.
+
+        Each module in ``_KNOWN_QT_BOUND`` must still FAIL the blocked
+        import.  If one now passes, the module has been de-Qtified — remove
+        it from ``_KNOWN_QT_BOUND`` so it joins tier 1.  If a NEW service
+        module fails tier 1 instead, do NOT add it here — fix the import.
+        """
+        self.assertTrue(
+            set(self._known_results) == _KNOWN_QT_BOUND,
+            "guardrail must check exactly the _KNOWN_QT_BOUND set",
         )
-
-    def test_cli_does_not_import_qgis_gui(self):
-        """``import swe2d.cli`` must not load Qt modules.
-
-        The CLI's ``__init__.py`` is intentionally empty.  All CLI entry
-        points (headless_runner, gpkg_adapter) must avoid eager Qt imports
-        so ``python -m swe2d.cli …`` works without QGIS.
-        """
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.cli")
-        self._assert_no_new_qt(before, "swe2d.cli")
-
-    def test_cli_gpkg_adapter_does_not_import_qgis_gui(self):
-        """``swe2d.cli.gpkg_adapter`` is a thin re-export from core and must not load PyQt GUI."""
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.cli.gpkg_adapter")
-        self._assert_no_new_qt(before, "swe2d.cli.gpkg_adapter")
-
-    def test_cli_headless_runner_does_not_import_qgis_gui(self):
-        """``swe2d.cli.headless_runner`` is the CLI's main entry; Qt must stay out."""
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.cli.headless_runner")
-        self._assert_no_new_qt(before, "swe2d.cli.headless_runner")
-
-    def test_core_builder_does_not_import_qgis_gui(self):
-        """``swe2d.core.builder`` is the canonical RunContext builder.
-
-        It must remain free of ``qgis.PyQt`` / ``qgis.gui`` / ``PyQt5`` so
-        the CLI can build a ``RunContext`` from a JSON spec without QGIS.
-        It may import ``qgis.core`` (allowed) via the GPKG I/O helpers.
-        """
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.core.builder")
-        self._assert_no_new_qt(before, "swe2d.core.builder")
-
-    def test_core_package_does_not_import_qgis_gui(self):
-        """``import swe2d.core`` must not pull in any Qt GUI modules.
-
-        ``swe2d.core`` is the public, GUI-free API surface.  Eager imports of
-        ``RunContext``, ``build_run_context``, ``execute_run``, etc. must not
-        trigger ``qgis.PyQt`` / ``qgis.gui`` / ``PyQt5``.
-        """
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.core")
-        self._assert_no_new_qt(before, "swe2d.core")
-
-    def test_workbench_workers_package_does_not_eagerly_import_qt(self):
-        """``swe2d.workbench.workers`` exposes both Qt and Qt-free symbols.
-
-        ``RunContext`` is a plain dataclass and is re-exported eagerly from
-        ``swe2d.core.run_context``.  ``SimulationWorker`` / ``PersistenceWorker`` /
-        ``ComputeResult`` / ``SnapshotData`` all import Qt and must be loaded
-        only on attribute access (PEP 562 ``__getattr__``).
-        """
-        before = _qt_modules_loaded_before()
-        importlib.import_module("swe2d.workbench.workers")
-
-        # RunContext is a Qt-free dataclass — it must be available immediately.
-        run_ctx_cls = getattr(sys.modules["swe2d.workbench.workers"], "RunContext", None)
-        self.assertIsNotNone(run_ctx_cls, "RunContext should be available eagerly")
-
-        # Qt must not have been pulled in by the package import.
-        self._assert_no_new_qt(before, "swe2d.workbench.workers package import")
+        for module, (rc, tail) in self._known_results.items():
+            with self.subTest(module=module):
+                self.assertNotEqual(
+                    rc,
+                    0,
+                    f"{module} is documented as Qt-bound but now imports "
+                    f"cleanly with qgis blocked — remove it from "
+                    f"_KNOWN_QT_BOUND so the tier-1 test covers it.",
+                )
+                self.assertIn(
+                    "MVP-3 blocked Qt import",
+                    tail,
+                    f"{module} failed for an unexpected reason (not the Qt "
+                    f"blocker): {tail}",
+                )
 
 
 if __name__ == "__main__":
     unittest.main()
-

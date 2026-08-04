@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from qgis.PyQt import QtWidgets
+
+
+logger_wb = logging.getLogger(__name__)
 
 
 class SWE2DDetachedPanelDialog(QtWidgets.QDialog):
@@ -45,7 +50,10 @@ class SWE2DDetachedPanelDialog(QtWidgets.QDialog):
             try:
                 self._on_reattach()
             except Exception:
-                self._log("[WARNING] Unexpected Exception silently caught — review this handler")
+                logger_wb.warning(
+                    "Unexpected Exception silently caught — review this handler",
+                    exc_info=True,
+                )
 
     def closeEvent(self, event):
         """Fire reattach callback on close, then delegate to parent."""

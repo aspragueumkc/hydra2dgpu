@@ -139,6 +139,7 @@ class GpkgPlotTab(QtWidgets.QWidget):
             self._available_cols = []
             self._x_combo.blockSignals(False)
             self._y_combo.blockSignals(False)
+            self._on_column_changed()
             return
 
         self._available_cols = discover_plottable_columns(self._gpkg_path, self._table)
@@ -165,6 +166,9 @@ class GpkgPlotTab(QtWidgets.QWidget):
 
         self._x_combo.blockSignals(False)
         self._y_combo.blockSignals(False)
+        # Signals were blocked while repopulating — refresh the Plot-button
+        # enable state and slice-control visibility for the new selection.
+        self._on_column_changed()
 
     def _on_column_changed(self):
         x_name = self._x_combo.currentData() or ""

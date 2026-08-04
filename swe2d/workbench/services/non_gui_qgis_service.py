@@ -62,6 +62,22 @@ def infer_obj_path_from_layer_3d_renderer(layer: object) -> str:
     if symbol is not None:
         probe_objects.append(symbol)
 
+    # QgsPoint3DSymbol stores the configured OBJ path in this mapping.  Probe
+    # it before the attribute names used by other renderer implementations.
+    for obj in probe_objects:
+        try:
+            shape_properties = getattr(obj, "shapeProperties", None)
+            if callable(shape_properties):
+                shape_properties = shape_properties()
+            get_property = getattr(shape_properties, "get", None)
+            value = get_property("model") if callable(get_property) else None
+        except Exception:
+            logger.warning("Failed to read 3D shape properties", exc_info=True)
+            continue
+        txt = str(value or "").strip()
+        if txt.lower().endswith(".obj"):
+            return txt
+
     probe_attrs = (
         "modelPath",
         "modelFile",

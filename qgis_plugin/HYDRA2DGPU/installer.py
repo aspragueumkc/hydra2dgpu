@@ -14,7 +14,15 @@ from typing import Callable
 
 WHEEL_VERSION = "1.3.0"
 RELEASE_TAG = f"v{WHEEL_VERSION}"
-GITHUB_RELEASES = "http://127.0.0.1:8765"
+# Source of truth for the wheel download URL. The plugin zip (built by
+# tools/package_plugin.py) is installed by the QGIS Plugin Manager; the
+# first-launch BackendInstaller then downloads the matching wheel from
+# this URL into ~/.hydra2dgpu/. Override locally by setting
+# HYDRA_SWE2D_WHEEL_URL — useful for CI smoke tests.
+GITHUB_RELEASES = os.environ.get(
+    "HYDRA_SWE2D_WHEEL_URL",
+    "https://github.com/aspragueumkc/hydra2dgpu/releases",
+)
 ENV_DIR_NAME = ".hydra2dgpu"
 CACHE_DIR_ENV = "HYDRA2DGPU_CACHE_DIR"
 
@@ -56,19 +64,68 @@ class BackendInstaller:
         except Exception:
             return False
 
-    def wheel_name(self) -> str:
+    def _wheel_candidates(self) -> list[str]:
+        """Return plausible wheel filenames for this Python + platform.
+
+        cibuildwheel emits filenames like
+        ``hydra_swe2d-<v>-cp<python>-cp<python>-<plat>.whl``. We probe
+        the GitHub release asset list at install-time and pick the first
+        one that matches this interpreter + platform. Listing every
+        candidate up front keeps the release upload free to use any
+        cibuildwheel output naming without coordinating with this code.
+        """
         py = f"cp{sys.version_info.major}{sys.version_info.minor}"
         sysname = platform.system().lower()
         if sysname == "linux":
-            plat = "manylinux_2_28_x86_64"
-        elif sysname == "windows":
-            plat = "win_amd64"
-        else:
-            raise RuntimeError(f"Unsupported platform: {sysname}")
-        return f"hydra_swe2d-{self.version}-{py}-{py}-{plat}.whl"
+            # Newest cibuildwheel uses ``manylinux_2_28``; the
+            # pre-2.20 toolchain used ``manylinux2014``. We try the
+            # newer one first because that is what
+            # .github/workflows/build-wheels.yml emits today.
+            return [
+                f"hydra_swe2d-{self.version}-{py}-{py}-manylinux_2_28_x86_64.whl",
+                f"hydra_swe2d-{self.version}-{py}-{py}-manylinux2014_x86_64.whl",
+                f"hydra_swe2d-{self.version}-{py}-{py}-manylinux_2_17_x86_64.whl",
+            ]
+        if sysname == "windows":
+            return [
+                f"hydra_swe2d-{self.version}-{py}-{py}-win_amd64.whl",
+                f"hydra_swe2d-{self.version}-{py}-{py}-win_64.whl",
+            ]
+        raise RuntimeError(f"Unsupported platform: {sysname}")
 
     def wheel_url(self) -> str:
-        return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{self.wheel_name()}"
+        """Resolve the wheel download URL by probing the GitHub Release
+        asset list for the first candidate that exists.
+
+        Falls back to the first candidate if the probe fails (offline,
+        private mirror, rate-limited): ``pip install <url>`` still surfaces
+        a clear 404 in the install dialog.
+        """
+        names = self._wheel_candidates()
+        if GITHUB_RELEASES.startswith("http://127.0.0.1"):
+            # Local QA mirror — probe is meaningless; take the first.
+            return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
+        try:
+            from urllib.request import urlopen
+            from urllib.error import URLError
+            api = (
+                f"https://api.github.com/repos/"
+                f"{GITHUB_RELEASES.rstrip('/').split('/')[-2]}/"
+                f"{GITHUB_RELEASES.rstrip('/').split('/')[-1]}/"
+                f"releases/tags/{RELEASE_TAG}"
+            )
+            with urlopen(api, timeout=15) as resp:
+                import json
+                data = json.loads(resp.read().decode("utf-8"))
+            assets = {a["name"] for a in data.get("assets", [])}
+        except (URLError, TimeoutError, ValueError, KeyError):
+            return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
+        for name in names:
+            if name in assets:
+                return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{name}"
+        # Probe succeeded but no candidate matched — fall back to the
+        # newest one and let pip surface a useful 404.
+        return f"{GITHUB_RELEASES}/{RELEASE_TAG}/{names[0]}"
 
     def install(self, progress: ProgressFn) -> None:
         env = self.env_dir()

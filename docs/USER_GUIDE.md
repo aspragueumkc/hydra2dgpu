@@ -1,7 +1,7 @@
 # HYDRA — GPU-Accelerated 2D Shallow Water Equation Plugin for QGIS
 
 **Version**: 2.0 (GPU-Only)
-**Last Updated**: 2026-06-22
+**Last Updated**: 2026-07-29
 
 ---
 
@@ -18,7 +18,10 @@
 9. [Troubleshooting](#9-troubleshooting)
 10. [Agent-Assisted Modeling (MCP)](#10-agent-assisted-modeling-mcp)
 11. [Layer Styles (QML)](#11-layer-styles-qml)
-12. [References](#12-references)
+12. [Graph Editor](#12-graph-editor)
+13. [CLI Quickstart](#13-cli-quickstart)
+14. [Batch Runner Workflow](#14-batch-runner-workflow)
+15. [References](#15-references)
 
 ---
 
@@ -958,7 +961,209 @@ layer is loaded from this GPKG.
 | `swe2d_topo_quad_edges.qml` | Topology quad edges |
 | `swe2d_topo_regions.qml` | Topology regions |
 
-## 12. References
+## 12. Graph Editor (Hydrographs & Hyetographs)
+
+Use the **Graph Editor** to author and edit time-series graphs —
+hydrographs (discharge vs. time) and hyetographs (rainfall intensity vs.
+time) — for the active model GeoPackage. The dialog writes back to the
+`swe2d_hydrographs` and `swe2d_hyetographs` tables in the same GPKG, so
+the forcing curves you author here flow directly into the **Simulation →
+Run / Output** page.
+
+### When to use it
+
+- Authoring or editing a **discharge hydrograph** for an inflow boundary
+  without exporting to CSV or hand-editing tables.
+- Authoring or editing a **rainfall hyetograph** for a uniform-rainfall
+  simulation or for one of the rain gages in a Thiessen-weighted setup.
+- Visually inspecting an existing time-series before running a
+  simulation — the editor plots the curve as you type.
+
+### Open the Graph Editor
+
+```text
+HYDRA2DGPU → Graph Editor…
+```
+
+(Equivalent menu action is `HYDRA2DMenuGraphEditorAction`.) If the active
+project has no model GeoPackage loaded, the dialog shows an error and
+exits.
+
+### Workflow
+
+1. **Pick a series type** (hydrograph vs. hyetograph) from the dropdown.
+2. **Pick or create a series id** (matches a BC line id for hydrographs or
+   a rain gage id for hyetographs).
+3. **Edit rows in the table.** Columns are `time` (hours) and `value`
+   (m³/s for hydrographs, mm/hr for hyetographs). Add / remove rows with
+   the table buttons.
+4. **The plot updates live** as you type, showing the curve.
+5. **Save the graph.** Writes the new / edited rows into the model
+   GeoPackage's `swe2d_hydrographs` / `swe2d_hyetographs` tables.
+6. **Use the graph** in the **Simulation → Run / Output** page — the
+   `Build Run Spec` step reads the same tables and validates monotonic
+   time, units, and series-id presence before the solver starts.
+
+> The dialog keep-alive list is owned by the controller, so opening the
+> editor multiple times is safe — each opens a separate window.
+
+### Cross-references
+
+- BC / rainfall semantics: [§4.2 Layer Setup](#42-layer-setup-page-layers-tab--second-page)
+  and [§6.2 Rain / Hydrology Page](#62-rain--hydrology-page).
+- Schema reference: [MODEL_GEOPACKAGE_SCHEMA.md](MODEL_GEOPACKAGE_SCHEMA.md).
+- CLI equivalent: `bc_configure(...)` / `rainfall_configure(...)` — see
+  [CLI Guide](CLI_GUIDE.md).
+
+---
+
+## 13. CLI Quickstart
+
+The same GPU solver runs from a terminal or CI pipeline without QGIS via
+the `swe2d-cli` entry point. The CLI is the supported path for batch
+sweeps, regression tests, and headless GPU servers.
+
+### Single run
+
+```bash
+mamba activate qgis_stable
+python -m swe2d.cli run mesh.gpkg params.json --results out.gpkg --progress
+```
+
+| Arg | Meaning |
+|---|---|
+| `mesh.gpkg` | Baked model GeoPackage (created via Studio or `tools/gmsh_topology_mesher.py`). |
+| `params.json` | Simulation parameters (same shape the Studio UI persists to `workbench_widget_state_json`, minus widget types). |
+| `--results out.gpkg` | Where to write run results. Defaults to the model GPKG if omitted. |
+| `--progress` | Print a percent-progress line every few steps; required for parent processes that tail stdout. |
+| `--status-file-path <file>` | Write a JSON status record to `<file>` every few seconds — consumed by the Studio batch dialog. |
+
+**Headless output schema matches the Studio:** `swe2d_cell_results`,
+`swe2d_link_results`, `swe2d_run_logs`. Inspect with
+`results_query(gpkg_path, run_id, field)` (programmatic) or the Studio
+Results dock (GUI).
+
+### Multi-run batch
+
+```bash
+python -m swe2d.cli batch batch.json mesh.gpkg --results results_root.gpkg -w 4
+```
+
+See [§14 Batch Runner Workflow](#14-batch-runner-workflow) for the
+`batch.json` schema and the multi-worker / MPS contract.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — all runs finished, results written. |
+| `1` | A run failed; details in `--status-file-path` or stdout. |
+| `2` | Bad arguments / missing GPKG. |
+| `130` | SIGINT (Ctrl-C) — the solver completes the current timestep and exits. |
+
+### Cross-references
+
+- Full argument reference: [CLI_GUIDE.md](CLI_GUIDE.md).
+- Params shape: [RUN_SPEC_SCHEMA.md](RUN_SPEC_SCHEMA.md).
+
+---
+
+## 14. Batch Runner Workflow
+
+The batch runner (`python -m swe2d.cli batch …`) drives many runs in
+parallel against a single baked mesh. Use it for parameter sweeps,
+calibration studies, or Monte Carlo / sensitivity work.
+
+### `batch.json` shape
+
+```json
+{
+  "mesh": "model.gpkg",
+  "results_root": "results_root.gpkg",
+  "runs": [
+    {"name": "baseline", "params": {"run_duration": "1:00", "manning_n": 0.025}},
+    {"name": "dry-manning-035", "params": {"manning_n": 0.035}},
+    {"name": "dry-manning-045", "params": {"manning_n": 0.045}}
+  ]
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `mesh` | ✅ | Path to the baked model GeoPackage. |
+| `results_root` | ✅ | Output GeoPackage path. Created if missing. |
+| `runs` | ✅ | List of run specs. Each entry's `name` becomes the run_id (sanitized); each entry's `params` is merged into the base run spec. |
+| `runs[i].name` | optional | Defaults to `run_<idx>_<unix_ts>`. |
+| `runs[i].params` | optional | Run-parameter overrides (any field accepted by `spec_build`). |
+
+Determinism: run ids are derived from the spec (not the wall clock), so
+re-running the same `batch.json` produces the same ids and overwrites the
+previous results.
+
+### Multi-worker semantics
+
+```bash
+python -m swe2d.cli batch batch.json mesh.gpkg --results results_root.gpkg -w 4
+```
+
+- `-w N` launches `N` worker subprocesses.
+- Each worker is a separate `swe2d.cli run` invocation; they share the
+  GPU via **NVIDIA MPS** (CUDA Multi-Process Service). Set up MPS
+  before launching the batch — see NVIDIA's MPS guide. Without MPS,
+  multi-worker runs will contend for the GPU and likely run slower than
+  serial.
+- Workers do not coordinate beyond the results GeoPackage; results
+  appear in `results_root` as each worker finishes.
+
+### Status file
+
+```bash
+python -m swe2d.cli batch batch.json mesh.gpkg --results results_root.gpkg \
+    --status-file-path status.json
+```
+
+The CLI writes a JSON snapshot to `status.json` every few seconds:
+
+```json
+{
+  "state": "running",
+  "completed": ["baseline"],
+  "in_progress": "dry-manning-035",
+  "pending": ["dry-manning-045"],
+  "t_s": 412.7
+}
+```
+
+- The Studio batch dialog tails this file and renders progress.
+- A `state: "done"` line means every run finished; a `state: "failed"`
+  line includes the failing run id.
+
+### Cancellation
+
+- **Ctrl-C in the parent** sends SIGINT to every worker; each worker
+  finishes its current timestep and exits cleanly.
+- **`run_cancel(job_id)` from the MCP server** aborts a single running
+  job inside an active `swe2d-cli run` (not a batch). The batch runner
+  waits for currently-running workers, then exits.
+
+### When to prefer batch over per-run
+
+| Use case | Recommended path |
+|---|---|
+| Single one-off simulation, want a clear log | `swe2d.cli run … --progress` |
+| Parameter sweep with deterministic IDs | `swe2d.cli batch …` |
+| Live progress in Studio UI | `swe2d.cli batch … --status-file-path …` |
+| Long-running unattended Monte Carlo | `nohup swe2d.cli batch … &` with MPS |
+
+### Cross-references
+
+- Full batch runner reference: [CLI_GUIDE.md §4](CLI_GUIDE.md).
+- Source: [`tools/swe2d/cli/batch_runner.py`](../../tools/swe2d/cli/batch_runner.py).
+- Batch dialog source: [`swe2d/workbench/dialogs/batch_simulation_dialog.py`](../../swe2d/workbench/dialogs/batch_simulation_dialog.py).
+
+---
+
+## 15. References
 
 - Toro, E. F. *Riemann Solvers and Numerical Methods for Fluid Dynamics*. Springer.
 - FHWA. *Hydraulic Design of Highway Culverts* (HDS-5). FHWA-HIF-05-012.

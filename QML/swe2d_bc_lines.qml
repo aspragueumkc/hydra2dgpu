@@ -428,37 +428,9 @@
   </conditionalstyles>
   <storedexpressions/>
   <editform tolerant="1"></editform>
-  <editforminit>bc_lines_form_init</editforminit>
+  <editforminit></editforminit>
   <editforminitcodesource>0</editforminitcodesource>
-  <editforminitcode><![CDATA[from qgis.PyQt.QtWidgets import QComboBox, QLineEdit
-from qgis.core import QgsProject, QgsMapLayerType, QgsWkbTypes
-
-
-def bc_lines_form_init(dialog, layer, feature):
-    le = dialog.findChild(QLineEdit, "hydrograph_layer")
-    if le is None:
-        return
-
-    combo = QComboBox(le.parentWidget())
-    combo.addItem("", "")
-    for lyr in QgsProject.instance().mapLayers().values():
-        if lyr.type() == QgsMapLayerType.VectorLayer and lyr.geometryType() == QgsWkbTypes.NullGeometry:
-            combo.addItem(lyr.name(), lyr.name())
-
-    val = feature.attribute("hydrograph_layer") or ""
-    idx = combo.findData(val)
-    if idx >= 0:
-        combo.setCurrentIndex(idx)
-
-    parent_layout = le.parentWidget().layout()
-    if parent_layout:
-        parent_layout.insertWidget(parent_layout.indexOf(le) + 1, combo)
-
-    combo.currentTextChanged.connect(lambda t: le.setText(t))
-
-    if val:
-        le.setText(val)
-]]></editforminitcode>
+  <editforminitcode></editforminitcode>
   <featformsuppress>0</featformsuppress>
   <editorlayout>tablayout</editorlayout>
   <attributeEditorForm>

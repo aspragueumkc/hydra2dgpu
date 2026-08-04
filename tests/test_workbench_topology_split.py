@@ -7,14 +7,9 @@ Tests verify that:
 
 from __future__ import annotations
 
-import sys
 import unittest
-from unittest.mock import MagicMock, patch
 
-# ── Save real QApplication BEFORE qgis mocks replace it ──────────────
-from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP
-from tests.mocks.qgis_env import install_qgis_mocks
-install_qgis_mocks()
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
 
 from qgis.PyQt.QtWidgets import (
     QWidget,
@@ -27,26 +22,12 @@ from qgis.PyQt.QtWidgets import (
 )
 
 
-class _WithRealQApp:
-    """Mixin-style helper: swaps mock QApplication for real one in setUp/tearDown."""
+class _TopologyTestBase(unittest.TestCase):
+    """Base: real headless QgsApplication + a fresh parent widget per test."""
 
     @classmethod
     def setUpClass(cls):
-        _pyqt5_qt = sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = sys.modules.get("qgis.PyQt.QtWidgets")
-        if _pyqt5_qt is not None:
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        if _qgis_qt is not None:
-            _qgis_qt.QApplication = _REAL_QAPP
-        cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-
-    @classmethod
-    def tearDownClass(cls):
-        pass
-
-
-class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
-    """Tests for _build_topology_tab_controls — pure view widget creation."""
+        cls._app = ensure_qgis_app()
 
     def setUp(self):
         self.parent = QWidget()
@@ -54,6 +35,20 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def tearDown(self):
         self.parent.deleteLater()
+
+    def _build_controls(self):
+        from swe2d.workbench.views.topology_tab_view import (
+            _build_topology_tab_controls,
+        )
+        return _build_topology_tab_controls(
+            parent=self.parent,
+            topology_tab_page=self.parent,
+        )
+
+
+@requires_qgis
+class TestBuildTopologyTabControls(_TopologyTestBase):
+    """Tests for _build_topology_tab_controls — pure view widget creation."""
 
     def _widget_names_in_dict(self, d):
         """Return set of object names from widgets in dict."""
@@ -68,25 +63,13 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_returns_dict(self):
         """_build_topology_tab_controls returns a dict."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         self.assertIsInstance(result, dict)
         self.assertGreater(len(result), 0)
 
     def test_contains_expected_gmsh_widgets(self):
         """Dict contains all critical gmsh control widget names."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         widget_names = self._widget_names_in_dict(result)
         expected = {
             "topo_backend_combo",
@@ -120,13 +103,7 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_contains_quality_form_widgets(self):
         """Quality form widgets are in the controls widget."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         widget_names = self._widget_names_in_dict(result)
         expected = {
             "topo_quality_min_angle_spin",
@@ -142,13 +119,7 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_contains_interface_widgets(self):
         """Interface transition control widgets are present."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         widget_names = self._widget_names_in_dict(result)
         expected = {
             "topo_gmsh_interface_transition_enable_chk",
@@ -160,13 +131,7 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_widgets_are_proper_types(self):
         """Each widget in the dict is the expected Qt type."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         type_map = {
             "topo_backend_combo": QComboBox,
             "topo_default_cell_type_combo": QComboBox,
@@ -194,52 +159,39 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_backend_combo_shows_gmsh_recommended(self):
         """Backend combo always shows 'Gmsh (recommended)' — gmsh availability is no longer gating."""
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         backend_combo = result.get("topo_backend_combo")
         self.assertIsNotNone(backend_combo)
         first_text = backend_combo.itemText(0).lower()
         self.assertIn("recommended", first_text)
 
 
-class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
+@requires_qgis
+class TestWireTopologyTabControls(_TopologyTestBase):
     """Tests for _wire_topology_tab_controls — controller signal wiring."""
 
-    def setUp(self):
-        self.parent = QWidget()
-        self.parent.setLayout(QVBoxLayout())
-
-    def tearDown(self):
-        self.parent.deleteLater()
-
     def _make_toy_widgets(self):
-        from swe2d.workbench.views.topology_tab_view import (
-            _build_topology_tab_controls,
-        )
-        result = _build_topology_tab_controls(
-            parent=self.parent,
-            topology_tab_page=self.parent,
-        )
+        result = self._build_controls()
         # Keep reference to parent to prevent GC
         self._parent_ref = self.parent
         return result
 
-    def test_wire_does_not_crash(self):
+    def _make_controller(self):
+        from unittest.mock import MagicMock
+
         from swe2d.workbench.controllers.topology_controller import (
-            _wire_topology_tab_controls,
+            TopologyController,
         )
+        return TopologyController(MagicMock(name="TopologyMeshView"))
+
+    def test_wire_does_not_crash(self):
         widgets = self._make_toy_widgets()
         update_called = [False]
 
         def update_summary():
             update_called[0] = True
 
-        _wire_topology_tab_controls(
+        self._make_controller()._wire_topology_tab_controls(
             widgets=widgets,
             update_summary_fn=update_summary,
         )
@@ -247,16 +199,13 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_update_summary_called_after_wire(self):
         """The update summary function is called at the end of wiring."""
-        from swe2d.workbench.controllers.topology_controller import (
-            _wire_topology_tab_controls,
-        )
         widgets = self._make_toy_widgets()
         update_called = [False]
 
         def update_summary():
             update_called[0] = True
 
-        _wire_topology_tab_controls(
+        self._make_controller()._wire_topology_tab_controls(
             widgets=widgets,
             update_summary_fn=update_summary,
         )
@@ -267,10 +216,7 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_wire_with_empty_widgets_does_not_raise(self):
         """Wiring with empty widget dict should not crash (graceful skip)."""
-        from swe2d.workbench.controllers.topology_controller import (
-            _wire_topology_tab_controls,
-        )
-        _wire_topology_tab_controls(
+        self._make_controller()._wire_topology_tab_controls(
             widgets={},
             update_summary_fn=lambda: None,
         )

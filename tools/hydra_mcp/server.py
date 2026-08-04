@@ -70,6 +70,13 @@ else:  # run as a plain script: tools/hydra_mcp is already sys.path[0]
 
 mcp = FastMCP("hydra")
 
+# GPU Direct Viewer tools are hidden by default — see
+# docs/specs/2026-07-29-gpu-viewer-hide-and-user-guide-coverage.md.  Set
+# HYDRA_MCP_ENABLE_GPU_VIEWER=1 to re-register them.
+_GPU_VIEWER_ENABLED = str(os.environ.get("HYDRA_MCP_ENABLE_GPU_VIEWER", "")).strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 
 @mcp.tool()
 def model_inspect(gpkg_path: str) -> dict:
@@ -285,22 +292,24 @@ def results_compare(gpkg_path: str, run_a: str, run_b: str, field: str, toleranc
 
 @mcp.tool()
 def gui_launch(
-    mode: str = "offscreen",
+    mode: str = "xvfb",
     project: str | None = None,
     timeout: float = 60.0,
 ) -> dict:
     """Launch a QGIS instance with the HYDRA MCP bridge injected.
 
-    Starts a new QGIS process (offscreen, Xvfb, or display mode) with the
+    Starts a new QGIS process (Xvfb, offscreen, or display mode) with the
     bridge script loaded, waits for the bridge to write its token file, and
     returns session metadata.  Pass the returned ``token_path`` to
     ``gui_widget_tree`` / ``gui_find_widget`` to drive the live session.
 
     Args:
-        mode: ``"offscreen"`` (QT_QPA_PLATFORM=offscreen), ``"xvfb"`` (Xvfb
-            virtual display), or ``"display"`` (poll for a bridge token file
-            from a running QGIS; set ``HYDRA_MCP_BRIDGE=1`` at QGIS launch
-            or inject the bridge via the Python console bootstrap).
+        mode: ``"xvfb"`` (default; Xvfb virtual display — preferred: the
+            ``offscreen`` QPA is flaky with NVIDIA GL, crashing QGIS at
+            boot), ``"offscreen"`` (QT_QPA_PLATFORM=offscreen, only when
+            Xvfb is unavailable), or ``"display"`` (poll for a bridge token
+            file from a running QGIS; set ``HYDRA_MCP_BRIDGE=1`` at QGIS
+            launch or inject the bridge via the Python console bootstrap).
         project: Optional path to a ``.qgs`` / ``.qgz`` QGIS project to open.
         timeout: Seconds to wait for the bridge token file to appear.  In
             ``display`` mode this also bounds how long the server polls for
@@ -743,75 +752,76 @@ def design_apply_patch(diff: str) -> dict:
 
 # ── GPU Direct Viewer (Phase 1 of docs/plans/2026-07-26-gpu-direct-viewer.md) ──
 
-@mcp.tool()
-def gpu_viewer_open(token_path: str | None = None) -> dict:
-    """Open the standalone GPUViewerDialog on top of the studio window.
+if _GPU_VIEWER_ENABLED:
 
-    The dialog uses a snapshot reader that pulls from the GPU device ring
-    buffer.  If no run is in progress, the dialog shows "Waiting for first
-    snapshot…" until a run starts.
+    @mcp.tool()
+    def gpu_viewer_open(token_path: str | None = None) -> dict:
+        """Open the standalone GPUViewerDialog on top of the studio window.
 
-    Args:
-        token_path: Optional path to the bridge token file.  When omitted,
-            auto-discovers the active session.
+        The dialog uses a snapshot reader that pulls from the GPU device ring
+        buffer.  If no run is in progress, the dialog shows "Waiting for first
+        snapshot…" until a run starts.
 
-    Returns:
-        ``{"ok": true}`` or a structured error.
-    """
-    return _tools_gpu_viewer.gpu_viewer_open(token_path=token_path)
+        Args:
+            token_path: Optional path to the bridge token file.  When omitted,
+                auto-discovers the active session.
 
+        Returns:
+            ``{"ok": true}`` or a structured error.
+        """
+        return _tools_gpu_viewer.gpu_viewer_open(token_path=token_path)
 
-@mcp.tool()
-def gpu_viewer_set_field(field: str, token_path: str | None = None) -> dict:
-    """Change the field on the open GPUViewerDialog.
+    @mcp.tool()
+    def gpu_viewer_set_field(field: str, token_path: str | None = None) -> dict:
+        """Change the field on the open GPUViewerDialog.
 
-    Args:
-        field: One of ``'depth'`` or ``'speed'``.
-        token_path: Optional bridge token path.
+        Args:
+            field: One of ``'depth'`` or ``'speed'``.
+            token_path: Optional bridge token path.
 
-    Returns:
-        ``{"ok": true, "field": "..."}`` or a structured error.
-    """
-    return _tools_gpu_viewer.gpu_viewer_set_field(field=field, token_path=token_path)
+        Returns:
+            ``{"ok": true, "field": "..."}`` or a structured error.
+        """
+        return _tools_gpu_viewer.gpu_viewer_set_field(
+            field=field, token_path=token_path
+        )
 
+    @mcp.tool()
+    def gpu_viewer_read_snapshot(token_path: str | None = None) -> dict:
+        """Read the latest live snapshot from the open viewer.
 
-@mcp.tool()
-def gpu_viewer_read_snapshot(token_path: str | None = None) -> dict:
-    """Read the latest live snapshot from the open viewer.
+        Returns ``{ok, t_s, n_cells, h_b64, hu_b64, hv_b64}``.  Arrays are
+        base64-encoded ``float64`` bytes — decode with
+        ``base64.b64decode(snap['h_b64'])`` then
+        ``np.frombuffer(..., dtype=np.float64)``.
 
-    Returns ``{ok, t_s, n_cells, h_b64, hu_b64, hv_b64}``.  Arrays are
-    base64-encoded ``float64`` bytes — decode with
-    ``base64.b64decode(snap['h_b64'])`` then
-    ``np.frombuffer(..., dtype=np.float64)``.
+        Args:
+            token_path: Optional bridge token path.
 
-    Args:
-        token_path: Optional bridge token path.
+        Returns:
+            Snapshot dict or a structured error.
+        """
+        return _tools_gpu_viewer.gpu_viewer_read_snapshot(token_path=token_path)
 
-    Returns:
-        Snapshot dict or a structured error.
-    """
-    return _tools_gpu_viewer.gpu_viewer_read_snapshot(token_path=token_path)
+    @mcp.tool()
+    def gpu_viewer_screenshot(
+        out_path: str,
+        format: str = "png",
+        token_path: str | None = None,
+    ) -> dict:
+        """Screenshot the open GPUViewerDialog to *out_path*.
 
+        Args:
+            out_path: Destination file path (parent dirs are created).
+            format: Image format (``'png'`` or ``'jpg'``).
+            token_path: Optional bridge token path.
 
-@mcp.tool()
-def gpu_viewer_screenshot(
-    out_path: str,
-    format: str = "png",
-    token_path: str | None = None,
-) -> dict:
-    """Screenshot the open GPUViewerDialog to *out_path*.
-
-    Args:
-        out_path: Destination file path (parent dirs are created).
-        format: Image format (``'png'`` or ``'jpg'``).
-        token_path: Optional bridge token path.
-
-    Returns:
-        ``{"ok": true, "out_path": "..."}`` or a structured error.
-    """
-    return _tools_gpu_viewer.gpu_viewer_screenshot(
-        out_path=out_path, format=format, token_path=token_path,
-    )
+        Returns:
+            ``{"ok": true, "out_path": "..."}`` or a structured error.
+        """
+        return _tools_gpu_viewer.gpu_viewer_screenshot(
+            out_path=out_path, format=format, token_path=token_path,
+        )
 
 
 if __name__ == "__main__":

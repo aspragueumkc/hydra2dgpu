@@ -77,7 +77,7 @@ def _get_bridge_client(
 def _bridge_not_available(token_path: Optional[str] = None) -> Dict[str, Any]:
     msg = (
         "No active QGIS bridge session found. "
-        "Start one with gui_launch(mode='offscreen') or gui_launch(mode='xvfb'), "
+        "Start one with gui_launch(mode='xvfb') or gui_launch(mode='display'), "
         "or set HYDRA_MCP_BRIDGE_TOKEN and HYDRA_MCP_BRIDGE_SOCKET env vars."
     )
     if token_path:
@@ -193,7 +193,7 @@ _PROCESS_REGISTRY = _ProcessRegistry()
 
 
 def gui_launch(
-    mode: str = "offscreen",
+    mode: str = "xvfb",
     project: Optional[str] = None,
     timeout: float = 60.0,
 ) -> Dict[str, Any]:
@@ -206,10 +206,12 @@ def gui_launch(
 
     Args:
         mode: Launch mode — one of:
-            - ``"offscreen"``: ``QT_QPA_PLATFORM=offscreen`` (no display,
-              suitable for automated testing on a headless machine).
-            - ``"xvfb"``: Xvfb virtual display (requires Xvfb installed;
-              suitable for CI without a real GPU).
+            - ``"xvfb"`` (default): Xvfb virtual display (requires Xvfb
+              installed; suitable for CI without a real GPU).  The
+              ``offscreen`` QPA is flaky with NVIDIA GL (boot-time SIGSEGV
+              in the canvas), so Xvfb is the default for local automation.
+            - ``"offscreen"``: ``QT_QPA_PLATFORM=offscreen`` (no display;
+              use only when Xvfb is unavailable).
             - ``"display"``: wait for a bridge token file from a running
               QGIS session.  Start QGIS with ``HYDRA_MCP_BRIDGE=1`` to
               auto-start the bridge, or inject it via the Python console
@@ -232,7 +234,7 @@ def gui_launch(
             "session_id": "aaron_12345_abc123",
             "socket_name": "hydra_mcp_bridge_aaron_12345_abc123",
             "token_path": "/run/user/1000/hydra_mcp_bridge_aaron_12345_abc123.json",
-            "mode": "offscreen",
+            "mode": "xvfb",
             "pid": 54321
         }
     """

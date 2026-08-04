@@ -416,6 +416,8 @@ class HydraMcpBridge(QObject):
         # Per-socket read buffers and liveness tracking.
         self._buffers: Dict[int, bytes] = {}
         self._authenticated: Dict[int, bool] = {}
+        self._handling: Dict[int, bool] = {}
+        self._sockets: Dict[int, QLocalSocket] = {}
 
     def start(self) -> bool:
         """Write the token file and start listening."""
@@ -567,34 +569,108 @@ class HydraMcpBridge(QObject):
         sid = id(socket)
         self._buffers[sid] = b""
         self._authenticated[sid] = False
-        socket.readyRead.connect(lambda: self._on_ready_read(socket))
-        socket.disconnected.connect(lambda: self._on_disconnected(socket))
+        # Hold a strong Python reference to the socket: PyQt5 keeps signal
+        # connections on the SIP wrapper, and a wrapper that is garbage
+        # collected silently drops its connections (the C++ socket itself is
+        # parented to the server and survives).  The old per-connection
+        # lambda kept the wrapper alive implicitly via its closure; bound
+        # methods do not, so we must.  Dropped in ``_on_disconnected``.
+        self._sockets[sid] = socket
+        # Bound-method connections, NOT lambdas: PyQt5 destroys a lambda slot
+        # (and its PyQtSlotProxy receiver) when the connection dies, and a
+        # signal dispatched re-entrantly during a long handler (e.g. the
+        # full-tree widget walk) then calls the freed lambda -> SIGSEGV at
+        # COPY_FREE_VARS.  A bound method lives on the bridge itself, which
+        # outlives every socket, so the slot can never be freed mid-dispatch.
+        # ``sender()`` identifies which socket emitted the signal.
+        socket.readyRead.connect(self._on_socket_ready_read)
+        socket.disconnected.connect(self._on_socket_disconnected)
+
+    def _on_socket_ready_read(self) -> None:
+        try:
+            socket = self.sender()
+        except RuntimeError:
+            return
+        if socket is None or not isinstance(socket, QLocalSocket):
+            return
+        try:
+            self._on_ready_read(socket)
+        except RuntimeError:
+            # The socket was destroyed between the signal and the handler;
+            # drop its bookkeeping instead of crashing.
+            self._buffers.pop(id(socket), None)
+            self._authenticated.pop(id(socket), None)
+
+    def _on_socket_disconnected(self) -> None:
+        try:
+            socket = self.sender()
+        except RuntimeError:
+            return
+        if socket is None or not isinstance(socket, QLocalSocket):
+            return
+        self._on_disconnected(socket)
 
     def _on_ready_read(self, socket: QLocalSocket) -> None:
         sid = id(socket)
         self._buffers[sid] += bytes(socket.readAll())
-        try:
-            messages, self._buffers[sid] = decode_messages(self._buffers[sid])
-        except FrameTooLargeError as exc:
-            # A peer declared a frame larger than the protocol limit.  Reject
-            # the connection: we refuse to allocate ``exc.length`` bytes, and
-            # the buffered bytes are an incomplete prefix of an oversize
-            # frame, so we drop the buffer too.
-            self._send_error(
-                socket, None, -32002,
-                f"frame too large: {exc.length} bytes exceeds "
-                f"MAX_FRAME_BYTES={exc.max_bytes}",
-            )
-            self._buffers.pop(sid, None)
-            socket.abort()
+        if self._handling.get(sid):
+            # A nested readyRead (signals are delivered re-entrantly while a
+            # long handler such as the widget walk is running) must NOT
+            # process here: two interleaved invocations would interleave
+            # their ``_send`` writes on the same socket and corrupt the
+            # length-prefixed frame stream.  The outer invocation re-decodes
+            # the appended bytes below.
             return
-        for msg in messages:
-            self._handle_message(socket, msg)
+        self._handling[sid] = True
+        try:
+            while True:
+                try:
+                    messages, self._buffers[sid] = decode_messages(
+                        self._buffers[sid]
+                    )
+                except FrameTooLargeError as exc:
+                    # A peer declared a frame larger than the protocol
+                    # limit.  Reject the connection: we refuse to allocate
+                    # ``exc.length`` bytes, and the buffered bytes are an
+                    # incomplete prefix of an oversize frame, so we drop the
+                    # buffer too.
+                    self._send_error(
+                        socket, None, -32002,
+                        f"frame too large: {exc.length} bytes exceeds "
+                        f"MAX_FRAME_BYTES={exc.max_bytes}",
+                    )
+                    self._buffers.pop(sid, None)
+                    socket.abort()
+                    return
+                if not messages:
+                    break
+                for msg in messages:
+                    self._handle_message(socket, msg)
+                # Requests that arrived re-entrantly while handling were
+                # buffered (see the busy-flag return above); re-decode so
+                # they are processed by this single invocation.
+            # One final re-decode: a nested readyRead may have appended
+            # bytes between the last decode and the loop exit.  No further
+            # Qt calls happen below, so nothing can append after this.
+            try:
+                messages, self._buffers[sid] = decode_messages(
+                    self._buffers[sid]
+                )
+            except FrameTooLargeError:
+                self._buffers.pop(sid, None)
+                socket.abort()
+                return
+            for msg in messages:
+                self._handle_message(socket, msg)
+        finally:
+            self._handling[sid] = False
 
     def _on_disconnected(self, socket: QLocalSocket) -> None:
         sid = id(socket)
         self._buffers.pop(sid, None)
         self._authenticated.pop(sid, None)
+        self._handling.pop(sid, None)
+        self._sockets.pop(sid, None)
         socket.deleteLater()
 
     def _send(self, socket: QLocalSocket, obj: Dict[str, Any]) -> None:
@@ -1590,6 +1666,20 @@ def _ensure_qgis_pyqt_for_standalone() -> None:
 
 if __name__ == "__main__":
     _ensure_qgis_pyqt_for_standalone()
+
+    # When this script is injected via ``qgis --code ...`` the file runs as
+    # ``__main__`` INSIDE a real QGIS process.  The plugin has already
+    # autostarted the bridge (HYDRA_MCP_BRIDGE=1); starting a second one and
+    # showing the standalone test window would shadow QgisApp as the active
+    # window, so every root-less ``get_widget_tree`` would walk the 2-node
+    # test window instead of the real UI.  Only run the standalone path when
+    # the script is executed with plain Python (qgis.core is not importable).
+    try:
+        import qgis.core  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        raise SystemExit(0)
 
     app = QApplication.instance()
     if app is None:

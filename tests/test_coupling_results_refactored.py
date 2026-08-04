@@ -5,12 +5,12 @@ import unittest
 
 import numpy as np
 
-from tests.mocks.qgis_env import install_qgis_mocks
-install_qgis_mocks()
+from tests.qgis_real_env import requires_qgis
 
 from swe2d.workbench.dialogs.coupling_results_dialog import prepare_coupling_timeseries
 
 
+@requires_qgis
 class TestPrepareCouplingTimeseries(unittest.TestCase):
     """Test the extracted time-series data prep function."""
 

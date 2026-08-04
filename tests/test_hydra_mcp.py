@@ -39,6 +39,40 @@ from swe2d.services.gpkg_persistence_service import (
 
 from tools.hydra_mcp import tools_modeling, tools_modeling_phase1, tools_design, tools_audit
 
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis, stub_iface
+
+# True when the native CUDA extension is importable.  Since eb149116
+# ("native mesh only, no dry_run") spec validation always deserializes the
+# baked-mesh BLOB via hydra_swe2d, so any test that needs a *valid* spec is
+# gated on this.
+_HYDRA_SWE2D_AVAILABLE = (
+    __import__("importlib").util.find_spec("hydra_swe2d") is not None
+)
+
+
+def _bake_real_quad_mesh(gpkg_path: str, mesh_name: str) -> None:
+    """Bake a genuine 4-cell quad mesh over the fixture's placeholder BLOB.
+
+    Uses the repo's real build → serialize → persist path
+    (``tests._swe2d_test_helpers._serialize_and_persist_mesh``, the same
+    helper the GPU/CLI suites use) so ``spec_validate`` deserializes a
+    genuinely valid mesh.  Requires the native hydra_swe2d extension.
+    """
+    from tests._swe2d_test_helpers import _serialize_and_persist_mesh
+
+    node_x = np.tile(np.arange(3, dtype=np.float64), 3)
+    node_y = np.repeat(np.arange(3, dtype=np.float64), 3)
+    node_z = np.zeros(9, dtype=np.float64)
+    cell_nodes = np.array(
+        [[0, 1, 4, 3], [1, 2, 5, 4], [3, 4, 7, 6], [4, 5, 8, 7]],
+        dtype=np.int32,
+    )
+    _serialize_and_persist_mesh(
+        gpkg_path, mesh_name, node_x, node_y, node_z, cell_nodes,
+        np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32),
+        np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float64),
+    )
+
 
 class HydraMcpFixtureMixin:
     """Build a small GPKG fixture: one mesh, one config, two runs, one run log."""
@@ -385,10 +419,14 @@ class TestSpecBuildValidateDiff(HydraMcpFixtureMixin, unittest.TestCase):
         self.assertIn("error", val)
 
     @unittest.skipUnless(
-        __import__("importlib").util.find_spec("hydra_swe2d") is not None,
+        _HYDRA_SWE2D_AVAILABLE,
         "hydra_swe2d extension not built",
     )
     def test_spec_validate_success_with_native_build(self):
+        # Re-bake the fixture mesh via the real native serializer — the
+        # placeholder BLOB from the shared fixture is intentionally corrupt
+        # and the native deserializer (correctly) rejects it.
+        _bake_real_quad_mesh(self.gpkg_path, self.mesh_name)
         out = self._build_spec(run_duration_s=100.0)
         self.assertTrue(out["ok"], out)
         val = tools_modeling_phase1.spec_validate(out["spec"])
@@ -406,33 +444,76 @@ class TestSpecBuildValidateDiff(HydraMcpFixtureMixin, unittest.TestCase):
         self.assertEqual(same["changed"], [])
 
 
-class TestRunJobs(unittest.TestCase):
+@unittest.skipUnless(_HYDRA_SWE2D_AVAILABLE, "hydra_swe2d extension not built")
+class TestRunJobs(HydraMcpFixtureMixin, unittest.TestCase):
+    """Async job lifecycle under the post-eb149116 contract.
+
+    ``run_start`` no longer accepts ``dry_run`` (removed in eb149116 —
+    "native mesh only, no dry_run"): every start validates the spec for
+    real and spawns a real subprocess.  These tests therefore use a
+    genuinely valid spec (real baked mesh) and patch only the subprocess
+    *command* so the spawned child is a sleeper instead of a full GPU
+    simulation.  Validation, Popen, status polling, and terminate all run
+    for real.
+    """
 
     def setUp(self):
-        self.spec = {"schema_version": "swe2d-run/2", "mesh": {"mesh_name": "m"},
-                     "params": {"run_duration_s": 10.0}}
+        super().setUp()
+        _bake_real_quad_mesh(self.gpkg_path, self.mesh_name)
+        bc_out = tools_modeling_phase1.bc_configure(
+            self.gpkg_path, self.mesh_name,
+            [{"side": "left", "bc_type": "wall", "value": 0.0}],
+        )
+        self.assertTrue(bc_out["ok"], bc_out)
+        out = tools_modeling_phase1.spec_build(
+            self.gpkg_path, self.mesh_name,
+            run_params={"run_duration_s": 10.0},
+        )
+        self.assertTrue(out["ok"], out)
+        self.spec = out["spec"]
+
+    def _patch_run_command(self):
+        """Swap the solver subprocess command for a harmless sleeper."""
+        import swe2d.cli.commands as cli_commands
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        patcher = unittest.mock.patch.object(
+            cli_commands, "build_run_command_for_params",
+            side_effect=lambda *a, **k: list(sleeper),
+        )
+        self.addCleanup(patcher.stop)
+        patcher.start()
 
     def test_run_start_status_cancel(self):
-        out = tools_modeling_phase1.run_start(self.spec, dry_run=True)
+        self._patch_run_command()
+        out = tools_modeling_phase1.run_start(self.spec)
         self.assertTrue(out["ok"], out)
+        self.assertIn("pid", out)
         job_id = out["job_id"]
         status = tools_modeling_phase1.run_status(job_id)
         self.assertTrue(status["ok"], status)
-        self.assertEqual(status["status"]["status"], "pending")
+        self.assertEqual(status["status"]["status"], "running")
         cancel = tools_modeling_phase1.run_cancel(job_id)
         self.assertTrue(cancel["ok"], cancel)
         self.assertTrue(cancel["cancelled"])
+        # A terminated child exits with a nonzero returncode → "failed".
+        final = tools_modeling_phase1.run_status(job_id)
+        self.assertEqual(final["status"]["status"], "failed")
 
     def test_run_status_unknown_job(self):
         out = tools_modeling_phase1.run_status("does_not_exist")
         self.assertFalse(out["ok"])
 
     def test_run_batch(self):
-        out = tools_modeling_phase1.run_batch({
-            "sweep": {"params.run_duration_s": [10.0, 20.0]},
-        })
+        # Canonical batch_spec: a valid swe2d-run/2 spec.  Without a
+        # "sweep" block the expansion yields exactly one param set.
+        self._patch_run_command()
+        out = tools_modeling_phase1.run_batch(self.spec)
         self.assertTrue(out["ok"], out)
-        self.assertEqual(out["n_jobs"], 2)
+        self.assertEqual(out["n_jobs"], 1)
+        job = out["jobs"][0]
+        self.assertEqual(job["params"]["params"]["run_duration_s"], 10.0)
+        cancel = tools_modeling_phase1.run_cancel(job["job_id"])
+        self.assertTrue(cancel["ok"], cancel)
 
 
 class TestRunList(HydraMcpFixtureMixin, unittest.TestCase):
@@ -1670,23 +1751,18 @@ class TestBridgeClientValueMethods(unittest.TestCase):
         self.assertEqual(captured["params"]["value"], 3.14)
         self.assertEqual(captured["params"]["root_object_name"], "root_widget")
         self.assertTrue(result["ok"])
-    """Test the widget-node serialization path without needing a real QGIS install.
-
-    ``swe2d/workbench/devtools/widget_walker`` requires ``qgis.PyQt``, which is
-    not on sys.path in the bare ``qgis_stable`` Python interpreter.  We install
-    the mock qgis env before importing, matching the pattern from
-    ``tests/mocks/qgis_env.py``.
-
-    The pure-Python logic (WidgetNode dataclass, find_node_by_object_name,
-    _node_to_dict dict shape) is exercised here.  A real integration test that
-    launches ``qgis --code qgis_bridge.py`` is a manual step documented in
-    ``tools/hydra_mcp/README.md``.
-    """
-
+    @requires_qgis
     def test_walker_finds_root_and_children(self):
-        # Install qgis mocks before importing anything that pulls in qgis.PyQt.
-        from tests.mocks.qgis_env import install_qgis_mocks
-        install_qgis_mocks()
+        """Test the widget-node serialization path against real QGIS.
+
+        ``swe2d.workbench.devtools.widget_walker`` requires ``qgis.PyQt``;
+        under the real headless QGIS harness it imports directly.  The
+        pure-Python logic (WidgetNode dataclass, find_node_by_object_name,
+        _node_to_dict dict shape) is exercised here.  A full integration
+        test that launches ``qgis --code qgis_bridge.py`` is a manual step
+        documented in ``tools/hydra_mcp/README.md``.
+        """
+        ensure_qgis_app()
 
         from swe2d.workbench.devtools.widget_walker import (
             WidgetNode,
@@ -2066,8 +2142,8 @@ class TestToolsGuiScreenshotMockedBridge(unittest.TestCase):
 class TestCaptureWidgetScreenshot(unittest.TestCase):
     """Unit tests for the capture_widget_screenshot helper (plain Python mocks).
 
-    Uses install_qgis_mocks() before importing capture_widget_screenshot so that
-    the module-level qgis.PyQt imports in qgis_bridge.py resolve correctly.
+    ``tools.hydra_mcp.widget_screenshot`` is Qt-free at module level, so no
+    QGIS app is needed to import it.
     """
 
     def setUp(self):
@@ -2173,9 +2249,7 @@ class TestWidgetWalkerScreenshotMocked(unittest.TestCase):
         QPixmap instances — BytesIO doesn't implement the QIODevice protocol.
 
         We use a mock pixmap that captures the buffer argument and verifies
-        its type, rather than constructing a real QPixmap (which would
-        require a QApplication and is incompatible with the headless mock
-        env installed by other tests in this suite).
+        its type against the real ``qgis.PyQt.QtCore.QBuffer``.
         """
         try:
             from qgis.PyQt import QtCore  # noqa: F401
@@ -2456,10 +2530,10 @@ class TestFrameLengthCap(unittest.TestCase):
     response parsing (``BridgeClient._call``).
     """
 
-    def test_two_mib_frame_rejected_with_clear_error(self):
+    def test_seventeen_mib_frame_rejected_with_clear_error(self):
         import struct
-        # Hand-build a 2 MiB frame: 4-byte length prefix > MAX_FRAME_BYTES.
-        bad_length = 2 * 1024 * 1024
+        # Hand-build a 17 MiB frame: 4-byte length prefix > MAX_FRAME_BYTES.
+        bad_length = 17 * 1024 * 1024
         bogus = struct.pack("!I", bad_length) + b"\x00" * 16
         with self.assertRaises(bridge_client.FrameTooLargeError) as ctx:
             bridge_client.decode_messages(bogus)
@@ -2472,13 +2546,15 @@ class TestFrameLengthCap(unittest.TestCase):
         # the rest of the buffer is interpreted (i.e. we never silently
         # advance past the bad header).
         import struct
-        bad = struct.pack("!I", 2 * 1024 * 1024) + b"junk after bad header"
+        bad = struct.pack("!I", 17 * 1024 * 1024) + b"junk after bad header"
         with self.assertRaises(bridge_client.FrameTooLargeError):
             bridge_client.decode_messages(bad)
 
-    def test_max_frame_bytes_constant_is_one_mib(self):
-        # The cap is part of the protocol contract — keep it at exactly 1 MiB.
-        self.assertEqual(bridge_client.MAX_FRAME_BYTES, 1 << 20)
+    def test_max_frame_bytes_constant_is_16mib(self):
+        # The cap is part of the protocol contract — keep it at exactly
+        # 16 MiB (raised from 1 MiB in 96368c2b so screenshot base64 blobs
+        # fit comfortably while still bounding unauthenticated buffering).
+        self.assertEqual(bridge_client.MAX_FRAME_BYTES, 16 << 20)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2486,6 +2562,7 @@ class TestFrameLengthCap(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@requires_qgis
 class TestTokenFileAtomic0600(unittest.TestCase):
     """``HydraMcpBridge._write_token_file`` creates an atomically-private file.
 
@@ -2498,21 +2575,9 @@ class TestTokenFileAtomic0600(unittest.TestCase):
     """
 
     def setUp(self):
-        from tests.mocks.qgis_env import install_qgis_mocks
-        install_qgis_mocks()
-        # The qgis_env mock installs QtCore/QtWidgets/QtGui/uic but not
-        # QtNetwork.  HydraMcpBridge imports QLocalServer/QLocalSocket at
-        # module level; we need a stub QtNetwork to import the module
-        # without dragging in real PyQt5.QtNetwork (which may be missing
-        # from the bare test interpreter).
-        import types
-        if "qgis.PyQt.QtNetwork" not in sys.modules:
-            qt_network = types.ModuleType("qgis.PyQt.QtNetwork")
-            qt_network.QLocalServer = unittest.mock.MagicMock(name="QLocalServer")
-            qt_network.QLocalSocket = unittest.mock.MagicMock(name="QLocalSocket")
-            sys.modules["qgis.PyQt.QtNetwork"] = qt_network
-            setattr(sys.modules["qgis.PyQt"], "QtNetwork", qt_network)
-
+        ensure_qgis_app()
+        # Real ``qgis.PyQt.QtNetwork`` provides QLocalServer/QLocalSocket;
+        # qgis_bridge.py imports them at module level.
         from tools.hydra_mcp.qgis_bridge import HydraMcpBridge
 
         self.tmpdir = tempfile.mkdtemp()
@@ -2607,55 +2672,19 @@ class TestTokenFileAtomic0600(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@requires_qgis
 class TestScreenshotTargetResolution(unittest.TestCase):
     """``gui_screenshot(target=...)`` resolves each target to a live widget.
 
-    Uses real PyQt5 ``QApplication``/``QWidget`` instances so the
-    resolution logic is exercised end-to-end.  The QApplication is
-    stashed on the class (``_qapp``) and a module-level alias keeps a
-    strong reference alive for the duration of the test process, so the
-    C++ side does not abort when the test class is gc'd between test
-    runs.
+    Uses the real offscreen ``QgsApplication`` from ``ensure_qgis_app()``
+    so the resolution logic is exercised end-to-end against live widgets.
     """
 
     @classmethod
     def setUpClass(cls):
-        # Use the module-level QApplication created at import time
-        # (BEFORE install_qgis_mocks() runs in other tests) so the
-        # qgis_env mock — which replaces ``QApplication.instance()``
-        # and the ``QApplication`` class with a MagicMock — does not
-        # block us from getting a real one.
-        cls._qapp = _test_screenshot_qapp
+        cls._qapp = ensure_qgis_app()
 
     def setUp(self):
-        from tests.mocks.qgis_env import install_qgis_mocks
-        install_qgis_mocks()
-        # install_qgis_mocks() patched QApplication.instance() to return a
-        # MagicMock — restore the real Qt implementation for this test
-        # class so target resolution can find live widgets.  The bridge
-        # imports QApplication from qgis.PyQt.QtWidgets, so patch both.
-        self._real_qapp_instance_pyqt5 = sys.modules[
-            "PyQt5.QtWidgets"
-        ].QApplication.instance
-        self._real_qapp_instance_qgis = sys.modules[
-            "qgis.PyQt.QtWidgets"
-        ].QApplication.instance
-
-        def _real_instance(*args, **kwargs):
-            return self._qapp
-        sys.modules["PyQt5.QtWidgets"].QApplication.instance = staticmethod(_real_instance)
-        sys.modules["qgis.PyQt.QtWidgets"].QApplication.instance = staticmethod(
-            _real_instance
-        )
-
-        import types
-        if "qgis.PyQt.QtNetwork" not in sys.modules:
-            qt_network = types.ModuleType("qgis.PyQt.QtNetwork")
-            qt_network.QLocalServer = unittest.mock.MagicMock(name="QLocalServer")
-            qt_network.QLocalSocket = unittest.mock.MagicMock(name="QLocalSocket")
-            sys.modules["qgis.PyQt.QtNetwork"] = qt_network
-            setattr(sys.modules["qgis.PyQt"], "QtNetwork", qt_network)
-
         from tools.hydra_mcp.qgis_bridge import HydraMcpBridge
         self.bridge = HydraMcpBridge()
         # Keep a reference to the test widgets so they survive the
@@ -2671,14 +2700,6 @@ class TestScreenshotTargetResolution(unittest.TestCase):
             except Exception:
                 pass
         self._created_widgets.clear()
-        # Restore the (mocked) QApplication.instance so other tests
-        # that rely on the mock still work.
-        sys.modules[
-            "PyQt5.QtWidgets"
-        ].QApplication.instance = self._real_qapp_instance_pyqt5
-        sys.modules[
-            "qgis.PyQt.QtWidgets"
-        ].QApplication.instance = self._real_qapp_instance_qgis
 
     def _track(self, widget):
         self._created_widgets.append(widget)
@@ -2702,13 +2723,12 @@ class TestScreenshotTargetResolution(unittest.TestCase):
         resolved = self.bridge._resolve_screenshot_target({"target": "dock"})
         self.assertIs(resolved, dock)
 
-    def test_target_canvas_returns_none_without_qgis(self):
-        # Without qgis.gui available, canvas target returns None — the
-        # caller treats this as "widget not available".
+    def test_target_canvas_returns_none_without_canvas_widget(self):
+        # Real ``qgis.gui.QgsMapCanvas`` is importable, but no canvas widget
+        # exists among the top-level widgets, so the target resolves to
+        # None — the caller treats this as "widget not available".
         resolved = self.bridge._resolve_screenshot_target({"target": "canvas"})
-        # ``qgis.gui`` may be installable as a mock; the contract is that
-        # canvas either returns a QWidget (real QGIS) or None (no QGIS).
-        self.assertTrue(resolved is None or hasattr(resolved, "grab"))
+        self.assertIsNone(resolved)
 
     def test_target_unknown_raises_runtime_error(self):
         with self.assertRaises(RuntimeError) as ctx:
@@ -2732,32 +2752,12 @@ class TestScreenshotTargetResolution(unittest.TestCase):
         self.assertIn("required", str(ctx.exception))
 
 
-# Module-level strong reference to the QApplication used by
-# TestScreenshotTargetResolution — without this the C++ QApplication
-# gets destroyed when the class is gc'd, and subsequent tests that
-# import ``qgis.PyQt.QtWidgets`` abort with "Must construct a
-# QApplication before a QWidget".
-def _get_real_qapp():
-    """Return a real Qt QApplication (via qgis.PyQt), creating one if needed.
-
-    Must be called BEFORE ``install_qgis_mocks()`` runs, because the
-    mock replaces ``qgis.PyQt.QtWidgets.QApplication`` with a non-instantiable
-    class.  Eagerly called at import time below.
-    """
-    from qgis.PyQt import QtWidgets
-    existing = QtWidgets.QApplication.instance()
-    if existing is not None and not isinstance(existing, unittest.mock.MagicMock):
-        return existing
-    return QtWidgets.QApplication([])
-
-_test_screenshot_qapp = _get_real_qapp()
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase 2.H — widget path resolution + isinstance + timeout + bool coercion
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@requires_qgis
 class TestWidgetPathStrictTraversal(unittest.TestCase):
     """``find_widget_by_path`` uses direct children, raises on ambiguity.
 
@@ -2831,12 +2831,13 @@ class TestWidgetPathStrictTraversal(unittest.TestCase):
         self.assertIs(find_widget_by_path(root, ["", ""]), root)
 
 
+@requires_qgis
 class TestBoolCoercionForCheckBox(unittest.TestCase):
     """``set_widget_value`` honours ``"false"`` (the bool() bug)."""
 
     def _checkbox(self):
-        from qgis.PyQt.QtWidgets import QApplication, QCheckBox
-        _get_real_qapp()  # ensure QApplication exists
+        from qgis.PyQt.QtWidgets import QCheckBox
+        ensure_qgis_app()
         cb = QCheckBox()
         return cb
 
@@ -2883,21 +2884,14 @@ class TestBoolCoercionForCheckBox(unittest.TestCase):
         self.assertFalse(cb.isChecked())
 
 
+@requires_qgis
 class TestBridgeBootstrap(unittest.TestCase):
     """Unit tests for ``bootstrap_bridge_if_needed`` console/plugin entry point."""
 
     def setUp(self):
-        from tests.mocks.qgis_env import install_qgis_mocks
-        install_qgis_mocks()
-        # ``HydraMcpBridge`` imports QLocalServer/QLocalSocket at class level.
-        import types
-        if "qgis.PyQt.QtNetwork" not in sys.modules:
-            qt_network = types.ModuleType("qgis.PyQt.QtNetwork")
-            qt_network.QLocalServer = unittest.mock.MagicMock(name="QLocalServer")
-            qt_network.QLocalSocket = unittest.mock.MagicMock(name="QLocalSocket")
-            sys.modules["qgis.PyQt.QtNetwork"] = qt_network
-            setattr(sys.modules["qgis.PyQt"], "QtNetwork", qt_network)
-
+        ensure_qgis_app()
+        # Real ``qgis.PyQt.QtNetwork`` provides QLocalServer/QLocalSocket;
+        # qgis_bridge.py imports them at module level.
         import tools.hydra_mcp.qgis_bridge as _qgb
         self._qgb = _qgb
         self._prev_env = os.environ.get("HYDRA_MCP_BRIDGE")
@@ -2946,6 +2940,11 @@ class TestBridgeBootstrap(unittest.TestCase):
 
             def objectName(self):
                 return "ExistingBridge"
+
+            def is_alive(self):
+                # bootstrap_bridge_if_needed() only short-circuits on a
+                # live existing instance.
+                return True
 
         existing = FakeBridge()
         self._qgb._HYDRA_MCP_BRIDGE_INSTANCE = existing
@@ -3115,10 +3114,11 @@ class TestToolsGuiBehavioralMockedBridge(unittest.TestCase):
                     raise RuntimeError(resp["error"].get("message"))
                 return resp.get("result", {})
 
-            def click_widget(self, path=None, object_name=None, root=None):
+            def click_widget(self, path=None, object_name=None, root=None,
+                             x=None, y=None):
                 return self._call("click_widget", path=path,
                                    object_name=object_name,
-                                   root_object_name=root)
+                                   root_object_name=root, x=x, y=y)
 
             def key_press(self, key, path=None, object_name=None, root=None):
                 return self._call("key_press", key=key, path=path,
@@ -3171,6 +3171,10 @@ class TestToolsGuiBehavioralMockedBridge(unittest.TestCase):
                                 "ok": True,
                                 "class_name": "QPushButton",
                                 "object_name": "run_btn",
+                                # Echo the click position so the test can
+                                # assert x/y forwarding (added in 96368c2b).
+                                "x": p.get("x"),
+                                "y": p.get("y"),
                             })
                         else:
                             self._respond(msg["id"], {
@@ -3185,6 +3189,12 @@ class TestToolsGuiBehavioralMockedBridge(unittest.TestCase):
             out = tools_gui.gui_click(object_name="run_btn")
             self.assertTrue(out["ok"], out)
             self.assertEqual(out["class_name"], "QPushButton")
+
+            # x/y click-position kwargs (96368c2b) must reach the bridge.
+            out = tools_gui.gui_click(object_name="run_btn", x=0.5, y=0.25)
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["x"], 0.5)
+            self.assertEqual(out["y"], 0.25)
 
             out = tools_gui.gui_click(object_name="missing")
             self.assertFalse(out["ok"])
@@ -3621,9 +3631,12 @@ class TestDesignServerRegistration(unittest.TestCase):
             "design_preview_patch",
             "design_apply_patch",
         }
+        # The current FastMCP SDK exposes registered tools via the tool
+        # manager (the old ``FastMCP._tools`` attribute no longer exists).
+        registered = {t.name for t in server.mcp._tool_manager.list_tools()}
         self.assertTrue(
-            names.issubset(server.mcp._tools),
-            f"missing tools: {names - set(server.mcp._tools)}",
+            names.issubset(registered),
+            f"missing tools: {names - registered}",
         )
 
 
@@ -3644,12 +3657,12 @@ class TestMcpConfigGate(unittest.TestCase):
         )
 
 
+@requires_qgis
 class TestPluginAutoStartMcpBridge(unittest.TestCase):
     """HYDRA_MCP_BRIDGE=1 causes the plugin to start the MCP bridge."""
 
     def test_plugin_starts_bridge_when_env_var_set(self):
-        from tests.mocks.qgis_env import install_qgis_mocks, MockQgisInterface
-        install_qgis_mocks()
+        ensure_qgis_app()
 
         # Avoid dragging in the real QGIS bridge and its QtNetwork dependency
         # during this unit test.  Phase 5 auto-starts via
@@ -3682,11 +3695,20 @@ class TestPluginAutoStartMcpBridge(unittest.TestCase):
                 sys.modules[bridge_mod_name] = original_bridge_mod
         self.addCleanup(_restore_bridge_mod)
 
+        # hydra_plugin lives in qgis_plugin/HYDRA2DGPU/ (the real plugin
+        # package layout), not at the repo root.
+        plugin_dir = os.path.join(
+            os.path.dirname(__file__), "..", "qgis_plugin", "HYDRA2DGPU"
+        )
+        plugin_dir = os.path.abspath(plugin_dir)
+        if plugin_dir not in sys.path:
+            sys.path.insert(0, plugin_dir)
+
         import importlib
         import hydra_plugin
         importlib.reload(hydra_plugin)
 
-        iface = MockQgisInterface()
+        iface = stub_iface()
         plugin = hydra_plugin.HydraQgisPlugin(iface)
         self.assertIsNone(plugin._mcp_bridge)
 

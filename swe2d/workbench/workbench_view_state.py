@@ -40,6 +40,10 @@ _STUDIO_DEFAULT_FEATURE_FLAGS: Dict[str, bool] = {
     "drainage_structures": True,
     "hydraulic_structures": True,
     "bridge_stacked_coupling": False,
+    # Experimental GPU Direct Viewer widget is hidden by default; flip to
+    # True (or via HYDRA2DGPU → Settings → Workbench Features) to bring it
+    # back. See docs/specs/2026-07-29-gpu-viewer-hide-and-user-guide-coverage.md.
+    "gpu_viewer": False,
 }
 
 

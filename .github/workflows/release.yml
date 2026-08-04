@@ -17,19 +17,55 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Only ship a Release when the build_wheels matrix produced wheels
+    # for both Linux and Windows. Without an explicit failure gate, a
+    # partial Windows-only release would silently go out.
     needs: build_wheels
+    if: needs.build_wheels.result == 'success'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Sync version from pyproject.toml
         run: python tools/sync_version.py
 
-      - uses: actions/download-artifact@v4
-        if: github.event_name == 'push'
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: wheels-*
           merge-multiple: true
+
+      # On manual dispatch the artifacts path is empty (build_wheels was
+      # not triggered by this push); download them from the existing
+      # tag using the GitHub API instead.
+      - name: Fetch wheels for manual dispatch
+        if: github.event_name != 'push'
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          tag = "${{ steps.tag.outputs.tag }}"
+          out = Path("artifacts"); out.mkdir(exist_ok=True)
+          api = subprocess.check_output(
+              ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{tag}"],
+              env={**os.environ}
+          ).decode()
+          for a in json.loads(api).get("assets", []):
+              if a["name"].endswith(".whl"):
+                  (out / a["name"]).write_bytes(
+                      subprocess.check_output(["gh", "api", a["url"], "--method", "GET"])
+                  )
+          print(f"downloaded wheels to {out}:", sorted(p.name for p in out.glob('*.whl')))
+          PY
 
       - name: Build QGIS plugin zip
         run: python tools/package_plugin.py
@@ -37,10 +73,15 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          # QGIS identifies the plugin by the top-level folder inside
+          # the zip (which always matches metadata.txt::name=), not by
+          # the zip's own filename. The versioned zip is the single
+          # end-user-facing asset. The wheel artifacts are uploaded via
+          # the artifacts/**/*.whl glob.
           files: |
             artifacts/**/*.whl
-            dist/HYDRA2DGPU.zip
+            dist/HYDRA2DGPU-*.zip
           generate_release_notes: true
           draft: false
           prerelease: false

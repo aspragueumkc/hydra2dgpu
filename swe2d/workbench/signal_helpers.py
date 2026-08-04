@@ -85,6 +85,7 @@ def connect_lambda(signal_obj, weak_obj: object, method_name: str, *args: Any) -
 
     def _handler(*sig_args: Any) -> None:
         """Weak-reference lambda: call the method only if the target object is still alive."""
+        obj = ref()
         if obj is not None:
             m = getattr(obj, method_name, None)
             if m is not None:

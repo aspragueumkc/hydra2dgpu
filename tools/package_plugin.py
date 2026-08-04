@@ -7,7 +7,6 @@ Output is asserted to be <20MB (QGIS plugin repo limit).
 """
 from __future__ import annotations
 import os
-import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -16,7 +15,27 @@ ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_SRC = ROOT / "qgis_plugin" / "HYDRA2DGPU"
 DOCS_SRC = ROOT / "docs"
 OUT_DIR = ROOT / "dist"
-OUT_ZIP = OUT_DIR / "HYDRA2DGPU.zip"
+
+
+def _plugin_version() -> str:
+    """Read the canonical plugin version from pyproject.toml.
+
+    Used to embed the version in the zip filename so release assets are
+    distinguishable at a glance. ``tomllib`` is Python 3.11+; ``tools/``
+    runs against whatever Python QGIS ships, so this stays stdlib-only.
+    """
+    try:
+        from tomllib import load as _toml_load  # py3.11+
+    except ImportError:  # pragma: no cover
+        try:
+            from tomli import load as _toml_load  # py3.10 backport
+        except ImportError as exc:
+            raise SystemExit(
+                "package_plugin.py requires Python 3.11+ or the tomli "
+                "backport on the import path"
+            ) from exc
+    with (ROOT / "pyproject.toml").open("rb") as fh:
+        return str(_toml_load(fh)["project"]["version"])
 
 # User-facing guides referenced by swe2d/workbench/views/doc_viewer.py
 # (AVAILABLE_DOCS). Shipped under HYDRA2DGPU/docs/ so the workbench can
@@ -79,11 +98,19 @@ def main() -> int:
         print(f"ERROR: {PLUGIN_SRC} not found", file=sys.stderr)
         return 1
     name = _plugin_name()
+    version = _plugin_version()
     OUT_DIR.mkdir(exist_ok=True)
-    if OUT_ZIP.exists():
-        OUT_ZIP.unlink()
+    # The versioned filename (e.g. HYDRA2DGPU-1.3.0.zip) is the single
+    # release asset. QGIS identifies the plugin by the top-level folder
+    # inside the zip (which always matches metadata.txt::name=), not by
+    # the zip's own filename. Stale zips from previous versions are
+    # removed so the dist/ directory doesn't accumulate junk.
+    out_zip = OUT_DIR / f"HYDRA2DGPU-{version}.zip"
+    for stale in OUT_DIR.glob("HYDRA2DGPU*.zip"):
+        if stale != out_zip:
+            stale.unlink()
 
-    with zipfile.ZipFile(OUT_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in sorted(PLUGIN_SRC.rglob("*")):
             if not should_include(item):
                 continue
@@ -107,8 +134,15 @@ def main() -> int:
                 continue
             zf.write(src, Path(name) / "docs" / doc_name)
 
-    mb = OUT_ZIP.stat().st_size / (1024 * 1024)
-    print(f"Packaged: {OUT_ZIP} ({mb:.2f} MB)")
+        # Ship the layer-style QML files under HYDRA2DGPU/QML/. The style
+        # service resolves QML/ relative to the repo root in dev and via
+        # sys.path (plugin dir) in production; without this bundle the
+        # production install silently loses layer styling.
+        for qml in sorted((ROOT / "QML").glob("*.qml")):
+            zf.write(qml, Path(name) / "QML" / qml.name)
+
+    mb = out_zip.stat().st_size / (1024 * 1024)
+    print(f"Packaged: {out_zip} ({mb:.2f} MB)")
     if mb > 20:
         print("ERROR: zip exceeds 20 MB QGIS plugin repo limit", file=sys.stderr)
         return 2

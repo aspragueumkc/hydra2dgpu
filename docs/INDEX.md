@@ -11,6 +11,9 @@ Start here if you're setting up or running simulations.
 | Document | When to Read |
 |----------|--------------|
 | [USER_GUIDE.md](USER_GUIDE.md) | Installation, Studio UI, running your first simulation |
+| [USER_GUIDE.md §12 Graph Editor](USER_GUIDE.md#12-graph-editor-hydrographs--hyetographs) | Authoring hydrographs and hyetographs in the Studio |
+| [USER_GUIDE.md §13 CLI Quickstart](USER_GUIDE.md#13-cli-quickstart) | `swe2d-cli run` / `swe2d-cli batch` one-liners |
+| [USER_GUIDE.md §14 Batch Runner Workflow](USER_GUIDE.md#14-batch-runner-workflow) | `batch.json` schema, MPS, status file |
 | [CLI_GUIDE.md](CLI_GUIDE.md) | Headless runs, batch sweeps, CI/CD pipelines |
 | [GMSH_MESHING_GUIDE.md](GMSH_MESHING_GUIDE.md) | Generating computational meshes from topology layers |
 | [DRAINAGE_SOLVER_MODE_GUIDE.md](DRAINAGE_SOLVER_MODE_GUIDE.md) | Choosing EGL / Diffusion / Dynamic mode for 1D networks |

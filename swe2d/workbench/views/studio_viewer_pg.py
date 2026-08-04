@@ -28,9 +28,15 @@ from qgis.PyQt.QtCore import Qt
 
 try:
     import pyqtgraph as pg
-    _HAVE_PG = True
 except ImportError:
     _HAVE_PG = False
+else:
+    from swe2d.workbench.pyqtgraph_compat import (
+        install_qgis_pyqtgraph_item_change_fix,
+    )
+
+    install_qgis_pyqtgraph_item_change_fix()
+    _HAVE_PG = True
 
 
 # Unit helpers (mirrors results_render_service._unit_labels)
@@ -274,51 +280,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         root.addWidget(self._table_widget)
 
     # ------------------------------------------------------------------
-    # Public protocol
+    # Public protocol properties are defined once at the bottom of the class
+    # (after the Slots section).  The duplicate property block that used to
+    # live here was dead because the second re-definition overwrites it in
+    # Python class bodies.  See ``PGTimeSeriesWidget``'s lower ``# Public
+    # protocol`` section for the surviving definitions.
     # ------------------------------------------------------------------
-
-    @property
-    def mode(self) -> str:
-        """Return the plot mode (e.g., 'Time Series')."""
-        return self._mode
-
-    @property
-    def canvas(self):
-        """Return the pyqtgraph PlotWidget canvas."""
-        return self._plot_widget
-
-    @property
-    def fig(self):
-        """Return None (pyqtgraph uses its own figure internally)."""
-        return None
-
-    @property
-    def selected_metric(self) -> str:
-        """Return the currently selected metric key (e.g., 'flow_cms', 'depth_m')."""
-        return self._selected_metric
-
-    @selected_metric.setter
-    def selected_metric(self, metric: str) -> None:
-        """Set the selected metric and update the UI combo."""
-        self._selected_metric = str(metric) if metric else "flow"
-        if self._metric_combo is not None:
-            idx = self._metric_combo.findData(self._selected_metric)
-            if idx >= 0:
-                self._metric_combo.setCurrentIndex(idx)
-
-    @property
-    def selected_element_id(self) -> str:
-        """Return the currently selected element ID (line ID, structure ID, etc.)."""
-        return self._selected_element_id
-
-    @selected_element_id.setter
-    def selected_element_id(self, element_id: str) -> None:
-        """Set the selected element ID and update the UI combo."""
-        self._selected_element_id = str(element_id) if element_id else ""
-        if self._element_id_combo is not None and element_id:
-            idx = self._element_id_combo.findData(self._selected_element_id)
-            if idx >= 0:
-                self._element_id_combo.setCurrentIndex(idx)
 
     # ------------------------------------------------------------------
     # Slots
@@ -693,8 +660,18 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     @selected_element_id.setter
     def selected_element_id(self, element_id: str) -> None:
-        """Set the selected element ID."""
+        """Set the selected element ID and sync the UI combo.
+
+        Mirrors the contract of ``selected_metric``: when the caller sets
+        an element id that exists in the combo, the combo's current index
+        moves to match — so external code (e.g. ``studio_results_panel``)
+        can drive selection programmatically and see the UI follow.
+        """
         self._selected_element_id = str(element_id) if element_id else ""
+        if self._element_id_combo is not None and element_id:
+            idx = self._element_id_combo.findData(self._selected_element_id)
+            if idx >= 0:
+                self._element_id_combo.setCurrentIndex(idx)
 
     def set_data(
         self,
@@ -724,9 +701,6 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             if first_enabled is not None and getattr(result_data, "_coupling_run_id", "") != str(first_enabled.run_id):
                 result_data.load_coupling_records(str(first_enabled.run_id))
         self._h_min = float(h_min)
-
-    def set_render_fn(self, fn) -> None:
-        """No-op — pyqtgraph handles rendering directly."""
 
     def refresh(self) -> None:
         """Re-plot the time series with current element type, ID, and metric."""

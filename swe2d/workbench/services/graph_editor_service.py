@@ -19,7 +19,7 @@ def load_graphs(gpkg_path: str) -> Dict[str, Dict]:
     try:
         for row in conn.execute(
             "SELECT hyetograph_id, Time, Value, value_type, units "
-            "FROM swe2d_hyetographs ORDER BY hyetograph_id, Time"
+            "FROM swe2d_hyetographs ORDER BY hyetograph_id, CAST(Time AS REAL)"
         ):
             hid, t, v, vt, u = row
             if hid not in hyetographs:
@@ -28,7 +28,7 @@ def load_graphs(gpkg_path: str) -> Dict[str, Dict]:
 
         for row in conn.execute(
             "SELECT hydrograph_id, Time, Value, bc_type, description "
-            "FROM swe2d_hydrographs ORDER BY hydrograph_id, Time"
+            "FROM swe2d_hydrographs ORDER BY hydrograph_id, CAST(Time AS REAL)"
         ):
             hid, t, v, bt, desc = row
             if hid not in hydrographs:
@@ -117,18 +117,30 @@ def csv_columns(csv_path: str) -> list[str]:
 
 
 def parse_csv(csv_path: str, time_col: str, value_col: str) -> List[Tuple[float, float]]:
-    """Parse a CSV file, extracting time/value from specified columns."""
+    """Parse a CSV file, extracting time/value from specified columns.
+
+    Raises:
+        ValueError: If a requested column is missing (message names the
+            column and the available columns) or a row's values cannot be
+            parsed as floats (message names the row number).
+    """
     data: List[Tuple[float, float]] = []
     import csv as _csv
     with open(csv_path, encoding="utf-8-sig") as f:
         reader = _csv.DictReader(f)
-        if not reader.fieldnames:
-            return data
-        if time_col not in reader.fieldnames or value_col not in reader.fieldnames:
-            return data
-        for row in reader:
+        available_columns = reader.fieldnames or []
+        for col in (time_col, value_col):
+            if col not in available_columns:
+                available = ", ".join(available_columns) or "<none>"
+                raise ValueError(
+                    f"column {col!r} not found in CSV; available columns: "
+                    f"{available}"
+                )
+        for row_num, row in enumerate(reader, start=2):  # 1 = header row
             try:
                 data.append((float(row[time_col]), float(row[value_col])))
-            except (ValueError, TypeError):
-                continue
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"CSV row {row_num}: values are not numeric: {exc}"
+                ) from exc
     return data

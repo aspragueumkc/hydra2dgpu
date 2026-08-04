@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""Integration tests for overlay and auto-load behavior.
+"""Integration tests for overlay and auto-load behavior (real headless QGIS).
 
 Validates the interaction between:
-1. Snapshot persistence and auto-load into the results panel
-2. Run-completion auto-load into the results panel
-3. Results-panel time-slider → overlay refresh signal chain
-4. High-perf overlay rendering with synthetic mesh data
+1. Snapshot orchestration (``RunController.on_snapshot`` →
+   ``SWE2DWorkbenchStudioDialog._sync_snapshot_to_ui``) and overlay sync
+2. Results-panel animation → timestep signal chain
+3. ``OverlayController`` data sync and overlay-time update paths
+4. High-perf overlay rendering with synthetic mesh data (real renderer)
 
-These tests are designed to run headlessly with mock QGIS.
-
-Key known issues documented by these tests:
-- BUG: ``_on_snapshot()`` does NOT call ``_auto_load_results_panel()``,
-  so requested snapshots never auto-load into the results viewer.
-  See ``test_snapshot_missing_auto_load`` — this is a REGRESSION TEST
-  that will start PASSING when the fix is applied.
-- The overlay slider update path (panel → workbench → canvas) is wired
-  through ``results_bridge.py`` but may still exhibit silent failures.
+These tests run against real QGIS (offscreen) via ``tests.qgis_real_env``.
 """
 
 from __future__ import annotations
@@ -24,13 +17,11 @@ import ast
 import inspect
 import os
 import sys
-import tempfile
 import unittest
-from typing import Any, List, Tuple
-from unittest.mock import MagicMock, patch
+from typing import List, Tuple
+from unittest.mock import MagicMock
 
 import numpy as np
-
 
 # Ensure repo root is on sys.path so imports work in headless mode
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,76 +30,18 @@ for _p in (_REPO_ROOT, _BUILD_DIR):
     if _p not in sys.path and os.path.isdir(_p):
         sys.path.insert(0, _p)
 
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
 
-# ---------------------------------------------------------------------------
-# Headless Qt + mock QGIS bootstrap
-#
-# The trick: real ``qgis.PyQt.QtGui/QtCore/QtWidgets`` modules must be imported
-# BEFORE ``install_qgis_mocks()`` runs.  That way the mock's
-# ``_install_qgis_pyqt_submodule()`` populates ``qgis.PyQt.*`` from real Qt
-# symbols, giving us working QImage/QPainter/QApplication even though
-# ``qgis.core`` is mocked.
-#
-# Order:
-#   1. Import real qgis.PyQt.* (QImage, QPainter, QApplication)
-#   2. Install QGIS mocks (qgis.core, qgis.gui stay stubbed)
-#   3. Create a QApplication instance for QPainter use
-# ---------------------------------------------------------------------------
-from qgis.PyQt.QtGui import QImage as _RealQImage, QPainter as _RealQPainter
-from qgis.PyQt.QtWidgets import QApplication as _QApp
+_RUN_CONTROLLER_PATH = os.path.join(
+    _REPO_ROOT, "swe2d", "workbench", "controllers", "run_controller.py"
+)
+_STUDIO_DIALOG_PATH = os.path.join(
+    _REPO_ROOT, "swe2d", "workbench", "studio_dialog.py"
+)
+_HIGH_PERF_VIEWER_PATH = os.path.join(
+    _REPO_ROOT, "swe2d", "results", "high_perf_viewer.py"
+)
 
-_test_app = _QApp.instance()
-if _test_app is None:
-    _test_app = _QApp([])
-
-from tests.mocks.qgis_env import install_qgis_mocks as _install_qgis_mocks
-
-_install_qgis_mocks()
-
-# When ``swe2d.results.high_perf_viewer`` is imported as a side effect of loading
-# other modules (e.g. ``swe2d.workbench.results_bridge``) under the mock
-# QGIS setup, Python may cache an incomplete module entry (no __file__ or
-# __spec__, all functions as MagicMock).  Clearing it here ensures that
-# any test that actually needs the real module gets a fresh import.
-sys.modules.pop("swe2d.results.high_perf_viewer", None)
-import importlib as _il
-_il.invalidate_caches()
-
-# Whether real Qt GUI classes are available (needed for rendering tests).
-# QImage/QPainter classes imported BEFORE mock installation are the real
-# deal if Qt is installed in this environment.  The class's
-# ``__module__`` is the underlying binding (``PyQt5.QtGui`` under
-# QGIS 3 / PyQt5 — and remains so even when imported via
-# ``qgis.PyQt.QtGui``), not ``unittest.mock`` (mock object).
-# NOTE: Under QGIS 4 (PyQt6) this prefix check will report False even
-# when a real Qt class is loaded; that is a pre-existing test gap
-# documented out-of-scope for Phase 4.3.
-def _is_real_qimage(cls: type) -> bool:
-    mod = getattr(cls, "__module__", "") or ""
-    return str(mod).startswith("PyQt5") and not str(mod).startswith("unittest")
-
-
-_HAS_REAL_QT = _is_real_qimage(_RealQImage) and _is_real_qimage(_RealQPainter)
-
-
-def _import_wb_module():
-    """Import swe2d_workbench_qt and return the module reference."""
-    import swe2d_workbench_qt as wb
-    return wb
-
-
-def _get_source_path(mod_name: str) -> str:
-    """Resolve the absolute file path for a top-level module."""
-    import importlib
-    spec = importlib.util.find_spec(mod_name)
-    if spec is None or spec.origin is None:
-        raise ImportError(f"Cannot locate source for module: {mod_name}")
-    return str(spec.origin)
-
-
-def _ensure_qapp():
-    """Return the global QApplication instance."""
-    return _test_app
 
 def _get_function_source_ast(mod_path: str, func_name: str) -> ast.FunctionDef:
     """Parse *mod_path* and return the AST node for *func_name*."""
@@ -128,45 +61,28 @@ def _ast_has_call(func_node: ast.FunctionDef, target_name: str) -> bool:
             # Direct call: foo()
             if isinstance(fn, ast.Name) and fn.id == target_name:
                 return True
-            # Method call: self.foo()
+            # Method call: self.foo() / view.foo()
             if isinstance(fn, ast.Attribute) and fn.attr == target_name:
                 return True
     return False
 
 
-def _build_mock_dialog() -> Any:
-    """Build a minimally-viable mock dialog for overlay / panel tests."""
-    from unittest.mock import MagicMock, PropertyMock
+def _build_overlay_controller() -> tuple:
+    """Build an ``OverlayController`` over a mock view with real results data.
 
-    dlg = MagicMock()
-    dlg._high_perf_canvas_overlay_enabled = True
-    dlg._high_perf_overlay_cell_x = np.array([0.25, 0.75, 0.25, 0.75], dtype=np.float64)
-    dlg._high_perf_overlay_cell_y = np.array([0.25, 0.25, 0.75, 0.75], dtype=np.float64)
-    dlg._high_perf_overlay_cell_bed = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    dlg._high_perf_overlay_node_x = np.array([0.0, 0.5, 1.0, 0.0, 0.5, 1.0, 0.0, 0.5, 1.0], dtype=np.float64)
-    dlg._high_perf_overlay_node_y = np.array([0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0], dtype=np.float64)
-    dlg._high_perf_overlay_cell_nodes = np.array(
-        [0, 4, 3, 0, 1, 4, 1, 5, 4, 3, 4, 7,
-         3, 7, 6, 4, 5, 8, 4, 8, 7], dtype=np.int32
-    )
-    dlg._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-    dlg._high_perf_overlay_mesh_fingerprint = "test_fingerprint"
-    dlg._snapshot_timesteps = [
-        (0.0, np.array([0.5, 0.6, 0.4, 0.7], dtype=np.float64),
-               np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64),
-               np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)),
-        (10.0, np.array([0.8, 0.9, 0.7, 1.0], dtype=np.float64),
-                np.array([0.1, 0.0, 0.0, 0.1], dtype=np.float64),
-                np.array([0.0, 0.1, 0.0, 0.0], dtype=np.float64)),
-    ]
-    dlg._gravity = 9.81
-    dlg._length_unit_name = "m"
-    dlg._mannings_n = 0.035
-    dlg._overlay_no_data_warned = False
-    dlg._overlay_last_loaded_t_s = None
-    dlg._model_gpkg_path = ""
-    dlg._log = MagicMock()
-    return dlg
+    Returns ``(controller, view)``.  The controller's
+    ``refresh_high_perf_canvas_overlay`` is replaced with a MagicMock so
+    tests can assert on refresh calls without a map canvas.
+    """
+    from swe2d.results.data import SWE2DResultsData
+    from swe2d.workbench.controllers.overlay_controller import OverlayController
+
+    view = MagicMock(name="overlay_view")
+    view._results_data = SWE2DResultsData()
+    view._log = MagicMock(name="log")
+    ctrl = OverlayController(view)
+    ctrl.refresh_high_perf_canvas_overlay = MagicMock(name="refresh_overlay")
+    return ctrl, view
 
 
 def _make_synthetic_timesteps(
@@ -194,227 +110,182 @@ def _make_synthetic_timesteps(
 # =========================================================================
 
 class TestAutoloadSourceAnalysis(unittest.TestCase):
-    """AST-based verification that auto-load hooks exist (or are missing).
+    """AST-based verification that snapshot → UI sync hooks exist.
 
     These tests inspect the source code statically rather than executing
     the dialog, making them fast and suitable for regression detection.
     """
 
-    def setUp(self):
-        self.wb_path = _get_source_path("swe2d_workbench_qt")
+    def test_snapshot_syncs_overlay_to_ui(self):
+        """REGRESSION TEST: snapshot triggers overlay sync via the controller.
 
-    # ------------------------------------------------------------------
-    # BUG: snapshot does NOT call auto-load
-    # ------------------------------------------------------------------
-
-    def test_snapshot_missing_auto_load(self):
-        """REGRESSION TEST (NOW FIXED): snapshot triggers auto-load via the controller.
-
-        After Phase 2 Task 8 the snapshot orchestration lives on
-        ``WorkbenchController.on_snapshot``. The auto-load is still
-        triggered through ``_refresh_snapshot_overlay`` which is owned
-        by the dialog but called from the controller. This test now
-        checks the controller AST.
+        ``RunController.on_snapshot`` must delegate to the view's
+        ``_sync_snapshot_to_ui``, which must sync the high-perf overlay.
         """
-        from swe2d.workbench import workbench_controller
-        ctrl_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(self.wb_path),
-                "swe2d", "workbench", "workbench_controller.py",
-            )
-        )
-        func_node = _get_function_source_ast(ctrl_path, "on_snapshot")
-        self.assertIsNotNone(
-            func_node,
-            "WorkbenchController.on_snapshot must exist after Phase 2 Task 8",
-        )
-        has_delegation = _ast_has_call(func_node, "_refresh_snapshot_overlay")
+        func_node = _get_function_source_ast(_RUN_CONTROLLER_PATH, "on_snapshot")
         self.assertTrue(
-            has_delegation,
-            "WorkbenchController.on_snapshot is missing _refresh_snapshot_overlay "
-            "call — snapshot data is persisted to GPKG but never auto-loaded "
-            "into the results panel.",
+            _ast_has_call(func_node, "_sync_snapshot_to_ui"),
+            "RunController.on_snapshot is missing the _sync_snapshot_to_ui "
+            "call — snapshot data is fetched from device but never synced "
+            "to the UI.",
         )
-        helper_node = _get_function_source_ast(self.wb_path, "_refresh_snapshot_overlay")
-        has_auto_load = _ast_has_call(helper_node, "_auto_load_results_panel")
+        helper_node = _get_function_source_ast(_STUDIO_DIALOG_PATH, "_sync_snapshot_to_ui")
         self.assertTrue(
-            has_auto_load,
-            "_refresh_snapshot_overlay is missing _auto_load_results_panel call — "
-            "snapshot data is persisted to GPKG but never auto-loaded "
-            "into the results panel.",
+            _ast_has_call(helper_node, "_sync_high_perf_overlay_data"),
+            "_sync_snapshot_to_ui is missing the _sync_high_perf_overlay_data "
+            "call — snapshot data is persisted but never reaches the overlay.",
         )
 
-    def test_snapshot_calls_sync_overlay(self):
-        """Controller ``on_snapshot`` delegates overlay sync via ``_refresh_snapshot_overlay``."""
-        from swe2d.workbench import workbench_controller
-        ctrl_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(self.wb_path),
-                "swe2d", "workbench", "workbench_controller.py",
-            )
-        )
-        func_node = _get_function_source_ast(ctrl_path, "on_snapshot")
-        self.assertIsNotNone(
-            func_node,
-            "WorkbenchController.on_snapshot must exist after Phase 2 Task 8",
-        )
-        has_delegation = _ast_has_call(func_node, "_refresh_snapshot_overlay")
+    def test_snapshot_updates_overlay_time(self):
+        """``_sync_snapshot_to_ui`` advances the overlay to the latest snapshot time."""
+        helper_node = _get_function_source_ast(_STUDIO_DIALOG_PATH, "_sync_snapshot_to_ui")
         self.assertTrue(
-            has_delegation,
-            "WorkbenchController.on_snapshot is missing _refresh_snapshot_overlay "
-            "call — snapshot data won't be available in the overlay.",
-        )
-        helper_node = _get_function_source_ast(self.wb_path, "_refresh_snapshot_overlay")
-        has_sync = _ast_has_call(helper_node, "_sync_high_perf_overlay_data")
-        self.assertTrue(
-            has_sync,
-            "_refresh_snapshot_overlay is missing _sync_high_perf_overlay_data call — "
-            "snapshot data won't be available in the overlay.",
+            _ast_has_call(helper_node, "_update_high_perf_overlay_time"),
+            "_sync_snapshot_to_ui is missing the _update_high_perf_overlay_time "
+            "call — the overlay will not advance to the latest snapshot time.",
         )
 
-    # ------------------------------------------------------------------
-    # Run completion DOES call auto-load
-    # ------------------------------------------------------------------
 
-
-
+@requires_qgis
 class TestResultsSignalChain(unittest.TestCase):
     """Verify that the results panel → workbench overlay signal chain exists.
 
     The chain is:
-        panel._time_slider.valueChanged
-          → panel._on_slider_changed
-            → panel._anim.set_index
-              → panel._on_controller_timestep_changed
-                → panel.timestep_changed.emit(t_s)
-                  → dialog._on_results_panel_timestep_changed(t_s)
-                    → dialog._update_high_perf_overlay_time(t_s)
-                      → dialog._refresh_high_perf_canvas_overlay(t_s)
+        panel slider / animation
+          → ResultsAnimationController.current_timestep_changed
+            → dialog._on_results_panel_timestep_changed(t_s, frame_idx)
+              → studio_results_panel.on_results_panel_timestep_changed
+                → dialog._update_high_perf_overlay_time(t_s)
     """
 
-    def test_panel_has_timestep_signal(self):
-        """SWE2DResultsPanel has the timestep_changed signal."""
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
+
+    def test_results_data_has_data_source(self):
+        """SWE2DResultsData exposes set_data_source."""
         from swe2d.results.data import SWE2DResultsData
         self.assertTrue(
             hasattr(SWE2DResultsData, "set_data_source"),
             "SWE2DResultsData is missing set_data_source method",
         )
 
-    def test_dialog_has_timestep_handler(self):
-        """Workbench dialog has the _on_results_panel_timestep_changed handler."""
-        wb = _import_wb_module()
-        cls = getattr(wb, "SWE2DWorkbenchDialog", None)
-        if cls is None:
-            self.skipTest("SWE2DWorkbenchDialog not importable")
-        self.assertTrue(
-            hasattr(cls, "_on_results_panel_timestep_changed"),
-            "SWE2DWorkbenchDialog missing _on_results_panel_timestep_changed",
-        )
-
     def test_studio_dialog_has_timestep_handler(self):
         """Studio dialog has the _on_results_panel_timestep_changed handler."""
-        wb = _import_wb_module()
-        cls = getattr(wb, "SWE2DWorkbenchStudioDialog", None)
-        if cls is None:
-            self.skipTest("SWE2DWorkbenchStudioDialog not importable")
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
         self.assertTrue(
-            hasattr(cls, "_on_results_panel_timestep_changed"),
+            hasattr(SWE2DWorkbenchStudioDialog, "_on_results_panel_timestep_changed"),
             "SWE2DWorkbenchStudioDialog missing _on_results_panel_timestep_changed",
         )
 
-    def test_bridge_connects_timestep_signal(self):
-        """The results_bridge connects timestep_changed → handler."""
-        from swe2d.workbench.bridges.results_bridge import maybe_create_results_data
-        import inspect
-        src = inspect.getsource(maybe_create_results_data)
+    def test_results_panel_wires_timestep_signal(self):
+        """show_results_panel connects current_timestep_changed → handler."""
+        from swe2d.workbench.views.studio_results_panel import show_results_panel
+        src = inspect.getsource(show_results_panel)
         self.assertIn(
-            "timestep_changed",
+            "current_timestep_changed",
             src,
-            "results_bridge.maybe_create_results_data does not reference "
-            "timestep_changed signal",
+            "studio_results_panel.show_results_panel does not reference "
+            "the current_timestep_changed signal",
         )
         self.assertIn(
             "_on_results_panel_timestep_changed",
             src,
-            "results_bridge.maybe_create_results_data does not reference "
-            "_on_results_panel_timestep_changed handler",
+            "studio_results_panel.show_results_panel does not reference "
+            "the _on_results_panel_timestep_changed handler",
         )
 
 
-class TestOverlayUpdateBridge(unittest.TestCase):
-    """Test that the overlay update bridge correctly invokes refresh."""
+@requires_qgis
+class TestOverlayController(unittest.TestCase):
+    """Test the OverlayController sync / update paths with a mock view."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
+
+    def setUp(self):
+        self.ctrl, self.view = _build_overlay_controller()
 
     def test_update_overlay_time_calls_refresh(self):
-        """``update_high_perf_overlay_time`` calls ``_refresh_high_perf_canvas_overlay``."""
-        dlg = _build_mock_dialog()
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import update_high_perf_overlay_time
-
-        update_high_perf_overlay_time(dlg, 5.0)
-
-        # Verify _refresh_high_perf_canvas_overlay was called with 5.0
-        dlg._refresh_high_perf_canvas_overlay.assert_called_once_with(5.0)
+        """``update_high_perf_overlay_time`` refreshes the canvas overlay."""
+        self.ctrl.update_high_perf_overlay_time(5.0)
+        self.ctrl.refresh_high_perf_canvas_overlay.assert_called_once_with(5.0)
 
     def test_update_overlay_time_validates_float(self):
-        """Bridge converts to float and still works."""
-        dlg = _build_mock_dialog()
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import update_high_perf_overlay_time
-
-        update_high_perf_overlay_time(dlg, "5.0")
-
-        dlg._refresh_high_perf_canvas_overlay.assert_called_once()
-        call_arg = dlg._refresh_high_perf_canvas_overlay.call_args[0][0]
+        """Controller converts to float and still works."""
+        self.ctrl.update_high_perf_overlay_time("5.0")
+        self.ctrl.refresh_high_perf_canvas_overlay.assert_called_once()
+        call_arg = self.ctrl.refresh_high_perf_canvas_overlay.call_args[0][0]
         self.assertAlmostEqual(float(call_arg), 5.0)
 
-    def test_sync_overlay_data_clears_on_no_timesteps(self):
-        """``sync_high_perf_overlay_data`` empties arrays when no timesteps."""
-        dlg = _build_mock_dialog()
-        dlg._snapshot_timesteps = []  # No data
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import sync_high_perf_overlay_data
+    def test_sync_overlay_data_clears_on_no_run_data(self):
+        """``sync_high_perf_overlay_data`` empties arrays when no run data."""
+        # data_source defaults to "none" and no run records exist → GPKG
+        # path with no enabled run → arrays cleared, refresh(None) called.
+        self.ctrl.sync_high_perf_overlay_data()
 
-        sync_high_perf_overlay_data(dlg)
+        data = self.view._results_data
+        self.assertEqual(data.overlay_cell_x.size, 0)
+        self.assertEqual(data.overlay_cell_y.size, 0)
+        self.ctrl.refresh_high_perf_canvas_overlay.assert_called_once_with(None)
 
-        self.assertEqual(dlg._high_perf_overlay_cell_x.size, 0)
-        self.assertEqual(dlg._high_perf_overlay_cell_y.size, 0)
-        dlg._refresh_high_perf_canvas_overlay.assert_called_once()
+    def test_overlay_data_sync_populates_arrays_live(self):
+        """Live-path sync fills cell/bed arrays from mesh_data."""
+        data = self.view._results_data
+        data.set_data_source("live")
+        self.view._mesh_data = {
+            "node_x": np.array([0, 1, 0, 1], dtype=np.float64),
+            "node_y": np.array([0, 0, 1, 1], dtype=np.float64),
+            "cell_nodes": np.array([0, 1, 3, 0, 3, 2], dtype=np.int32),
+        }
+        self.view._mesh_cell_centroids = lambda: (
+            np.array([0.25, 0.75], dtype=np.float64),
+            np.array([0.25, 0.75], dtype=np.float64),
+        )
+        self.view._mesh_cell_solver_bed = lambda: np.array(
+            [10.0, 12.0], dtype=np.float64
+        )
+
+        self.ctrl.sync_high_perf_overlay_data()
+
+        self.assertEqual(data.overlay_cell_x.size, 2)
+        self.assertEqual(data.overlay_cell_y.size, 2)
+        self.assertEqual(data.overlay_cell_bed.size, 2)
+        self.assertAlmostEqual(float(data.overlay_cell_bed[0]), 10.0)
+        self.assertAlmostEqual(float(data.overlay_cell_bed[1]), 12.0)
+        self.ctrl.refresh_high_perf_canvas_overlay.assert_called_once_with(None)
+
+    def test_mesh_fingerprint_stable(self):
+        """Same mesh data produces same fingerprint."""
+        from swe2d.workbench.controllers.overlay_controller import (
+            mesh_fingerprint_from_arrays,
+        )
+
+        n1 = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float64)
+        n2 = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+        cn = np.array([0, 1, 3, 0, 3, 2], dtype=np.int32)
+
+        fp1 = mesh_fingerprint_from_arrays(n1, n2, cn)
+        fp2 = mesh_fingerprint_from_arrays(n1, n2, cn)
+        self.assertEqual(fp1, fp2)
+        self.assertNotEqual(fp1, "")  # Non-empty
 
 
+@requires_qgis
 class TestOverlayRendering(unittest.TestCase):
     """Test the high-perf overlay rendering pipeline with synthetic data.
 
-    Uses the actual ``render_unstructured_snapshot_image`` function
-    (not mocks) to verify the NumPy/C++ rasterization pipeline.
-
-    These tests require real PyQt5 (not mock PyQt5) because they
-    exercise QImage and QPainter directly.  Under mock QGIS, if real
-    PyQt5 was imported *before* the mocks were installed, ``qgis.PyQt``
-    delegates to real Qt classes and these tests will run fine even in
-    a headless environment.
-
-    NOTE: ``sys.modules`` cleanup is needed because other test classes in
-    this file (e.g. ``TestResultsSignalChain``) trigger an import chain
-    that pulls in ``swe2d.results.high_perf_viewer`` under mock QGIS, leaving a
-    stale module entry with ``__spec__ = None`` and all functions as
-    ``MagicMock``.  We pop & reimport here to force the real module load.
+    Uses the real ``render_unstructured_snapshot_image`` function against
+    real (offscreen) QImage/QPainter.
     """
 
     @classmethod
     def setUpClass(cls):
-        # Other test classes may have left a stale entry in sys.modules
-        sys.modules.pop("swe2d.results.high_perf_viewer", None)
-        import importlib as _il
-        _il.invalidate_caches()
-
-        if not _HAS_REAL_QT:
-            raise unittest.SkipTest(
-                "Real Qt QImage/QPainter unavailable — "
-                "skipping QPainter-dependent rendering tests"
-            )
-        _ensure_qapp()
+        ensure_qgis_app()
 
     def setUp(self):
         # Create a synthetic 2×2 quad mesh (4 cells → 8 triangles)
-        n_cells = 4
-        n_tri = 8
         self.cell_x = np.array([0.25, 0.75, 0.25, 0.75], dtype=np.float64)
         self.cell_y = np.array([0.25, 0.25, 0.75, 0.75], dtype=np.float64)
         self.cell_bed = np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float64)
@@ -462,6 +333,7 @@ class TestOverlayRendering(unittest.TestCase):
             "ok", "image", "extent", "frame_idx", "frame_count",
             "time_s", "n_cells", "vmin", "vmax", "render_ms", "backend",
             "message", "grid", "grid_mask", "computed_vmin", "computed_vmax",
+            "field_key", "length_unit_name",
         }
         self.assertEqual(
             set(result.keys()),
@@ -746,72 +618,16 @@ class TestOverlayRendering(unittest.TestCase):
         self.assertIn("No wetted values", result.get("message", ""))
 
 
-class TestOverlayDialogIntegration(unittest.TestCase):
-    """Integration-style tests using a mock dialog + real bridge functions.
-
-    These tests verify that the overlay data sync and refresh chain
-    works end-to-end with synthetic mesh data.
-    """
-
-    def setUp(self):
-        self.dlg = _build_mock_dialog()
-
-    def test_overlay_time_update_chain(self):
-        """Full chain: update → refresh called with correct time."""
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import update_high_perf_overlay_time
-
-        update_high_perf_overlay_time(self.dlg, 10.0)
-        self.dlg._refresh_high_perf_canvas_overlay.assert_called_once_with(10.0)
-
-    def test_overlay_data_sync_populates_arrays(self):
-        """sync_high_perf_overlay_data fills cell/bed arrays from mesh_data."""
-        self.dlg._mesh_data = {
-            "node_x": np.array([0, 1, 0, 1], dtype=np.float64),
-            "node_y": np.array([0, 0, 1, 1], dtype=np.float64),
-            "cell_nodes": np.array([0, 1, 3, 0, 3, 2], dtype=np.int32),
-        }
-
-        # We need a _mesh_cell_centroids and _mesh_cell_solver_bed
-        def fake_centroids():
-            return (
-                np.array([0.25, 0.75], dtype=np.float64),
-                np.array([0.25, 0.75], dtype=np.float64),
-            )
-
-        def fake_bed():
-            return np.array([10.0, 12.0], dtype=np.float64)
-
-        self.dlg._mesh_cell_centroids = fake_centroids
-        self.dlg._mesh_cell_solver_bed = fake_bed
-
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import sync_high_perf_overlay_data
-        sync_high_perf_overlay_data(self.dlg)
-
-        self.assertEqual(self.dlg._high_perf_overlay_cell_x.size, 2)
-        self.assertEqual(self.dlg._high_perf_overlay_cell_y.size, 2)
-        self.assertEqual(self.dlg._high_perf_overlay_cell_bed.size, 2)
-        self.assertAlmostEqual(float(self.dlg._high_perf_overlay_cell_bed[0]), 10.0)
-        self.assertAlmostEqual(float(self.dlg._high_perf_overlay_cell_bed[1]), 12.0)
-
-    def test_mesh_fingerprint_stable(self):
-        """Same mesh data produces same fingerprint."""
-        from swe2d.workbench.bridges.high_perf_overlay_bridge import mesh_fingerprint_from_arrays
-
-        n1 = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float64)
-        n2 = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
-        cn = np.array([0, 1, 3, 0, 3, 2], dtype=np.int32)
-
-        fp1 = mesh_fingerprint_from_arrays(n1, n2, cn)
-        fp2 = mesh_fingerprint_from_arrays(n1, n2, cn)
-        self.assertEqual(fp1, fp2)
-        self.assertNotEqual(fp1, "")  # Non-empty
-
-
+@requires_qgis
 class TestResultsPanelControls(unittest.TestCase):
     """Verify the results panel's animation controls work correctly.
 
     Tests the slider → animation controller → signal chain.
     """
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_qgis_app()
 
     def test_slider_changes_frame(self):
         """Slider value change triggers animation index change."""
@@ -879,46 +695,46 @@ class TestNoSilentFallbacks(unittest.TestCase):
     the biggest failure you can make in this repo."
     """
 
-    def test_high_perf_viewer_logs_on_hydra_overlay_fallback(self):
-        """Source code: hydra_overlay import failure is LOGGED (not silent).
+    def test_hydra_overlay_import_is_hard(self):
+        """hydra_overlay must be a top-level hard import in high_perf_viewer.
 
-        Instead of trying to re-import the module (which may already be
-        cached), we verify the source code contains the warning.
-        This catches regressions where the warning is accidentally removed.
+        A try/except around the import would silently degrade rendering to
+        a slower/incomplete path.  Verify the import is unconditional.
         """
-        # Read the raw source file — avoids any import/mock issues.
-        hpf_path = os.path.join(_REPO_ROOT, "swe2d/results/high_perf_viewer.py")
         self.assertTrue(
-            os.path.exists(hpf_path),
-            f"swe2d/results/high_perf_viewer.py not found at {hpf_path}",
+            os.path.exists(_HIGH_PERF_VIEWER_PATH),
+            f"swe2d/results/high_perf_viewer.py not found at {_HIGH_PERF_VIEWER_PATH}",
         )
-        with open(hpf_path, "r") as f:
-            src = f.read()
+        with open(_HIGH_PERF_VIEWER_PATH, "r") as f:
+            tree = ast.parse(f.read(), filename=_HIGH_PERF_VIEWER_PATH)
 
-        self.assertIn(
-            "hydra_overlay",
-            src,
-            "swe2d.results.high_perf_viewer has no hydra_overlay reference at all",
-        )
-        # Look for the specific warning pattern that we added to replace
-        # the old silent ``_hydra_overlay = None``.
-        has_fallback_warning = (
-            "exc_info=True" in src
-            and "logger.warning" in src
-            and "hydra_overlay" in src
-            and "falling back" in src.lower()
+        def _imports_hydra_overlay(node: ast.AST) -> bool:
+            if isinstance(node, ast.Import):
+                return any(a.name == "hydra_overlay" for a in node.names)
+            if isinstance(node, ast.ImportFrom):
+                return node.module == "hydra_overlay"
+            return False
+
+        top_level_hard = any(
+            _imports_hydra_overlay(node) for node in tree.body
         )
         self.assertTrue(
-            has_fallback_warning,
-            "swe2d.results.high_perf_viewer does NOT log a warning when "
-            "hydra_overlay import fails — this would be a silent fallback! "
-            "Look for: logger.warning(...'hydra_overlay'...exc_info=True...)",
+            top_level_hard,
+            "high_perf_viewer.py has no top-level 'import hydra_overlay' — "
+            "the renderer must fail loudly when the extension is missing.",
         )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try):
+                for sub in ast.walk(node):
+                    if _imports_hydra_overlay(sub):
+                        self.fail(
+                            "hydra_overlay import is wrapped in try/except at "
+                            f"line {sub.lineno} — this is a silent fallback!"
+                        )
 
 
 # =========================================================================
-# Run with: python -m pytest tests/test_swe2d_overlay_and_autoload.py -v
-# or: python -m pytest tests/ -k "overlay or autoload" -v
+# Run with: python -m unittest -v tests.test_swe2d_overlay_and_autoload
 # =========================================================================
 
 if __name__ == "__main__":

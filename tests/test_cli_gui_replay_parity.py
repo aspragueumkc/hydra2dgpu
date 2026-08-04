@@ -4,8 +4,8 @@ Runs ONE project configuration through both RunContext construction paths
 and the shared executor, then asserts the final state arrays match:
 
 * GUI path  — ``RunController._build_run_context()`` on the Studio dialog
-  (mocked ``qgis.*``, real PyQt5; same ``ParityFixture`` as
-  ``tests/test_run_context_parity.py``).
+  (real headless QGIS via ``tests.qgis_real_env``; same ``ParityFixture``
+  as ``tests/test_run_context_parity.py``).
 * CLI path  — ``build_run_context_from_dict()`` fed the ``swe2d-replay/1``
   JSON exported from the SAME dialog widget state.
  * Executor  — ``swe2d.core.executor.execute_run`` for BOTH contexts, so any result
@@ -34,12 +34,12 @@ import unittest
 import numpy as np
 
 from tests._swe2d_test_helpers import _gpu_available
-from tests.test_run_context_parity import (  # noqa: F401  (installs qgis mocks)
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis
+from tests.test_run_context_parity import (
     KNOWN_DIVERGENCES,
     ParityFixture,
     _matches_allowlist,
     diff_run_contexts,
-    install_qgis_mocks as _mocks_installed,
 )
 
 
@@ -52,12 +52,14 @@ from tests.test_run_context_parity import (  # noqa: F401  (installs qgis mocks)
 _INERT_FOR_THIS_RUN = {"rain_mm_to_model_depth", "coupling_soa", "cell_centroids"}
 
 
+@requires_qgis
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestCliGuiReplayParity(unittest.TestCase):
     """Final h/hu/hv from GUI-built and CLI-built RunContexts must match."""
 
     @classmethod
     def setUpClass(cls):
+        ensure_qgis_app()
         # Register cleanup BEFORE build() so a mid-setup failure cannot
         # leak the patched globals / dialog into later test modules.
         cls.fixture = ParityFixture()

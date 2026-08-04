@@ -68,7 +68,10 @@ class TestMcpWidgetWalk(unittest.TestCase):
                 "parent_id", "text", "depth",
             }
             self.assertTrue(
-                all(isinstance(node, dict) and required_keys <= node for node in tree),
+                all(
+                    isinstance(node, dict) and required_keys.issubset(node)
+                    for node in tree
+                ),
                 f"get_widget_tree returned an unexpected shape: {tree!r}",
             )
 

@@ -1,8 +1,8 @@
 """
-Unit tests for workbench GUI components using mock QGIS environment.
+Unit tests for workbench GUI components against real headless QGIS.
 
 These tests verify that:
-1. The workbench dialog can be instantiated without a real QGIS session
+1. The workbench dialog can be instantiated in a headless QGIS session
 2. Key GUI methods complete without exceptions
 3. No silent fallbacks are triggered during normal GUI operations
 4. UI state transitions behave correctly
@@ -18,17 +18,13 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
-# ── Install QGIS mocks BEFORE any swe2d module imports ────────────────
-from tests.mocks.qgis_env import install_qgis_mocks
-# Save real QApplication before mocks replace it (needed for dialog lifecycle tests)
-from qgis.PyQt.QtWidgets import QApplication as _REAL_QAPP
-install_qgis_mocks()
-
 from qgis.PyQt import QtCore, QtWidgets
+
+from tests.qgis_real_env import ensure_qgis_app, requires_qgis, stub_iface
 from tests.test_helpers import FallbackTracker
 
 
@@ -36,8 +32,9 @@ from tests.test_helpers import FallbackTracker
 # Workbench import smoke tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 class TestWorkbenchImports(unittest.TestCase):
-    """Verify that the main workbench module can be imported without QGIS."""
+    """Verify that the main workbench module imports under real QGIS."""
 
     def test_import_workbench_studio_dialog_no_crash(self):
         """Importing swe2d.workbench.studio_dialog does not raise ImportError."""
@@ -106,11 +103,9 @@ class TestUnitSystem(unittest.TestCase):
 # Workbench dialog construction
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 class TestWorkbenchDialogConstruction(unittest.TestCase):
     """Verify the workbench dialog can be imported and referenced."""
-
-    def setUp(self):
-        install_qgis_mocks()
 
     def test_dialog_class_exists(self):
         """SWE2DWorkbenchStudioDialog class is importable and is a type."""
@@ -131,20 +126,27 @@ class TestWorkbenchDialogConstruction(unittest.TestCase):
         self.assertGreater(units.si_m_per_model(), 0.0)
 
 
+@requires_qgis
 class TestWorkbenchDialogConstructionFull(unittest.TestCase):
-    """Static analysis checks for widget completeness after .ui removal.
+    """Widget completeness checks after .ui removal.
 
-    Verifies that every widget previously defined in .ui files is now
-    created programmatically with ``setObjectName()`` and that no stale
-    ``_find_or_create_*`` helper references remain.
+    The widget-existence check is behavioral: it constructs the real
+    ``TopologyTabView`` and looks up every critical widget in the live
+    widget tree.  Two source-grep guards are retained (with in-line
+    justifications) because they audit refactor cleanup that has no
+    runtime signature.
     """
 
-    def setUp(self):
-        from tests.mocks.qgis_env import install_qgis_mocks
-        install_qgis_mocks()
+    @classmethod
+    def setUpClass(cls):
+        cls._app = ensure_qgis_app()
 
     def test_no_stale_helper_references_in_source(self):
         """No _find_or_create_, _find_child_robust, or _ensure_form_row remain."""
+        # JUSTIFICATION (source grep, no behavioral equivalent): this is a
+        # .ui-removal migration-cleanup audit.  A stale helper reference that
+        # is never executed is dead code with no runtime signature — dialog
+        # construction tests cannot observe it.
         import re
 
         from swe2d.workbench import studio_dialog
@@ -167,14 +169,19 @@ class TestWorkbenchDialogConstructionFull(unittest.TestCase):
             "These should be inlined into direct QtWidgets.Xxx() calls."
         )
 
-    def test_key_widget_object_names_exist_in_source(self):
-        """Critical widget objectNames appear in the source code."""
-        import re
+    def test_key_widgets_exist_in_live_topology_view(self):
+        """Every critical topology widget exists in the live widget tree.
 
-        with open("swe2d/workbench/views/topology_tab_view.py") as f:
-            topo_src = f.read()
+        Behavioral replacement for the former ``setObjectName`` source
+        grep: constructing the real ``TopologyTabView`` and resolving each
+        objectName via ``findChild`` proves the widgets are actually built
+        and reachable — strictly stronger than matching source strings.
+        """
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
 
-        # These widget names must appear in setObjectName("...") calls
+        view = TopologyTabView()
+        self.addCleanup(view.deleteLater)
+
         critical_widgets = [
             "topo_gmsh_tri_algo_combo",
             "topo_gmsh_quad_algo_combo",
@@ -197,19 +204,49 @@ class TestWorkbenchDialogConstructionFull(unittest.TestCase):
             "topo_quality_strict_chk",
         ]
 
-        missing = []
-        for name in critical_widgets:
-            pattern = f'setObjectName("{name}")'
-            if pattern not in topo_src:
-                missing.append(name)
-
+        missing = [
+            name for name in critical_widgets
+            if view.findChild(QtWidgets.QWidget, name) is None
+        ]
         self.assertEqual(
-            len(missing), 0,
-            f"Widgets missing setObjectName() calls: {missing}"
+            missing, [],
+            f"Widgets missing from live TopologyTabView: {missing}",
+        )
+
+        # Spot-check widget classes — a name collision with the wrong
+        # widget type must fail, not pass silently.
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_gmsh_tri_algo_combo"),
+            QtWidgets.QComboBox,
+        )
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_gmsh_quality_enable_chk"),
+            QtWidgets.QCheckBox,
+        )
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_gmsh_quality_max_iters_spin"),
+            QtWidgets.QSpinBox,
+        )
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_quality_min_angle_spin"),
+            QtWidgets.QDoubleSpinBox,
+        )
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_quality_min_area_edit"),
+            QtWidgets.QLineEdit,
+        )
+        self.assertIsInstance(
+            view.findChild(QtWidgets.QWidget, "topo_quality_strict_chk"),
+            QtWidgets.QCheckBox,
         )
 
     def test_no_orphan_if_none_guards_in_topo_source(self):
         """No bare 'if self.X is None:' guards without prior initialization."""
+        # JUSTIFICATION (source grep, no behavioral equivalent): this guards
+        # the .ui-removal refactor rule that widgets are created eagerly at
+        # construction, not lazily inside ``if self.X is None:`` guards.  A
+        # guard-wrapped creation is behaviorally indistinguishable from
+        # eager init at runtime, so no widget-driving test can observe it.
         import re
 
         with open("swe2d/workbench/views/topology_tab_view.py") as f:
@@ -456,39 +493,18 @@ class TestNativeBindingCompat(unittest.TestCase):
 # Studio dialog lifecycle tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 class TestStudioDialogLifecycle(unittest.TestCase):
     """Verify the Studio dialog lifecycle: component registry, close, tabs."""
 
-    _saved_qapp: type | None = None
-
     @classmethod
     def setUpClass(cls):
-        # Restore real QApplication so processEvents() etc. work at runtime
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        cls._saved_qapp = _pyqt5_qt.QApplication if _pyqt5_qt else None
-        if _pyqt5_qt is not None:
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        if _qgis_qt is not None:
-            _qgis_qt.QApplication = _REAL_QAPP
-        cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-
-    @classmethod
-    def tearDownClass(cls):
-        # Restore mock QApplication for other tests
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        if _pyqt5_qt is not None and cls._saved_qapp is not None:
-            _pyqt5_qt.QApplication = cls._saved_qapp
-        if _qgis_qt is not None and cls._saved_qapp is not None:
-            _qgis_qt.QApplication = cls._saved_qapp
-        cls._saved_qapp = None
+        cls._app = ensure_qgis_app()
 
     def _make_dialog(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        iface = MagicMock()
+        iface = stub_iface()
+        # Dock widgets need a real QWidget parent.
         iface.mainWindow.return_value = QtWidgets.QMainWindow()
         return SWE2DWorkbenchStudioDialog(iface=iface)
 
@@ -522,78 +538,21 @@ class TestStudioDialogLifecycle(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Studio results controls tab tests (Phase 5 / Task 23)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestStudioResultsControlsTab(unittest.TestCase):
-    """Verify the controls tab is built inline in _populate_results_dock."""
-
-    _saved_qapp: type | None = None
-    _app = None
-
-    @classmethod
-    def setUpClass(cls):
-        # install_qgis_mocks is already called at top of file.
-        # Swap mock QApplication for the real one so processEvents() works.
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        cls._saved_qapp = _pyqt5_qt.QApplication if _pyqt5_qt else None
-        if _pyqt5_qt is not None:
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        if _qgis_qt is not None:
-            _qgis_qt.QApplication = _REAL_QAPP
-        cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-
-    @classmethod
-    def tearDownClass(cls):
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        if _pyqt5_qt is not None and cls._saved_qapp is not None:
-            _pyqt5_qt.QApplication = cls._saved_qapp
-        if _qgis_qt is not None and cls._saved_qapp is not None:
-            _qgis_qt.QApplication = cls._saved_qapp
-        cls._saved_qapp = None
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Legacy panel cleanup tests (Phase 5 / Task 25)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 class TestLegacyPanelCleanup(unittest.TestCase):
     """Verify the legacy SWE2DResultsPanel is no longer created."""
 
-    _saved_qapp: type | None = None
-    _app = None
-
     @classmethod
     def setUpClass(cls):
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        cls._saved_qapp = _pyqt5_qt.QApplication if _pyqt5_qt else None
-        if _pyqt5_qt is not None:
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        if _qgis_qt is not None:
-            _qgis_qt.QApplication = _REAL_QAPP
-        cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-
-    @classmethod
-    def tearDownClass(cls):
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        if _pyqt5_qt is not None and cls._saved_qapp is not None:
-            _pyqt5_qt.QApplication = cls._saved_qapp
-        if _qgis_qt is not None and cls._saved_qapp is not None:
-            _qgis_qt.QApplication = cls._saved_qapp
-        cls._saved_qapp = None
+        cls._app = ensure_qgis_app()
 
     def test_no_legacy_panel_after_dialog_build(self):
         """After dialog builds, _results_panel should not be a live panel."""
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        iface = MagicMock()
+        iface = stub_iface()
         iface.mainWindow.return_value = QtWidgets.QMainWindow()
         dlg = SWE2DWorkbenchStudioDialog(iface=iface)
         try:
@@ -605,21 +564,15 @@ class TestLegacyPanelCleanup(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Run if called directly
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Service integration tests (Phase 2 / Task 8)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from tests.test_workbench_dialog_builder import _ensure_app
-
-
+@requires_qgis
 class TestServiceIntegration(unittest.TestCase):
     """Verify the dialog uses services instead of inline code."""
 
     def setUp(self):
-        _ensure_app()
+        ensure_qgis_app()
 
     def test_dialog_has_no_inline_sqlite3(self):
         """The dialog module should not import sqlite3 directly.
@@ -629,29 +582,32 @@ class TestServiceIntegration(unittest.TestCase):
         service (``load_mesh_snapshot``) rather than importing sqlite3
         inline.
         """
+        # JUSTIFICATION (source grep, no behavioral equivalent): MVP
+        # layering guard — the View must not perform DB I/O.  Importing
+        # sqlite3 changes no runtime behavior, so no widget-driving test
+        # can observe it.  (tests/test_import_boundary.py covers the
+        # Qt-import boundary of *service* modules — a different axis; it
+        # does not cover sqlite3 in the View layer.)
         from swe2d.workbench import studio_dialog
         source = open(studio_dialog.__file__).read()
         self.assertNotIn('sqlite3', source)
 
     def test_dialog_delegates_to_controller(self):
-        """The dialog should delegate mesh snapshot loading via OverlayController.
+        """The dialog delegates mesh snapshot loading to the OverlayController.
 
         After Phase 3 Task 10, ``studio_dialog`` no longer imports
-        ``load_mesh_snapshot_for_overlay`` directly. The dialog instantiates
-        an ``OverlayController`` in its builder, and the controller owns the
-        GPKG snapshot loading path.
+        ``load_mesh_snapshot_for_overlay`` directly — the controller owns
+        the GPKG snapshot loading path.  The behavioral proof that the
+        controller path actually works end-to-end lives in
+        ``TestOverlayControllerDelegation`` below.
         """
         from swe2d.workbench import studio_dialog
-        from swe2d.workbench.controllers import overlay_controller
 
         self.assertFalse(
             hasattr(studio_dialog, 'load_mesh_snapshot_for_overlay'),
             "studio_dialog should not import load_mesh_snapshot_for_overlay directly; "
             "the overlay controller is the seam.",
         )
-        controller_source = open(overlay_controller.__file__).read()
-        self.assertIn("load_mesh_snapshot_for_overlay", controller_source)
-        self.assertIn("from swe2d.services.gpkg_persistence_service import load_baked_snapshot", controller_source)
 
 
 class TestOverlayParametersServiceUsage(unittest.TestCase):
@@ -662,16 +618,11 @@ class TestOverlayParametersServiceUsage(unittest.TestCase):
     exposing the dialog's widget state (typically the dialog itself).
     """
 
-    def test_service_exists(self):
-        from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
-        self.assertIsNotNone(collect_overlay_parameters)
-
     def test_service_is_sole_source_returns_full_dict(self):
         """``collect_overlay_parameters`` returns the complete dict consumed by
         ``render_unstructured_snapshot_image`` — not a 19-key stub.
         """
         from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
-        from unittest.mock import MagicMock
         import numpy as np
 
         view = MagicMock()
@@ -734,54 +685,241 @@ class TestOverlayParametersServiceUsage(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Overlay controller delegation — behavioral end-to-end (replaces source greps)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@requires_qgis
+class TestOverlayControllerDelegation(unittest.TestCase):
+    """Drive the real overlay snapshot/render path through the controller.
+
+    Behavioral replacements for the former source greps that asserted
+    "the overlay controller imports ``load_baked_snapshot`` /
+    ``collect_overlay_parameters``" and "the results panel calls
+    ``dialog._overlay_controller.load_mesh_snapshot_for_overlay``".
+    Here a real dialog (real ``QgsMapCanvas``, real results toolbox
+    widgets) loads a snapshot from a real results GPKG and renders it —
+    every import and call site the greps matched is executed for real.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._app = ensure_qgis_app()
+        cls._native = cls._import_native_swe2d()
+
+    @staticmethod
+    def _import_native_swe2d():
+        """Import the compiled ``hydra_swe2d`` extension from this repo's build/.
+
+        Constructing the Studio dialog imports the ``HYDRA2DGPU`` QGIS
+        plugin package, whose ``__init__`` realpaths the dev plugin
+        symlink and prepends that tree to ``sys.path``.  When the symlink
+        points at a worktree without a compiled extension, a plain
+        ``import hydra_swe2d`` after dialog construction resolves to the
+        wrong package.  Loading from the canonical ``build/`` path keeps
+        this test immune to that environment state; a missing .so skips
+        the class loudly.
+        """
+        import glob
+        import importlib.util
+
+        mod = sys.modules.get("hydra_swe2d")
+        if mod is not None and hasattr(mod, "swe2d_build_mesh"):
+            return mod
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = sorted(
+            glob.glob(os.path.join(repo_root, "build", "hydra_swe2d*.so"))
+        )
+        if not candidates:
+            raise unittest.SkipTest(
+                "hydra_swe2d native extension not built "
+                "(build/hydra_swe2d*.so missing)"
+            )
+        spec = importlib.util.spec_from_file_location(
+            "hydra_swe2d", candidates[0]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["hydra_swe2d"] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def setUp(self):
+        from qgis.core import QgsRectangle
+        from qgis.gui import QgsMapCanvas
+
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+
+        iface = stub_iface()
+        # Dock widgets need a real QWidget parent.
+        iface.mainWindow.return_value = QtWidgets.QMainWindow()
+        # Real offscreen canvas so the canvas overlay item is created for real.
+        self.canvas = QgsMapCanvas()
+        self.canvas.resize(400, 300)
+        self.canvas.setExtent(QgsRectangle(-1.0, -1.0, 2.0, 2.0))
+        iface.mapCanvas.return_value = self.canvas
+        self.dlg = SWE2DWorkbenchStudioDialog(iface=iface)
+
+    def tearDown(self):
+        self.dlg.close()
+        self.dlg.deleteLater()
+        self.canvas.deleteLater()
+
+    @staticmethod
+    def _bake_toy_mesh(gpkg_path: str, mesh_name: str = "hydra_test_mesh") -> None:
+        """Bake a 4-cell toy mesh into the results GPKG (production writer)."""
+        from swe2d.services.mesh_persistence_service import save_baked_mesh
+
+        mesh_data = {
+            "node_x": np.array([0.0, 1.0, 0.0, 1.0, 0.5], dtype=np.float64),
+            "node_y": np.array([0.0, 0.0, 1.0, 1.0, 0.5], dtype=np.float64),
+            "node_z": np.zeros(5, dtype=np.float64),
+            "cell_nodes": np.array(
+                [0, 1, 4, 1, 3, 4, 0, 4, 2, 4, 3, 2], dtype=np.int32
+            ),
+        }
+        n_cells = save_baked_mesh(mesh_data, gpkg_path, mesh_name)
+        assert n_cells == 4, f"expected 4 baked cells, got {n_cells}"
+
+    def _load_run_into_dialog(self, gpkg_path: str) -> None:
+        """Register the temp results run via the production discovery path."""
+        added_paths, added_runs = self.dlg._results_data.add_results_files(
+            [gpkg_path]
+        )
+        self.assertEqual(added_paths, 1)
+        self.assertEqual(added_runs, 1)
+        rec = self.dlg._results_data.overlay_selected_run()
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.run_id, "hydra_test_run")
+
+    def test_controller_loads_snapshot_from_per_run_gpkg(self):
+        """load_mesh_snapshot_for_overlay reads mesh + snapshot from the GPKG.
+
+        Proves the controller owns the whole GPKG path the deleted dialog
+        delegate used to expose: baked-mesh load, ``load_baked_snapshot``,
+        and live-snapshot seeding.
+        """
+        from tests.qgis_real_env import make_temp_results_gpkg
+
+        dlg = self.dlg
+        with make_temp_results_gpkg(n_cells=4, n_timesteps=3) as gpkg:
+            self._bake_toy_mesh(gpkg)
+            self._load_run_into_dialog(gpkg)
+            dlg._high_perf_canvas_overlay_enabled = True
+
+            ok = dlg._overlay_controller.load_mesh_snapshot_for_overlay(10.0)
+
+            self.assertTrue(ok, "controller must load the snapshot from GPKG")
+            self.assertAlmostEqual(dlg._overlay_last_loaded_t_s, 10.0)
+            data = dlg._results_data
+            self.assertEqual(data.overlay_cell_x.size, 4)
+            self.assertEqual(data.overlay_node_x.size, 5)
+            live = data.get_live_snapshot_timesteps()
+            self.assertTrue(
+                any(abs(float(t) - 10.0) < 1.0e-6 for t, *_ in live),
+                f"snapshot at t=10 must be seeded live, got {live!r}",
+            )
+
+    def test_results_panel_timestep_change_calls_controller(self):
+        """on_results_panel_timestep_changed reaches the controller method.
+
+        Behavioral proof of the call site the deleted source grep matched
+        in ``studio_results_panel.py``: the panel function invokes
+        ``dialog._overlay_controller.load_mesh_snapshot_for_overlay(t_s)``.
+        """
+        from tests.qgis_real_env import make_temp_results_gpkg
+        from swe2d.workbench.views import studio_results_panel
+
+        dlg = self.dlg
+        with make_temp_results_gpkg(n_cells=4, n_timesteps=3) as gpkg:
+            self._bake_toy_mesh(gpkg)
+            self._load_run_into_dialog(gpkg)
+            dlg._high_perf_canvas_overlay_enabled = True
+
+            calls = []
+            orig = dlg._overlay_controller.load_mesh_snapshot_for_overlay
+
+            def recording_load(t_s, _orig=orig, _calls=calls):
+                _calls.append(float(t_s))
+                return _orig(t_s)
+
+            dlg._overlay_controller.load_mesh_snapshot_for_overlay = (
+                recording_load
+            )
+            try:
+                studio_results_panel.on_results_panel_timestep_changed(
+                    dlg, 20.0
+                )
+            finally:
+                dlg._overlay_controller.load_mesh_snapshot_for_overlay = orig
+
+            self.assertEqual(
+                calls, [20.0],
+                "results panel must call the controller's "
+                "load_mesh_snapshot_for_overlay exactly once with t_s",
+            )
+            self.assertAlmostEqual(dlg._overlay_last_loaded_t_s, 20.0)
+
+    def test_refresh_overlay_renders_through_service(self):
+        """refresh_high_perf_canvas_overlay runs collect → render → apply.
+
+        Behavioral proof that the controller pulls render parameters from
+        ``overlay_parameters_service.collect_overlay_parameters``: a real
+        render against real toolbox widgets must produce a frame, create
+        the canvas overlay item, and publish the computed color range.
+        """
+        from tests.qgis_real_env import make_temp_results_gpkg
+
+        dlg = self.dlg
+        with make_temp_results_gpkg(n_cells=4, n_timesteps=3) as gpkg:
+            self._bake_toy_mesh(gpkg)
+            self._load_run_into_dialog(gpkg)
+            dlg._high_perf_canvas_overlay_enabled = True
+            self.assertTrue(
+                dlg._overlay_controller.load_mesh_snapshot_for_overlay(10.0)
+            )
+
+            dlg._refresh_high_perf_canvas_overlay(10.0)
+
+            item = dlg._state.high_perf_canvas_overlay_item
+            self.assertIsNotNone(
+                item, "render path must create the canvas overlay item"
+            )
+            self.assertTrue(item.isVisible())
+            self.assertIsNotNone(
+                dlg._results_data._overlay_computed_vmin,
+                "rendered frame must publish its computed color range",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Phase 1 — Tasks 1 + 5: dialog must NOT have overlay-collection methods
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@requires_qgis
 class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
     """Phase 1 Tasks 1 + 5 — the dialog must NOT define these methods.
 
     The dialog delegates to ``collect_overlay_parameters`` (service) for
     overlay collection and to ``_controller.load_mesh_snapshot_for_overlay``
     for mesh snapshot loading. No 1-line wrapper, no alias, no compat shim.
-    """
 
-    _saved_qapp: type | None = None
-    _app = None
-    _studio_source: str = ""
+    Deleted source-grep duplicates (2026-08-02, plan F.1):
+    - ``test_dialog_source_has_no_collect_overlay_parameters_def`` and
+      ``test_dialog_source_has_no_load_mesh_results_for_overlay_def`` —
+      exact duplicates of the two live-dialog ``hasattr`` checks below.
+    - ``test_dialog_caller_uses_controller_not_delegate`` and
+      ``test_dialog_caller_uses_service_not_method`` — replaced by the
+      behavioral end-to-end tests in ``TestOverlayControllerDelegation``.
+    """
 
     @classmethod
     def setUpClass(cls):
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        cls._saved_qapp = _pyqt5_qt.QApplication if _pyqt5_qt else None
-        if _pyqt5_qt is not None:
-            _pyqt5_qt.QApplication = _REAL_QAPP
-        if _qgis_qt is not None:
-            _qgis_qt.QApplication = _REAL_QAPP
-        cls._app = _REAL_QAPP.instance() or _REAL_QAPP([])
-        cls._main_window = QtWidgets.QMainWindow()
-
-        from unittest.mock import MagicMock
-        cls._iface = MagicMock()
-        cls._iface.mainWindow.return_value = cls._main_window
-
-        from swe2d.workbench import studio_dialog
-        cls._studio_source = open(studio_dialog.__file__).read()
+        cls._app = ensure_qgis_app()
+        cls._iface = stub_iface()
+        # Dock widgets need a real QWidget parent.
+        cls._iface.mainWindow.return_value = QtWidgets.QMainWindow()
 
     def _make_iface(self):
         return self._iface
-
-    @classmethod
-    def tearDownClass(cls):
-        import sys as _sys
-        _pyqt5_qt = _sys.modules.get("PyQt5.QtWidgets")
-        _qgis_qt = _sys.modules.get("qgis.PyQt.QtWidgets")
-        if _pyqt5_qt is not None and cls._saved_qapp is not None:
-            _pyqt5_qt.QApplication = cls._saved_qapp
-        if _qgis_qt is not None and cls._saved_qapp is not None:
-            _qgis_qt.QApplication = cls._saved_qapp
-        cls._saved_qapp = None
 
     def test_dialog_does_not_have_collect_overlay_parameters(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
@@ -807,66 +945,6 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
         finally:
             dlg.close()
 
-    def test_dialog_source_has_no_collect_overlay_parameters_def(self):
-        """``studio_dialog.py`` source does not define ``_collect_overlay_parameters``."""
-        self.assertNotIn(
-            "def _collect_overlay_parameters(",
-            self._studio_source,
-            "studio_dialog.py still defines _collect_overlay_parameters — "
-            "overlay_parameters_service is supposed to be the SOLE source.",
-        )
-
-    def test_dialog_source_has_no_load_mesh_results_for_overlay_def(self):
-        """``studio_dialog.py`` source does not define ``_load_mesh_results_for_overlay``."""
-        self.assertNotIn(
-            "def _load_mesh_results_for_overlay(",
-            self._studio_source,
-            "studio_dialog.py still defines _load_mesh_results_for_overlay — "
-            "callers must use self._controller.load_mesh_snapshot_for_overlay directly.",
-        )
-
-    def test_dialog_caller_uses_controller_not_delegate(self):
-        """The dialog's only caller of mesh-snapshot loading must use the controller.
-
-        After deletion, the call site in the results-panel view calls
-        ``dialog._overlay_controller.load_mesh_snapshot_for_overlay(t_s)``;
-        the dialog itself never calls its own
-        ``_load_mesh_results_for_overlay`` delegate.
-        """
-        self.assertNotIn(
-            "self._load_mesh_results_for_overlay(",
-            self._studio_source,
-            "Dialog still calls its own _load_mesh_results_for_overlay delegate.",
-        )
-        from swe2d.workbench.views import studio_results_panel
-        results_source = open(studio_results_panel.__file__).read()
-        self.assertIn(
-            "dialog._overlay_controller.load_mesh_snapshot_for_overlay(",
-            results_source,
-            "Results panel view must call dialog._overlay_controller.load_mesh_snapshot_for_overlay directly.",
-        )
-
-    def test_dialog_caller_uses_service_not_method(self):
-        """The overlay-parameter collection must come from the service, not a dialog method."""
-        self.assertNotIn(
-            "self._collect_overlay_parameters(",
-            self._studio_source,
-            "Dialog still calls its own _collect_overlay_parameters method — "
-            "must call collect_overlay_parameters from overlay_parameters_service.",
-        )
-        from swe2d.workbench.controllers import overlay_controller
-        controller_source = open(overlay_controller.__file__).read()
-        self.assertIn(
-            "from swe2d.workbench.services.overlay_parameters_service import",
-            controller_source,
-            "Overlay controller must import from overlay_parameters_service.",
-        )
-        self.assertIn(
-            "collect_overlay_parameters",
-            controller_source,
-            "Overlay controller must import collect_overlay_parameters from the service module.",
-        )
-
     def test_grep_dialog_references_only_service_and_controller(self):
         """``grep`` for these names finds only real code references in service and controller.
 
@@ -879,6 +957,11 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
         is not a real code reference — so we ignore string-occurrences inside
         the ``_EXCLUDE_METHODS = frozenset({...})`` literal.
         """
+        # JUSTIFICATION (AST walk, no behavioral equivalent): repo-wide
+        # dangling-reference audit after the delegate-method deletion.  A
+        # stale *reference* (not a call) in an arbitrary module has no
+        # runtime signature, and no single widget-driving test exercises
+        # every module in swe2d/.
         import re
         import os
         import ast
@@ -899,6 +982,7 @@ class TestDialogNoOverlayDelegateMethods(unittest.TestCase):
                 with open(fpath) as f:
                     text = f.read()
                 try:
+                    # Justified AST audit — see JUSTIFICATION at method top.
                     tree = ast.parse(text, filename=fpath)
                 except SyntaxError:
                     continue

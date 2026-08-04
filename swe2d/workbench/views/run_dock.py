@@ -43,19 +43,21 @@ class RunDockWidget(QtWidgets.QWidget):
         self.cancel_btn.setEnabled(False)
         self.snapshot_btn = QtWidgets.QPushButton("📸 Snapshot")
         self.snapshot_btn.setObjectName("snapshot_btn")
-        self.gpu_viewer_btn = QtWidgets.QPushButton("🎬 GPU Direct Viewer…")
-        self.gpu_viewer_btn.setObjectName("gpu_viewer_btn")
-        self.gpu_viewer_btn.setToolTip(
-            "Open the live GPU snapshot viewer (zero-D2H for the buffer).\n"
-            "Reads from the device snapshot ring buffer populated by swe2d_step."
-        )
+        # self.gpu_viewer_btn = QtWidgets.QPushButton("🎬 GPU Direct Viewer…")
+        # self.gpu_viewer_btn.setObjectName("gpu_viewer_btn")
+        # self.gpu_viewer_btn.setToolTip(
+        #     "Open the live GPU snapshot viewer (zero-D2H for the buffer).\n"
+        #     "Reads from the device snapshot ring buffer populated by swe2d_step."
+        # )
+        self.gpu_viewer_btn = None  # GPU Direct Viewer hidden (see 4625c347)
         self.batch_btn = QtWidgets.QPushButton("Batch…")
         self.batch_btn.setObjectName("batch_btn")
 
         row.addWidget(self.run_btn)
         row.addWidget(self.cancel_btn)
         row.addWidget(self.snapshot_btn)
-        row.addWidget(self.gpu_viewer_btn)
+        if self.gpu_viewer_btn is not None:
+            row.addWidget(self.gpu_viewer_btn)
         row.addStretch(1)
         row.addWidget(self.batch_btn)
         layout.addLayout(row)
@@ -67,7 +69,8 @@ class RunDockWidget(QtWidgets.QWidget):
 
         # Wire the button to the signal (the workbench listens + owns the
         # actual dialog).
-        self.gpu_viewer_btn.clicked.connect(self.gpu_viewer_requested)
+        if self.gpu_viewer_btn is not None:
+            self.gpu_viewer_btn.clicked.connect(self.gpu_viewer_requested)
 
     # ------------------------------------------------------------------
     # Direct accessors for execution-surface widgets
