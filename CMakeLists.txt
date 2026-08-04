@@ -165,11 +165,22 @@ function(_configure_swe2d_module target_name py_module_name)
     if(NOT CUDA_DRIVER_LIB)
       # Build environments (manylinux containers, wheel CI runners) have no
       # NVIDIA driver.  Fall back to the CUDA toolkit's link-time stub
-      # (${CUDAToolkit_LIBRARY_DIR}/stubs works on Linux and Windows) —
-      # runtime symbol resolution happens against the user's driver.
-      find_library(CUDA_DRIVER_LIB cuda
-        PATHS "${CUDAToolkit_LIBRARY_DIR}/stubs"
-        NO_DEFAULT_PATH)
+      # (runtime symbol resolution happens against the user's driver).
+      # The stub dir sits under the toolkit's lib dir; the implicit linker
+      # dirs reported by nvcc are the most reliable source for it on both
+      # platforms (env vars / CMake module vars can be unset in
+      # scikit-build-core's cmake subprocess).
+      set(_stub_candidates)
+      foreach(_dir ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
+        list(APPEND _stub_candidates "${_dir}/stubs")
+      endforeach()
+      list(APPEND _stub_candidates "${CUDAToolkit_LIBRARY_DIR}/stubs")
+      foreach(_stub_dir ${_stub_candidates})
+        find_library(CUDA_DRIVER_LIB cuda PATHS "${_stub_dir}" NO_DEFAULT_PATH)
+        if(CUDA_DRIVER_LIB)
+          break()
+        endif()
+      endforeach()
     endif()
     if(NOT CUDA_DRIVER_LIB)
       message(FATAL_ERROR "CUDA driver library (libcuda) not found; "
