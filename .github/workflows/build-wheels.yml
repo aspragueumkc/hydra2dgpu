@@ -57,8 +57,11 @@ jobs:
           # cp<=311) cannot install the CUDA toolkit.
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_BEFORE_BUILD_LINUX: |
-            yum install -y https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
-            yum install -y cuda-toolkit-12-4
+            # manylinux_2_28 = AlmaLinux 8 (dnf).  `yum install -y <url>`
+            # of the .repo file fails ("Can not load RPM file") — the file
+            # must land in /etc/yum.repos.d/ first.
+            curl -L -o /etc/yum.repos.d/cuda-rhel8.repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+            dnf install -y cuda-toolkit-12-4
           # CUDACXX/CUDA_HOME must reach the container build via
           # CIBW_ENVIRONMENT_LINUX: the old `echo ... >> $GITHUB_ENV` wrote
           # to a host file from inside the container (no effect) and
