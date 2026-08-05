@@ -200,10 +200,14 @@ jobs:
           & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -m pip install $wheel.FullName
           if ($LASTEXITCODE -ne 0) { throw "pip install failed (RECORD/structural issue?)" }
           # Import the native module + assert the bindings surface is present.
-          # Single-line -c (no PowerShell here-string): YAML block scalars end
-          # at column 0, which collides with the "@ terminator of a here-string.
+          # Run from $env:TEMP, NOT the repo checkout: for `python -c` sys.path[0]
+          # is the cwd, and the repo root's hydra_swe2d/ source dir (the .py shim,
+          # no .pyd) would shadow the installed wheel and produce a bogus
+          # ModuleNotFoundError.
+          Push-Location "$env:TEMP"
           & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -c "import hydra_swe2d; from hydra_swe2d import hydra_swe2d as h; attrs=[a for a in dir(h) if not a.startswith('_')]; print('hydra_swe2d import OK - %d native attributes' % len(attrs)); assert len(attrs) > 50, 'expected >50 native attrs, got %d' % len(attrs); assert hasattr(h, 'swe2d_create_solver') or hasattr(h, 'swe2d_gpu_create'), 'no solver-create binding found'; print('WHEEL SMOKE TEST PASSED')"
           if ($LASTEXITCODE -ne 0) { throw "import smoke test failed" }
+          Pop-Location
 
   # ── GitHub Release (same workflow → valid `needs` on both wheel jobs) ──
   # The old release.yml had `needs: build_wheels` but that job lives in
