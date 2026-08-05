@@ -175,15 +175,21 @@ class BackendInstaller:
         if not sp:
             raise RuntimeError("site-packages not found in created environment")
 
+        # Invoke pip via the venv's python (python -m pip), NOT the pip.exe /
+        # pip console-script launcher. On Windows, running pip.exe to upgrade
+        # itself refuses with "To modify pip, please run:
+        # <venv>\Scripts\python.exe -m pip install --upgrade pip" — pip.exe
+        # is a frozen console-script wrapper that cannot safely replace the
+        # file it is running from. python -m pip always works.
         scripts = "Scripts" if platform.system() == "Windows" else "bin"
-        pip = env / scripts / ("pip.exe" if platform.system() == "Windows" else "pip")
+        py = env / scripts / ("python.exe" if platform.system() == "Windows" else "python")
 
         progress("Upgrading pip in isolated environment...")
-        self._run_pip([str(pip), "install", "--upgrade", "pip"], "pip upgrade", progress)
+        self._run_pip([str(py), "-m", "pip", "install", "--upgrade", "pip"], "pip upgrade", progress)
 
         url = self.wheel_url()
         progress(f"Downloading {url}")
-        self._run_pip([str(pip), "install", url], f"wheel {url}", progress)
+        self._run_pip([str(py), "-m", "pip", "install", url], f"wheel {url}", progress)
 
         self.add_env_to_path(env)
         import hydra_swe2d  # noqa: F401
