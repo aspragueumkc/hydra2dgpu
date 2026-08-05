@@ -163,6 +163,48 @@ jobs:
           name: wheels-windows-2022-${{ matrix.python }}
           path: ./wheelhouse/*.whl
 
+  # ── Windows wheel smoke test (no GPU on hosted runners) ─────────────────
+  # Confirms the built wheel is actually pip-installable and importable on a
+  # real Windows box — this is what caught the RECORD-completeness bug (pip
+  # rejected the wheel) and would catch a missing-DLL / broken-module-init.
+  # Hosted runners have no NVIDIA GPU, so this validates import + load, not
+  # GPU compute (that requires the user's own hardware).
+  windows-smoke:
+    name: Smoke-test Windows wheel (install + import)
+    runs-on: windows-2022
+    needs: build-windows-legacy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download Windows wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows-2022-cp312
+          path: wheelhouse
+
+      - name: Install wheel into a fresh venv + import smoke test
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem wheelhouse -Filter "hydra_swe2d-*.whl" | Select-Object -First 1
+          if (-not $wheel) { throw "no hydra_swe2d wheel in wheelhouse/" }
+          Write-Host "Testing wheel: $($wheel.Name)"
+          python -m venv "$env:TEMP\hydra-smoke-venv"
+          & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -m pip install --upgrade pip -q
+          & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -m pip install $wheel.FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed (RECORD/structural issue?)" }
+          # Import the native module + assert the bindings surface is present.
+          # Single-line -c (no PowerShell here-string): YAML block scalars end
+          # at column 0, which collides with the "@ terminator of a here-string.
+          & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -c "import hydra_swe2d; from hydra_swe2d import hydra_swe2d as h; attrs=[a for a in dir(h) if not a.startswith('_')]; print('hydra_swe2d import OK - %d native attributes' % len(attrs)); assert len(attrs) > 50, 'expected >50 native attrs, got %d' % len(attrs); assert hasattr(h, 'swe2d_create_solver') or hasattr(h, 'swe2d_gpu_create'), 'no solver-create binding found'; print('WHEEL SMOKE TEST PASSED')"
+          if ($LASTEXITCODE -ne 0) { throw "import smoke test failed" }
+
   # ── GitHub Release (same workflow → valid `needs` on both wheel jobs) ──
   # The old release.yml had `needs: build_wheels` but that job lives in
   # THIS workflow, so the cross-workflow reference was invalid and the
@@ -172,7 +214,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-linux, build-windows-legacy]
+    needs: [build-linux, build-windows-legacy, windows-smoke]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
