@@ -149,13 +149,18 @@ jobs:
           # builder does for the Linux manylinux wheel: it adds the
           # tools/ + tests/ trees (not installed by CMake) and the
           # swe2d_solver.hpp header, then writes dist-info/ + RECORD.
+          # It also bundles cudart64_*.dll into hydra_swe2d/ — the .pyd
+          # links the CUDA 12 runtime, which end users do NOT have.
           $version = (Get-Content pyproject.toml | Select-String -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           $wheel   = "hydra_swe2d-${version}-cp312-cp312-win_amd64.whl"
+          $cudart  = Get-ChildItem "$env:CUDA_PATH\bin" -Filter "cudart64_12.dll" | Select-Object -First 1
+          if (-not $cudart) { throw "cudart64_12.dll not found under $env:CUDA_PATH\bin" }
           python tools/pack_wheel.py `
             --src-root . `
             --staging-dir staging `
             --output-wheel "wheelhouse/$wheel" `
-            --platform-tag win_amd64
+            --platform-tag win_amd64 `
+            --cudart-dll $cudart.FullName
           Write-Host "Built wheel: wheelhouse/$wheel"
 
       - uses: actions/upload-artifact@v4
@@ -205,7 +210,7 @@ jobs:
           # no .pyd) would shadow the installed wheel and produce a bogus
           # ModuleNotFoundError.
           Push-Location "$env:TEMP"
-          & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -c "import hydra_swe2d; from hydra_swe2d import hydra_swe2d as h; attrs=[a for a in dir(h) if not a.startswith('_')]; print('hydra_swe2d import OK - %d native attributes' % len(attrs)); assert len(attrs) > 50, 'expected >50 native attrs, got %d' % len(attrs); assert hasattr(h, 'swe2d_create_solver') or hasattr(h, 'swe2d_gpu_create'), 'no solver-create binding found'; print('WHEEL SMOKE TEST PASSED')"
+          & "$env:TEMP\hydra-smoke-venv\Scripts\python.exe" -c "import os, hydra_swe2d; from hydra_swe2d import hydra_swe2d as h; pkg=os.path.dirname(hydra_swe2d.__file__); assert any(f.lower().startswith('cudart64_12') for f in os.listdir(pkg)), 'cudart64_12.dll not bundled in wheel package'; attrs=[a for a in dir(h) if not a.startswith('_')]; print('hydra_swe2d import OK - %d native attributes' % len(attrs)); assert len(attrs) > 50, 'expected >50 native attrs, got %d' % len(attrs); assert hasattr(h, 'swe2d_create_solver') or hasattr(h, 'swe2d_gpu_create'), 'no solver-create binding found'; print('WHEEL SMOKE TEST PASSED')"
           if ($LASTEXITCODE -ne 0) { throw "import smoke test failed" }
           Pop-Location
 

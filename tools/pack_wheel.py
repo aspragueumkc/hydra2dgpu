@@ -108,6 +108,26 @@ def _stage_license(src_root: Path, dist_info: Path) -> None:
     shutil.copy2(src, licenses_dir / "LICENSE")
 
 
+def _stage_cudart(staging_dir: Path, cudart_dll: Path | None) -> None:
+    """Bundle the CUDA runtime DLL into hydra_swe2d/ next to the .pyd.
+
+    The Windows .pyd links cudart64_12.dll. It is NOT present on end-user
+    machines (or CI runners) without a system CUDA install, so the wheel
+    must ship it — Python finds DLLs in the package directory before the
+    system load path. Without this the import fails with
+    'DLL load failed ... The specified module could not be found'.
+    """
+    if cudart_dll is None:
+        return
+    dll = Path(cudart_dll)
+    if not dll.is_file():
+        raise SystemExit(f"cudart DLL not found at {dll}")
+    dst = staging_dir / "hydra_swe2d" / dll.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(dll, dst)
+    print(f"  bundled {dll.name} into hydra_swe2d/")
+
+
 def _write_dist_info(
     staging_dir: Path,
     src_root: Path,
@@ -195,10 +215,12 @@ def pack_wheel(
     output_wheel: Path,
     platform_tag: str = "win_amd64",
     python_tag: str = "cp312",
+    cudart_dll: Path | None = None,
 ) -> Path:
     """Assemble + pack the wheel from the staging tree. Returns the
     output wheel path."""
     _stage_top_level_packages(src_root, staging_dir)
+    _stage_cudart(staging_dir, cudart_dll)
     meta = _project_metadata(src_root / "pyproject.toml")
     dist_info = _write_dist_info(staging_dir, src_root, meta, python_tag, platform_tag)
 
@@ -226,6 +248,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--staging-dir", type=Path, required=True)
     p.add_argument("--output-wheel", type=Path, required=True)
     p.add_argument("--platform-tag", default="win_amd64")
+    p.add_argument("--cudart-dll", type=Path, default=None,
+                   help="Path to cudart64_*.dll to bundle (Windows runtime dep)")
     args = p.parse_args(argv)
 
     wheel = pack_wheel(
@@ -233,6 +257,7 @@ def main(argv: list[str]) -> int:
         staging_dir=args.staging_dir.resolve(),
         output_wheel=args.output_wheel.resolve(),
         platform_tag=args.platform_tag,
+        cudart_dll=args.cudart_dll.resolve() if args.cudart_dll else None,
     )
     print(f"Packed {wheel} ({wheel.stat().st_size:,} bytes)")
     return 0
