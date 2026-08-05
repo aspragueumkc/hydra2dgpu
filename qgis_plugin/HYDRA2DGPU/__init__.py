@@ -25,12 +25,20 @@ for _d in (_build_dir, _release_lib, _plugin_dir, _repo_root):
         _sys.path.insert(0, _d)
 
 # Production install: the BackendInstaller (installer.py) writes the wheel
-# into ~/.hydra2dgpu/lib/python*/site-packages/ on first launch. We have to
-# prepend that path here so the next QGIS launch can find `swe2d` and
-# `hydra_swe2d`. (The dev symlink workflow doesn't need this — the realpath
-# math above already pulls in the dev repo's swe2d/. The production install
-# is a separate, parallel path that needs its own wiring.)
-_hydra2dgpu_lib = _os.path.join(_os.path.expanduser("~"), ".hydra2dgpu", "lib")
+# into ~/.hydra2dgpu/ on first launch. We have to prepend its site-packages
+# here so the next QGIS launch can find `swe2d` and `hydra_swe2d`. (The dev
+# symlink workflow doesn't need this — the realpath math above already pulls
+# in the dev repo's swe2d/. The production install is a separate, parallel
+# path that needs its own wiring.)
+#
+# The venv layout differs by OS:
+#   Windows: <env>/Lib/site-packages
+#   POSIX:   <env>/lib/pythonX.Y/site-packages
+_hydra2dgpu_dir = _os.path.join(_os.path.expanduser("~"), ".hydra2dgpu")
+_win_sp = _os.path.join(_hydra2dgpu_dir, "Lib", "site-packages")
+if _os.path.isdir(_win_sp) and _win_sp not in _sys.path:
+    _sys.path.insert(0, _win_sp)
+_hydra2dgpu_lib = _os.path.join(_hydra2dgpu_dir, "lib")
 if _os.path.isdir(_hydra2dgpu_lib):
     for _pyver_sp in sorted(_os.listdir(_hydra2dgpu_lib)):
         _sp = _os.path.join(_hydra2dgpu_lib, _pyver_sp, "site-packages")

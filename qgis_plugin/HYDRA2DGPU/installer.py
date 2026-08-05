@@ -8,7 +8,6 @@ import os
 import platform
 import subprocess
 import sys
-import venv
 from pathlib import Path
 from typing import Callable
 
@@ -50,11 +49,21 @@ class BackendInstaller:
         return base / ENV_DIR_NAME
 
     def site_packages(self, env_dir: Path) -> Path | None:
+        """Locate site-packages inside a venv.
+
+        Layout differs by OS:
+          - Windows: <env>/Lib/site-packages
+          - POSIX:   <env>/lib/pythonX.Y/site-packages
+        """
+        win = env_dir / "Lib" / "site-packages"
+        if win.is_dir():
+            return win
         lib = env_dir / "lib"
-        if not lib.exists():
-            return None
-        matches = sorted(lib.glob("python*/site-packages"))
-        return matches[0] if matches else None
+        if lib.is_dir():
+            matches = sorted(lib.glob("python*/site-packages"))
+            if matches:
+                return matches[0]
+        return None
 
     def add_env_to_path(self, env_dir: Path) -> None:
         sp = self.site_packages(env_dir)
@@ -142,7 +151,25 @@ class BackendInstaller:
         env = self.env_dir()
         if not env.exists():
             progress(f"Creating isolated environment at {env}")
-            venv.create(env, with_pip=True)
+            python = self._real_python()
+            progress(f"  base interpreter: {python}")
+            # Create the venv as a subprocess of the REAL Python. Running
+            # venv.create() in-process bases the venv on sys._base_executable,
+            # which inside OSGeo4W QGIS is the qgis-ltr-bin.exe launcher — the
+            # venv's 'python.exe' becomes a copy of the QGIS binary and
+            # 'python -m ensurepip' crashes (0xC0000005) or spawns a QGIS
+            # window instead of installing pip.
+            # Note: pip is installed by default in 3.12 venvs; the CLI flag is
+            # --without-pip (to disable), not --with-pip.
+            r = subprocess.run(
+                [str(python), "-m", "venv", str(env)],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"venv creation failed with exit code {r.returncode}.\n"
+                    f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+                )
 
         sp = self.site_packages(env)
         if not sp:
@@ -161,6 +188,37 @@ class BackendInstaller:
         self.add_env_to_path(env)
         import hydra_swe2d  # noqa: F401
         progress(f"Installed hydra_swe2d {self.version}")
+
+    @staticmethod
+    def _real_python() -> Path:
+        """Locate a real python.exe to base the isolated venv on.
+
+        Inside OSGeo4W QGIS on Windows, sys.executable and
+        sys._base_executable point at the QGIS launcher (qgis-ltr-bin.exe),
+        NOT a Python interpreter. venv.create() would copy that launcher
+        into the venv, and 'python -m ensurepip' would crash (0xC0000005)
+        or open a QGIS window. Resolve the actual Python instead.
+        """
+        candidates: list[str] = []
+        # sys._base_executable, when it is actually a python binary
+        bex = getattr(sys, "_base_executable", "") or ""
+        if bex and os.path.basename(bex).lower().startswith("python"):
+            candidates.append(bex)
+        # python.exe beside the real prefix (OSGeo4W: C:\OSGeo4W\apps\Python312)
+        for prefix in (
+            getattr(sys, "base_prefix", "") or "",
+            getattr(sys, "base_exec_prefix", "") or "",
+        ):
+            if prefix:
+                candidates.append(os.path.join(prefix, "python.exe"))
+        # python.exe beside the launcher
+        if sys.executable:
+            candidates.append(os.path.join(os.path.dirname(sys.executable), "python.exe"))
+        for cand in candidates:
+            if cand and os.path.isfile(cand):
+                return Path(cand)
+        # Last resort: the running executable (correct on normal installs).
+        return Path(sys.executable)
 
     def _run_pip(self, args: list[str], desc: str, progress: ProgressFn) -> None:
         """Run pip, streaming each stdout/stderr line into the GUI progress

@@ -194,11 +194,13 @@ bash -c "$HOOK $ENV_NAME && cd '$RUN_DIR' && \
   export PYTHONPATH='$VENV_SP:$PROFILE_PLUGINS:'\"\$PYTHONPATH\" && \
   export LD_LIBRARY_PATH=\"\$CONDA_PREFIX/lib\" && \
   export HYDRA_MCP_INTEGRATION=1 && \
+  export DISPLAY=$DISPLAY_NUM && \
   bash ./fast_fail.sh"
 log "Phase 6b: GPU validation tests"
 bash -c "$HOOK $ENV_NAME && cd '$RUN_DIR' && \
   export PYTHONPATH='$VENV_SP:$PROFILE_PLUGINS:'\"\$PYTHONPATH\" && \
   export LD_LIBRARY_PATH=\"\$CONDA_PREFIX/lib\" && \
+  export DISPLAY=$DISPLAY_NUM && \
   python3 -m unittest -v \
     tests.test_swe2d_gpu_validation_perf \
     tests.test_swe2d_gpu_unstructured \

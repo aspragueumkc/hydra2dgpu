@@ -66,6 +66,73 @@ def test_wheel_url_uses_releases_download_path():
         assert inst2.wheel_url().startswith("http://127.0.0.1:8765/v")
 
 
+def test_site_packages_finds_windows_layout():
+    """Regression: Windows venvs use <env>/Lib/site-packages (capital Lib),
+    POSIX uses <env>/lib/pythonX.Y/site-packages. The old code only checked
+    the POSIX path, so the installer failed on Windows with 'site-packages
+    not found in created environment'.
+
+    Fixture-free (tempfile) so it runs under both pytest and the
+    wrap_pytest_style unittest shim.
+    """
+    import tempfile
+    from pathlib import Path
+
+    inst = BackendInstaller(plugin_dir=".")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # Windows layout
+        win = root / "win" / "Lib" / "site-packages"
+        win.mkdir(parents=True)
+        assert inst.site_packages(root / "win") == win
+        # POSIX layout
+        posix = root / "posix" / "lib" / "python3.12" / "site-packages"
+        posix.mkdir(parents=True)
+        assert inst.site_packages(root / "posix") == posix
+        # Missing layout -> None (not a crash)
+        assert inst.site_packages(root / "empty") is None
+
+
+def test_real_python_prefers_python_exe_over_launcher():
+    """Regression: inside OSGeo4W QGIS, sys._base_executable is the QGIS
+    launcher (qgis-ltr-bin.exe). venv.create() would copy that launcher into
+    the venv and 'python -m ensurepip' would crash (0xC0000005). The
+    installer must resolve a real python.exe from base_prefix instead.
+
+    Fixture-free (unittest.mock + tempfile) so it runs under both pytest
+    and the wrap_pytest_style unittest shim.
+    """
+    import tempfile
+    from unittest.mock import patch
+    import HYDRA2DGPU.installer as _inst_mod
+    from pathlib import Path
+
+    inst = BackendInstaller(plugin_dir=".")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        prefix = root / "apps" / "Python312"
+        (prefix).mkdir(parents=True)
+        real_py = prefix / "python.exe"
+        real_py.write_bytes(b"x")  # must exist for _real_python to pick it
+        launcher = root / "bin" / "qgis-ltr-bin.exe"
+
+        with patch.object(_inst_mod.sys, "_base_executable", str(launcher)), \
+             patch.object(_inst_mod.sys, "executable", str(launcher)), \
+             patch.object(_inst_mod.sys, "base_prefix", str(prefix)), \
+             patch.object(_inst_mod.sys, "base_exec_prefix", str(prefix)):
+            found = inst._real_python()
+        assert found == real_py, f"expected {real_py}, got {found}"
+
+        # Fallback: if no real python.exe exists, return sys.executable
+        real_py.unlink()
+        with patch.object(_inst_mod.sys, "_base_executable", str(launcher)), \
+             patch.object(_inst_mod.sys, "executable", str(launcher)), \
+             patch.object(_inst_mod.sys, "base_prefix", str(prefix)), \
+             patch.object(_inst_mod.sys, "base_exec_prefix", str(prefix)):
+            found2 = inst._real_python()
+        assert found2 == Path(str(launcher))
+
+
 class _PytestStyleWrapper(unittest.TestCase):
     """Auto-generated wrapper for module-level test functions.
 
