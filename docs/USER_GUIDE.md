@@ -52,32 +52,38 @@ HYDRA is a QGIS-integrated plugin for 2D shallow water equation (SWE) modeling, 
 
 | Component | Requirement |
 |---|---|
-| **QGIS** | 3.28+ (Linux primary; Windows/macOS secondary) |
+| **QGIS** | 3.28+ (Linux primary; Windows secondary) |
 | **Python** | 3.12+ (within QGIS environment) |
-| **CUDA Toolkit** | 11.x or 12.x |
 | **NVIDIA GPU** | Compute Capability ≥ 7.5 (RTX 3060+; A100/H100 recommended) |
 | **VRAM** | 4 GB minimum; 8+ GB for 100k+ cell meshes |
-| **C++ Compiler** | GCC 10+ or Clang 12+ (C++17) |
-| **CMake** | 3.16+ |
+
+> The wheel bundles the CUDA runtime (Windows) or links the system
+> NVIDIA driver (Linux) — end users do **not** install the CUDA Toolkit.
+> Building from source requires CUDA Toolkit 12.x + a C++17 compiler.
 
 ### Python Dependencies
 
-| Package | Required | Purpose |
-|---|---|---|
-| `numpy` | ✅ | Array operations, mesh data |
-| `scipy` | ❌ | Optional 1D solver backend |
-| `matplotlib` | ❌ | In-plugin plotting (timeseries, profiles) |
-| `shapely` | ❌ | Geometry operations for BC polyline sampling |
+`numpy`, `gmsh`, and `pyqtgraph` are pulled in automatically by the
+first-launch backend installer as dependencies of the `hydra-swe2d`
+wheel (installed into the isolated `~/.hydra2dgpu` environment). You do
+**not** install them by hand.
 
-### C++ Dependencies (bundled)
+### Install the Plugin (recommended — no compilation)
 
-| Component | Purpose |
-|---|---|
-| **pybind11** (2.13.6+) | Python ↔ C++ bindings (auto-fetched by CMake) |
-| **GMsh 4.x** | Optional mesh generation backend |
-| **TQMesh** | Optional quadrilateral mesh generation |
+1. Download `HYDRA2DGPU-<version>.zip` from
+   [GitHub Releases](https://github.com/aspragueumkc/hydra2dgpu/releases).
+2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**,
+   select the downloaded zip, and restart QGIS.
+3. On first open, the **Install HYDRA2DGPU Backend** dialog downloads the
+   matching `hydra_swe2d-<version>-cp312-cp312-<platform>.whl` from the
+   release into `~/.hydra2dgpu/` (Linux) or `%USERPROFILE%\.hydra2dgpu\`
+   (Windows) and installs it into an isolated virtual environment.
+   Click **Install** once.
 
-### Build the Native Module
+The release ships one Linux wheel and one Windows wheel; the correct one
+is picked automatically.
+
+### Build the Native Module (for development)
 
 ```bash
 # Clone the repository
@@ -94,23 +100,16 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-> **Mixed precision (experimental):** Add `-DSWE2D_STATE_FP32=ON` to the cmake command to store solver state arrays as `float` instead of `double`. This reduces GPU memory traffic by ~35% with a small accuracy trade-off in very shallow flows. Only recommended for GPU-bound simulations on memory-constrained cards. The precompiled binaries use full `double` precision.
-
 The build produces:
 - `hydra_swe2d.cpython-312-x86_64-linux-gnu.so` — GPU solver module
-- `hydra_native.so` — 1D backwater solver module
 - `hydra_meshing_native.so` — Mesh generation kernels
 - `hydra_overlay.so` — High-performance rendering overlay
 
-### Install as QGIS Plugin
+For a dev checkout, symlink the plugin root into your QGIS plugins
+directory and restart QGIS (the zip install path above is for the
+published release):
 
 ```bash
-# From QGIS Plugin Manager:
-#   1. Open QGIS → Plugins → Manage and Install Plugins
-#   2. Click "Install from ZIP"
-#   3. Select the plugin archive or point to the repository root
-
-# Or symlink into QGIS plugin directory:
 ln -s /path/to/hydra2dgpu \
   ~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/hydra2dgpu
 ```
