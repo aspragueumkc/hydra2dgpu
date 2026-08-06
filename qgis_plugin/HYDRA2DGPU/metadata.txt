@@ -10,7 +10,7 @@ about=HYDRA2DGPU performs 2D hydrodynamic flood and surface-water modelling usin
   Manual / advanced install: see https://github.com/aspragueumkc/hydra2dgpu#readme.
 version=0.3.0
 author=Aaron Sprague
-email=aspragueumkc@github.com
+email=alsprague89@proton.me
 homepage=https://github.com/aspragueumkc/hydra2dgpu
 repository=https://github.com/aspragueumkc/hydra2dgpu
 tracker=https://github.com/aspragueumkc/hydra2dgpu/issues
@@ -21,5 +21,5 @@ changelog=
 tags=flood, hydrodynamic, 2d, swe, cuda, gpu, hydraulic, hydrology, drainage
 icon=resources/icon.png
 category=Raster
-experimental=False
+experimental=True
 deprecated=False
