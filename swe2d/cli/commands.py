@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 from typing import Any, Dict, List
+
+from swe2d.runtime.python_exec import real_python
 
 
 def is_replay_spec(params: Dict[str, Any]) -> bool:
@@ -80,7 +81,7 @@ def build_run_command(
         The ``argv`` ready to pass to ``subprocess.Popen`` /
         ``subprocess.run``.
     """
-    cmd: List[str] = [sys.executable, "-m", "swe2d.cli", "replay",
+    cmd: List[str] = [str(real_python()), "-m", "swe2d.cli", "replay",
                        "--replay-file", spec_path]
     if status_file_path:
         cmd.extend(["--status-file-path", status_file_path])
@@ -128,7 +129,7 @@ def build_run_command_for_params(
     # Legacy inline form — pass the mesh path and the JSON string.
     mesh_path = params.get("mesh_path") or params.get("mesh_gpkg", "")
     params_json = json.dumps(params)
-    cmd: List[str] = [sys.executable, "-m", "swe2d.cli", "run",
+    cmd: List[str] = [str(real_python()), "-m", "swe2d.cli", "run",
                        mesh_path, params_json]
     if results_gpkg:
         cmd.extend(["--results", results_gpkg])

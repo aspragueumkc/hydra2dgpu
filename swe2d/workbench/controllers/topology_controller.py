@@ -11,6 +11,7 @@ import pickle
 import subprocess
 import tempfile
 import time
+import glob
 
 import numpy as np
 
@@ -1047,13 +1048,47 @@ class TopologyController:
             view._topology_mesh_out_path = out_path
             view._topology_mesh_err_path = err_path
 
-            worker = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-                "tools", "gmsh_subprocess_worker.py",
+            # Locate the worker + real python for the subprocess. Inside
+            # OSGeo4W QGIS sys.executable is the QGIS launcher (qgis-ltr-bin.exe)
+            # — spawning it would open a new QGIS GUI instead of running the
+            # worker. Resolve the real python.exe (see swe2d.runtime.python_exec).
+            from swe2d.runtime.python_exec import real_python as _real_python
+
+            # Worker path: dev lives in repo tools/; the production wheel puts
+            # it in ~/.hydra2dgpu/<Lib|lib>/.../site-packages/tools/. Prefer
+            # the module's own location (works in both layouts).
+            import importlib as _importlib
+            try:
+                _worker_mod_dir = os.path.dirname(
+                    _importlib.import_module("tools.gmsh_subprocess_worker").__file__
+                )
+            except Exception:
+                _worker_mod_dir = ""
+            if _worker_mod_dir and os.path.isfile(os.path.join(_worker_mod_dir, "gmsh_subprocess_worker.py")):
+                worker = os.path.join(_worker_mod_dir, "gmsh_subprocess_worker.py")
+            else:
+                worker = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                    "tools", "gmsh_subprocess_worker.py",
+                )
+            # PYTHONPATH for the worker: in production the wheel's site-packages
+            # (which holds swe2d/ + tools/) must be importable; in dev the repo
+            # root + build dir. Add whichever exist.
+            _pythonpath_parts = []
+            _plugin_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # .../HYDRA2DGPU
+            _maybe_installed = os.path.join(
+                os.path.expanduser("~"), ".hydra2dgpu",
             )
-            import sys as _sys
+            _win_sp = os.path.join(_maybe_installed, "Lib", "site-packages")
+            _posix_sp_glob = os.path.join(_maybe_installed, "lib", "python*", "site-packages")
+            _sps = []
+            if os.path.isdir(_win_sp):
+                _sps.append(_win_sp)
+            _sps.extend(sorted(glob.glob(_posix_sp_glob)))
+            _pythonpath_parts.extend(_sps)
             _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            _pythonpath = os.pathsep.join([str(p) for p in [_repo_root, os.path.join(_repo_root, "build")] if p])
+            _pythonpath_parts.extend([_repo_root, os.path.join(_repo_root, "build"), _plugin_dir])
+            _pythonpath = os.pathsep.join([p for p in _pythonpath_parts if p and os.path.isdir(p)])
             env = dict(os.environ)
             _existing = env.get("PYTHONPATH", "")
             if _existing:
@@ -1062,7 +1097,7 @@ class TopologyController:
             env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
             with open(err_path, "wb") as err_file:
                 view._topology_mesh_subprocess = subprocess.Popen(
-                    [_sys.executable, worker, in_path, out_path],
+                    [str(_real_python()), worker, in_path, out_path],
                     env=env,
                     stdout=subprocess.DEVNULL,
                     stderr=err_file,
