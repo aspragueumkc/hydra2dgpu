@@ -133,7 +133,14 @@ class BackendInstaller:
         try:
             from urllib.request import urlopen
             from urllib.error import URLError
+            from urllib.parse import urlparse
             api = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{RELEASE_TAG}"
+            # Only ever open https: the URL is built from a fixed github.com
+            # host plus owner/repo parsed out of the download base, so an
+            # https-only guard here is the intended audit boundary (no
+            # file:// or other schemes reach urlopen).
+            if urlparse(api).scheme != "https":
+                return f"{base}/{RELEASE_TAG}/{names[0]}"
             with urlopen(api, timeout=15) as resp:
                 import json
                 data = json.loads(resp.read().decode("utf-8"))
@@ -246,7 +253,8 @@ class BackendInstaller:
             )
         except OSError as exc:
             raise RuntimeError(f"{desc}: failed to launch pip ({exc})") from exc
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError(f"{desc}: pip produced no stdout pipe")
         captured: list[str] = []
         for line in proc.stdout:
             line = line.rstrip()

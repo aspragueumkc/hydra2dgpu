@@ -150,8 +150,11 @@ def _check_required_deps():
 try:
     _check_optional_deps()
     _check_required_deps()
-except Exception:
-    pass  # never block plugin load
+except Exception as _e:  # never block plugin load
+    import logging as _logging
+    _logging.getLogger("hydra").debug(
+        "[HYDRA] dependency check failed (non-fatal): %s", _e,
+    )
 
 
 # ── Eager internal import check ──────────────────────────────────────────

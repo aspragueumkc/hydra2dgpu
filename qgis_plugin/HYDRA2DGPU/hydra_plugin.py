@@ -49,16 +49,16 @@ class _RogueWindowCloseGuard(QtCore.QObject):
             if self._plugin._is_rogue_duplicate_main_window(obj):
                 try:
                     event.ignore()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logging.getLogger(__name__).debug("event.ignore failed: %s", _e)
                 try:
                     obj.hide()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logging.getLogger(__name__).debug("obj.hide failed: %s", _e)
                 try:
                     obj.deleteLater()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logging.getLogger(__name__).debug("obj.deleteLater failed: %s", _e)
                 self._plugin._emit_rogue_window_warning(
                     "Blocked close on rogue blank top-level window and removed it."
                 )
@@ -239,8 +239,8 @@ class HydraQgisPlugin:
         if self._swe2d_dialog is not None:
             try:
                 self._swe2d_dialog.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("workbench close failed: %s", _e)
         self._swe2d_dialog = None
         self._remove_close_guard_filter()
         self._restore_qt_quit_behavior()
@@ -252,8 +252,8 @@ class HydraQgisPlugin:
         if self._mcp_bridge is not None:
             try:
                 self._mcp_bridge.deleteLater()
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("MCP bridge deleteLater failed: %s", _e)
             self._mcp_bridge = None
 
     def _install_close_guard_filter(self):
@@ -278,16 +278,16 @@ class HydraQgisPlugin:
             app = QApplication.instance()
             if app is not None:
                 app.removeEventFilter(filt)
-        except Exception:
-            pass
+        except Exception as _e:
+            logging.getLogger(__name__).debug("removeEventFilter failed: %s", _e)
 
     def _emit_rogue_window_warning(self, message: str):
         if self._window_guard_log_emitted:
             return
         try:
             self.iface.messageBar().pushWarning('HYDRA2DGPU', str(message or 'Rogue top-level window removed.'))
-        except Exception:
-            pass
+        except Exception as _e:
+            logging.getLogger(__name__).debug("pushWarning failed: %s", _e)
         self._window_guard_log_emitted = True
 
     def _is_rogue_duplicate_main_window(self, win) -> bool:
@@ -320,8 +320,8 @@ class HydraQgisPlugin:
                 self._orig_quit_on_last_window_closed = bool(app.quitOnLastWindowClosed())
             app.setQuitOnLastWindowClosed(False)
             self._qt_quit_hardened = True
-        except Exception:
-            pass
+        except Exception as _e:
+            logging.getLogger(__name__).debug("harden Qt quit behavior failed: %s", _e)
 
     def _restore_qt_quit_behavior(self):
         if not bool(self._qt_quit_hardened):
@@ -333,8 +333,8 @@ class HydraQgisPlugin:
                 return
             if self._orig_quit_on_last_window_closed is not None:
                 app.setQuitOnLastWindowClosed(bool(self._orig_quit_on_last_window_closed))
-        except Exception:
-            pass
+        except Exception as _e:
+            logging.getLogger(__name__).debug("restore Qt quit behavior failed: %s", _e)
         finally:
             self._qt_quit_hardened = False
 
@@ -521,13 +521,13 @@ class HydraQgisPlugin:
             try:
                 if menu.objectName() == 'HYDRA2DGMainMenu':
                     return menu
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("menu.objectName failed: %s", _e)
             try:
                 if str(menu.title()).replace('&', '').strip().lower() == 'hydra2dgpu':
                     return menu
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("menu.title failed: %s", _e)
         return None
 
     def _install_main_menu_bar_menu(self):
@@ -703,8 +703,8 @@ class HydraQgisPlugin:
                 pass
             try:
                 menu.removeAction(action)
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("menu.removeAction failed: %s", _e)
             try:
                 action.deleteLater()
             except (RuntimeError, AttributeError):
@@ -716,8 +716,8 @@ class HydraQgisPlugin:
                 plugins_menu = self.iface.pluginMenu()
                 if plugins_menu is not None:
                     plugins_menu.removeAction(menu.menuAction())
-            except Exception:
-                pass
+            except Exception as _e:
+                logging.getLogger(__name__).debug("plugins_menu.removeAction failed: %s", _e)
             try:
                 menu.deleteLater()
             except (RuntimeError, AttributeError):
@@ -888,17 +888,38 @@ class HYDRASettingsDialog(QDialog):
 
     def _inspect_at(self, pos):
         from qgis.PyQt.QtWidgets import QApplication, QMessageBox
-        import subprocess, os
+        import os
         w = QApplication.widgetAt(pos)
         if not w:
             return
         oname = w.objectName()
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        search = [os.path.join(root, d) for d in ("swe2d", "cpp", "tests", "hydra_plugin.py") if os.path.exists(os.path.join(root, d))]
-        r = subprocess.run(["grep", "-rn", f'setObjectName("{oname}")'] + search, capture_output=True, text=True, timeout=5)
+        # Pure-Python scan (no subprocess / grep): avoid executing shell
+        # commands with the widget's objectName on the command line.
+        search = [os.path.join(root, d) for d in ("swe2d", "cpp", "tests") if os.path.isdir(os.path.join(root, d))]
+        search.append(os.path.join(root, "hydra_plugin.py"))
+        needle = 'setObjectName("%s")' % oname
+        matches = []
+        for base in search:
+            if os.path.isfile(base):
+                files = [base]
+            else:
+                files = []
+                for dirpath, _dirs, names in os.walk(base):
+                    for n in names:
+                        if n.endswith(".py"):
+                            files.append(os.path.join(dirpath, n))
+            for f in files:
+                try:
+                    with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                        for lineno, line in enumerate(fh, 1):
+                            if needle in line:
+                                matches.append(f"{f}:{lineno}: {line.rstrip()}")
+                except OSError:
+                    continue
+        result = "\n".join(matches) or "(no matches)"
         QMessageBox.information(None, "Widget Inspector",
-            f"Class: {type(w).__name__}\nObjectName: \"{oname}\"\n\n" +
-            (r.stdout.strip() or "(no matches)"))
+            f"Class: {type(w).__name__}\nObjectName: \"{oname}\"\n\n" + result)
 
     def _check_and_install_deps(self):
         """Run the dependency checker/installer inside the QGIS Python interpreter."""
@@ -916,6 +937,15 @@ class HYDRASettingsDialog(QDialog):
         # Run inside QGIS's Python: sys.executable is guaranteed to be QGIS's Python
         self._deps_output.append(f"Python: {sys.executable}")
         self._deps_output.append(f"Script: {check_deps_path}\n")
+
+        # The subprocess runs QGIS's own python against a script that is
+        # derived from __file__ and validated to live inside the plugin dir
+        # — no user-supplied input reaches the command line.
+        if not os.path.realpath(check_deps_path).startswith(
+            os.path.realpath(plugin_dir) + os.sep
+        ):
+            self._deps_output.append("ERROR: check_deps.py resolved outside the plugin directory.")
+            return
 
         try:
             result = subprocess.run(
