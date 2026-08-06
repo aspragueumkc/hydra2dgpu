@@ -3,7 +3,7 @@
 Opens the 2D SWE GPU workbench dialog directly (no 1D/lumped hydrology dock).
 """
 import os
-import subprocess
+import subprocess  # nosec B404 — used with explicit argv lists, no shell=True
 import sys
 import traceback
 import logging
@@ -948,7 +948,11 @@ class HYDRASettingsDialog(QDialog):
             return
 
         try:
-            result = subprocess.run(
+            # The argv is QGIS's own sys.executable plus a script path
+            # validated above to resolve inside the plugin directory — no
+            # user-supplied input reaches the command line, and no shell is
+            # involved (list form).
+            result = subprocess.run(  # nosec B603
                 [sys.executable, check_deps_path, "--install", "--all"],
                 capture_output=True, text=True, timeout=180,
             )

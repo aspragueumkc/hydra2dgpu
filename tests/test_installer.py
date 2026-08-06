@@ -53,7 +53,7 @@ def test_wheel_url_uses_releases_download_path():
     # Default base → the real GitHub download path (the API probe still runs,
     # so stub urlopen to make the test offline-safe).
     with patch.object(_urlrequest, "urlopen", return_value=_FakeResp()):
-        inst = BackendInstaller(plugin_dir=".", version="0.3.0")
+        inst = BackendInstaller(plugin_dir=".", version="0.3.1")
         url = inst.wheel_url()
     assert url.startswith(
         "https://github.com/aspragueumkc/hydra2dgpu/releases/download/"

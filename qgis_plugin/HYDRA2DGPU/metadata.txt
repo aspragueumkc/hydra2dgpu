@@ -8,7 +8,7 @@ about=HYDRA2DGPU performs 2D hydrodynamic flood and surface-water modelling usin
   This plugin requires an NVIDIA GPU with CUDA support (compute capability >= 7.5). On first launch the plugin installs the hydra-swe2d solver backend into an isolated per-user Python environment; Windows and Linux x86_64 are supported, macOS is not.
 
   Manual / advanced install: see https://github.com/aspragueumkc/hydra2dgpu#readme.
-version=0.3.0
+version=0.3.1
 author=Aaron Sprague
 email=alsprague89@proton.me
 homepage=https://github.com/aspragueumkc/hydra2dgpu

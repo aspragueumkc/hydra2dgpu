@@ -6,12 +6,12 @@ View class within this same module).
 from __future__ import annotations
 import os
 import platform
-import subprocess
+import subprocess  # nosec B404 — used with explicit argv lists, no shell=True
 import sys
 from pathlib import Path
 from typing import Callable
 
-WHEEL_VERSION = "0.3.0"
+WHEEL_VERSION = "0.3.1"
 RELEASE_TAG = f"v{WHEEL_VERSION}"
 # Source of truth for the wheel download URL. The plugin zip (built by
 # tools/package_plugin.py) is installed by the QGIS Plugin Manager; the
@@ -141,7 +141,7 @@ class BackendInstaller:
             # file:// or other schemes reach urlopen).
             if urlparse(api).scheme != "https":
                 return f"{base}/{RELEASE_TAG}/{names[0]}"
-            with urlopen(api, timeout=15) as resp:
+            with urlopen(api, timeout=15) as resp:  # nosec B310 — https-only, scheme verified above
                 import json
                 data = json.loads(resp.read().decode("utf-8"))
             assets = {a["name"] for a in data.get("assets", [])}
@@ -168,7 +168,10 @@ class BackendInstaller:
             # window instead of installing pip.
             # Note: pip is installed by default in 3.12 venvs; the CLI flag is
             # --without-pip (to disable), not --with-pip.
-            r = subprocess.run(
+            # argv is a resolved python.exe (from _real_python) plus fixed
+            # "-m venv" args and an env dir derived from the user's home /
+            # HYDRA2DGPU_CACHE_DIR — no shell, no untrusted input.
+            r = subprocess.run(  # nosec B603
                 [str(python), "-m", "venv", str(env)],
                 capture_output=True, text=True,
             )
@@ -244,7 +247,10 @@ class BackendInstaller:
         """
         progress(f"$ {' '.join(args)}")
         try:
-            proc = subprocess.Popen(
+            # args is a fixed argv list built by install() (venv python.exe +
+            # "-m pip install <wheel-url>") — no shell, no user-controlled
+            # command injection surface.
+            proc = subprocess.Popen(  # nosec B603
                 args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

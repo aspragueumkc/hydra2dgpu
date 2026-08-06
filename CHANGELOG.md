@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-06
+
+### Fixed
+
+- Resolved all QGIS plugin repository security scanner (Bandit) findings so
+  the plugin passes upload review:
+  - Bare `except Exception: pass` blocks replaced with logged versions
+    (no silent error swallows)
+  - Widget-inspector `grep` subprocess replaced with a pure-Python file
+    scan (no objectName on a shell command line)
+  - `subprocess` calls annotated `# nosec` with justification (fixed argv
+    lists, no shell, validated script path)
+  - `urlopen` guarded to https-only + `# nosec`
+  - `assert` replaced with an explicit `RuntimeError` check
+- Plugin zip now bundles `LICENSE` (MIT)
+- `metadata.txt` email updated; plugin marked `experimental`
+
 ## [0.3.0] — 2026-08-03
 
 ### Added
