@@ -346,6 +346,16 @@ def _load_hydra_meshing_native():
 
     _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = True
     try:
+        # Wheel layout: hydra_meshing_native is a submodule of the
+        # hydra_swe2d package (hydra_swe2d/hydra_meshing_native.*.pyd|so).
+        from hydra_swe2d import hydra_meshing_native as _mn
+        _HYDRA_MESHING_NATIVE_MODULE = _mn
+        return _HYDRA_MESHING_NATIVE_MODULE
+    except Exception:
+        pass
+
+    try:
+        # Dev checkout: top-level module in the build dir.
         import hydra_meshing_native as _mn
         _HYDRA_MESHING_NATIVE_MODULE = _mn
         return _HYDRA_MESHING_NATIVE_MODULE

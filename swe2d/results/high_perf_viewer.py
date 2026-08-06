@@ -19,22 +19,26 @@ from typing import Any, Optional, Sequence, Tuple
 
 import numpy as np
 
-# Ensure the native overlay extension (.so) built under ./build/ is findable
-# regardless of how this module is imported (package or top-level).
+# Load the native overlay extension. In the shipped wheel the module is a
+# submodule of the hydra_swe2d package (hydra_swe2d/hydra_overlay.*.pyd|so);
+# in a dev checkout it lives as a top-level hydra_overlay.{so,pyd} in
+# ./build/. Prefer the wheel form, fall back to the dev build dir.
 _here = os.path.dirname(os.path.abspath(__file__))
 _plugin_root = os.path.abspath(os.path.dirname(_here))
-for _candidate in (
-    os.path.join(_plugin_root, "build"),
-    os.path.join(_plugin_root, "build", "Release"),
-    os.path.join(_plugin_root, "build", "Debug"),
-    os.path.join(_here, "build"),
-    os.path.join(_here, "build", "Release"),
-    os.path.join(_here, "build", "Debug"),
-):
-    if os.path.isdir(_candidate) and _candidate not in sys.path:
-        sys.path.insert(0, _candidate)
-
-import hydra_overlay as _hydra_overlay
+try:
+    from hydra_swe2d import hydra_overlay as _hydra_overlay
+except ImportError:
+    for _candidate in (
+        os.path.join(_plugin_root, "build"),
+        os.path.join(_plugin_root, "build", "Release"),
+        os.path.join(_plugin_root, "build", "Debug"),
+        os.path.join(_here, "build"),
+        os.path.join(_here, "build", "Release"),
+        os.path.join(_here, "build", "Debug"),
+    ):
+        if os.path.isdir(_candidate) and _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+    import hydra_overlay as _hydra_overlay  # noqa: E402
 
 QgsPointXY = None  # ponytail: deferred to conditional block below
 QgsMapCanvasItem = None  # ponytail: deferred to conditional block below
